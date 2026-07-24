@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Minbar" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">@font/amiri</item>
+        <item name="android:navigationBarColor">#172328</item>
+        <item name="android:statusBarColor">#1B2B31</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

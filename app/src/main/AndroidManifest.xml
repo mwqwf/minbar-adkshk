@@ -25,6 +25,12 @@
         android:theme="@style/Theme.Minbar"
         android:usesCleartextTraffic="false">
 
+        <!-- شبكة أمان: أيّ رسالة FCM تُشير إلى قناة غير موجودة تسقط على
+             هذه القناة بدل أن تُحجب. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="minbar_content" />
+
         <!-- أندرويد أوتو: التحكّم بالتشغيل من شاشة السيارة. -->
         <meta-data
             android:name="com.google.android.gms.car.application"

@@ -128,8 +128,17 @@ class ContentRepository private constructor(context: Context) {
     fun newest(limit: Int = 15): List<Lesson> =
         withAudio().sortedByDescending(Lesson::createdAtMs).take(limit)
 
-    fun featured(limit: Int = 12): List<Lesson> =
-        withAudio().filter(Lesson::featured).sortedByDescending(Lesson::createdAtMs).take(limit)
+    /**
+     * «مختارات المنبر» — التمييز صار مؤقّتاً: ما انقضت مدّته يسقط هنا فوراً
+     * دون انتظار تنظيف الخادم، فلا يظهر للمستخدم درس انتهى تمييزه.
+     */
+    fun featured(limit: Int = 12): List<Lesson> {
+        val now = System.currentTimeMillis()
+        return withAudio()
+            .filter { it.featured && (it.featuredUntilMs <= 0L || it.featuredUntilMs > now) }
+            .sortedByDescending(Lesson::createdAtMs)
+            .take(limit)
+    }
 
     fun mostListened(limit: Int = 15): List<Lesson> =
         withAudio().filter { it.views > 0L }

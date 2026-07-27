@@ -107,6 +107,8 @@ data class Lesson(
     val description: String = "",
     val durationMs: Long = 0L,
     val featured: Boolean = false,
+    /** نهاية مدّة التمييز (0 = دائم) — بانقضائها يسقط من «مختارات المنبر». */
+    val featuredUntilMs: Long = 0L,
     val publishAtMs: Long? = null,
 ) {
     val displayTitle: String
@@ -130,6 +132,7 @@ data class Lesson(
         .put("description", description)
         .put("durationMs", durationMs)
         .put("featured", featured)
+        .put("featuredUntilMs", featuredUntilMs)
         .apply { publishAtMs?.let { put("publishAt", it) } }
 
     companion object {
@@ -154,6 +157,7 @@ data class Lesson(
                 description = data["description"].text(),
                 durationMs = (data["durationMs"] ?: data["duration"]).longValue(),
                 featured = data["featured"] == true,
+                featuredUntilMs = data["featuredUntil"].timeMillis(),
                 publishAtMs = publishAt,
             )
         }
@@ -175,6 +179,7 @@ data class Lesson(
             durationMs = json.opt("durationMs").longValue().takeIf { it > 0L }
                 ?: json.opt("duration").longValue(),
             featured = json.optBoolean("featured", false),
+            featuredUntilMs = json.optLong("featuredUntilMs", 0L),
             publishAtMs = json.opt("publishAt").timeMillis().takeIf { it > 0L },
         )
     }

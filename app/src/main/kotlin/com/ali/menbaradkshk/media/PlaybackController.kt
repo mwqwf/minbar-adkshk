@@ -13,6 +13,7 @@ import androidx.media3.session.SessionToken
 import com.ali.menbaradkshk.data.DownloadRepository
 import com.ali.menbaradkshk.data.Lesson
 import com.ali.menbaradkshk.data.LocalStore
+import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -56,6 +57,9 @@ class PlaybackController(context: Context) {
     private val _state = MutableStateFlow(PlaybackUiState(speed = store.playbackSpeed().toFloat()))
     val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
     private var controller: MediaController? = null
+    private var controllerFuture: ListenableFuture<MediaController>? = null
+    private var released = false
+    private var pendingPlay: (() -> Unit)? = null
     private var sleepJob: Job? = null
 
     private val listener = object : Player.Listener {
@@ -68,13 +72,24 @@ class PlaybackController(context: Context) {
     init {
         val token = SessionToken(appContext, ComponentName(appContext, PlaybackService::class.java))
         val future = MediaController.Builder(appContext, token).buildAsync()
+        controllerFuture = future
         future.addListener(
             {
                 runCatching { future.get() }.onSuccess { mediaController ->
+                    // قد يكتمل الربط بعد release() — نحرّر فوراً كي لا يتسرّب متحكم حيّ.
+                    if (released) {
+                        mediaController.release()
+                        return@onSuccess
+                    }
                     controller = mediaController
                     mediaController.addListener(listener)
                     publish(mediaController)
+                    pendingPlay?.invoke()
+                    pendingPlay = null
                 }.onFailure {
+                    // لا مشغّل ⇒ النداء المؤجّل لن يُنفَّذ أبداً؛ نحرّره كي لا
+                    // يحتجز الدرس وقائمة التشغيل طوال عمر المتحكّم.
+                    pendingPlay = null
                     _state.value = _state.value.copy(error = "تعذّر الاتصال بمشغل الصوت.")
                 }
             },
@@ -89,13 +104,25 @@ class PlaybackController(context: Context) {
     }
 
     fun play(lesson: Lesson, queue: List<Lesson>, startAtMs: Long? = null, restart: Boolean = false) {
-        val player = controller ?: return
+        val player = controller
+        if (player == null) {
+            // نداء وصل قبل اكتمال ربط MediaController (إقلاع بارد/رابط عميق) — يُنفَّذ عند الجاهزية.
+            if (!released) pendingPlay = { play(lesson, queue, startAtMs, restart) }
+            return
+        }
         if (!restart && player.currentMediaItem?.mediaId == lesson.id && startAtMs == null) {
             if (player.isPlaying) player.pause() else player.play()
             return
         }
-        val playable = queue.filter { it.audioUrl.isNotBlank() || downloads.isDownloaded(it.id) }
-            .ifEmpty { listOf(lesson) }
+        // الفحص قبل بناء القائمة: ifEmpty تُعيد الدرس نفسه فتُخفي غياب الصوت.
+        if (lesson.audioUrl.isBlank() && !downloads.isDownloaded(lesson.id)) {
+            _state.value = _state.value.copy(error = "هذا الدرس لا يحتوي ملفاً صوتياً.")
+            return
+        }
+        // الدرس المطلوب يتصدّر القائمة دائماً إن رشّحه المرشّح خارجها، كي لا
+        // يسقط الفهرس إلى 0 فيُشغَّل درس آخر بموضع الدرس المطلوب.
+        val filtered = queue.filter { it.audioUrl.isNotBlank() || downloads.isDownloaded(it.id) }
+        val playable = if (filtered.any { it.id == lesson.id }) filtered else listOf(lesson) + filtered
         val index = playable.indexOfFirst { it.id == lesson.id }.coerceAtLeast(0)
         // نستأنف من الموضع المحفوظ فقط إن تجاوز 3 ثوانٍ (نمط الأصل).
         val position = startAtMs
@@ -116,7 +143,12 @@ class PlaybackController(context: Context) {
 
     fun skipForward() {
         val seconds = store.skipSeconds()
-        controller?.let { it.seekTo((it.currentPosition + seconds * 1_000L).coerceAtMost(it.duration)) }
+        controller?.let {
+            val target = it.currentPosition + seconds * 1_000L
+            // المدة غير معروفة أثناء التحميل (سالبة) فلا تصلح سقفاً.
+            val cap = it.duration.takeIf { duration -> duration > 0L }
+            it.seekTo(if (cap != null) target.coerceAtMost(cap) else target)
+        }
     }
 
     fun skipBackward() {
@@ -160,21 +192,8 @@ class PlaybackController(context: Context) {
         _state.value = _state.value.copy(error = null)
     }
 
-    private fun toMediaItem(lesson: Lesson): MediaItem {
-        val local = downloads.localPath(lesson.id)
-        val uri = if (local != null) Uri.fromFile(File(local)) else Uri.parse(lesson.audioUrl)
-        return MediaItem.Builder()
-            .setMediaId(lesson.id)
-            .setUri(uri)
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(lesson.displayTitle)
-                    .setArtist(lesson.speaker.ifBlank { "منبر ادكصهك" })
-                    .setIsPlayable(true)
-                    .build(),
-            )
-            .build()
-    }
+    private fun toMediaItem(lesson: Lesson): MediaItem =
+        mediaItemFor(lesson, downloads.localPath(lesson.id))
 
     private fun publish(player: Player) {
         val metadata = player.mediaMetadata
@@ -196,9 +215,31 @@ class PlaybackController(context: Context) {
     }
 
     fun release() {
+        released = true
+        pendingPlay = null
+        controllerFuture?.let { MediaController.releaseFuture(it) }
+        controllerFuture = null
         controller?.removeListener(listener)
         controller?.release()
         controller = null
         scope.cancel()
+    }
+
+    companion object {
+        /// بناء عنصر التشغيل من الدرس — يستعمله أيضاً استئناف الجلسة في `PlaybackService`.
+        fun mediaItemFor(lesson: Lesson, localPath: String?): MediaItem {
+            val uri = if (localPath != null) Uri.fromFile(File(localPath)) else Uri.parse(lesson.audioUrl)
+            return MediaItem.Builder()
+                .setMediaId(lesson.id)
+                .setUri(uri)
+                .setMediaMetadata(
+                    MediaMetadata.Builder()
+                        .setTitle(lesson.displayTitle)
+                        .setArtist(lesson.speaker.ifBlank { "منبر ادكصهك" })
+                        .setIsPlayable(true)
+                        .build(),
+                )
+                .build()
+        }
     }
 }

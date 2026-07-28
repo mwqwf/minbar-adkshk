@@ -82,6 +82,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -131,10 +132,17 @@ fun PlayerScreen(
     var sleepSheet by remember { mutableStateOf(false) }
 
     // بدء التشغيل عند فتح درس من رابط «لحظة» أو حين لا يكون الدرس فعّالاً.
+    // موضع «اللحظة» يُستهلك مرة واحدة ثم يُزال من المسار، كي لا يعيد الرجوع
+    // أو التدوير التشغيل من الثانية المشارَكة.
+    var startConsumed by rememberSaveable(lesson.id) { mutableStateOf(false) }
     LaunchedEffect(lesson.id, startAtMs) {
         if (startAtMs != null) {
-            vm.playback.play(lesson, listOf(lesson) + vm.content.similarTo(lesson), startAtMs, restart = true)
-        } else if (playback.mediaId != lesson.id) {
+            if (!startConsumed) {
+                startConsumed = true
+                vm.playback.play(lesson, listOf(lesson) + vm.content.similarTo(lesson), startAtMs, restart = true)
+                vm.replaceRoute(Route.Lesson(lesson.id))
+            }
+        } else if (!startConsumed && playback.mediaId != lesson.id) {
             vm.playback.play(lesson, listOf(lesson) + vm.content.similarTo(lesson))
         }
     }

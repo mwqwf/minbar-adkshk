@@ -142,7 +142,12 @@ class SubmissionRepository private constructor(context: Context) {
                         status = document.getString("status").orEmpty().ifBlank { "pending" },
                         rejectReason = document.getString("rejectReason").orEmpty(),
                         storagePath = document.getString("storagePath").orEmpty(),
-                        createdAtMs = (document.get("createdAt") as? Timestamp)?.toDate()?.time ?: 0L,
+                        // الخادم يكتب createdAt نصاً ISO مع createdAtTs/createdAtMs — نقرأ المتاح.
+                        createdAtMs = document.getLong("createdAtMs")
+                            ?: (document.get("createdAtTs") as? Timestamp)?.toDate()?.time
+                            ?: document.getString("createdAt")
+                                ?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
+                            ?: 0L,
                         decidedAtMs = (document.get("decidedAtTs") as? Timestamp)?.toDate()?.time
                             ?: document.getString("decidedAt")
                                 ?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }

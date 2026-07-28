@@ -7,7 +7,6 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -33,7 +32,6 @@ import androidx.compose.material.icons.filled.Policy
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
@@ -47,55 +45,71 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.ali.menbaradkshk.data.Category
-import com.ali.menbaradkshk.data.Subcategory
-import com.ali.menbaradkshk.data.SubmissionDraft
-import com.ali.menbaradkshk.data.SubmissionRepository
 import com.ali.menbaradkshk.util.AudioMerger
-import com.ali.menbaradkshk.util.Mp3FormatException
 import com.ali.menbaradkshk.util.smartTitleFromFileName
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.File
 
-private data class PickedFile(val uri: Uri, val name: String)
+data class PickedFile(val uri: Uri, val name: String)
+
+/// حافظ قائمة الملفات المختارة عبر التدوير: uri + الاسم لكل ملف بالتسلسل.
+private val pickedFilesSaver = listSaver<SnapshotStateList<PickedFile>, String>(
+    save = { list -> list.flatMap { listOf(it.uri.toString(), it.name) } },
+    restore = { flat ->
+        mutableStateListOf<PickedFile>().apply {
+            flat.chunked(2).forEach { pair ->
+                if (pair.size == 2) add(PickedFile(Uri.parse(pair[0]), pair[1]))
+            }
+        }
+    },
+)
 
 /// 📤 «شارك درساً» — النقل الأمين لـ contribute_screen.dart:
 /// عدّة ملفات MP3 تُدمج محلياً بالترتيب المختار في درس واحد قبل الرفع.
 @Composable
 fun ContributeScreen(vm: AppViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val scope = rememberCoroutineScope()
     val content by vm.content.state.collectAsState()
+    val contribution by vm.contribution.collectAsState()
 
-    val files = remember { mutableStateListOf<PickedFile>() }
-    var title by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf(vm.store.submitterName()) }
-    var note by remember { mutableStateOf("") }
-    var category by remember { mutableStateOf<Category?>(null) }
-    var subcategory by remember { mutableStateOf<Subcategory?>(null) }
-    var rightsConfirmed by remember { mutableStateOf(false) }
-    var policyAccepted by remember { mutableStateOf(false) }
-    var submitting by remember { mutableStateOf(false) }
-    var merging by remember { mutableStateOf(false) }
-    var progress by remember { mutableIntStateOf(0) }
-    var error by remember { mutableStateOf("") }
-    var policyDialog by remember { mutableStateOf(false) }
-    var successDialog by remember { mutableStateOf(false) }
+    val files = rememberSaveable(saver = pickedFilesSaver) { mutableStateListOf<PickedFile>() }
+    var title by rememberSaveable { mutableStateOf("") }
+    var name by rememberSaveable { mutableStateOf(vm.store.submitterName()) }
+    var note by rememberSaveable { mutableStateOf("") }
+    var categoryId by rememberSaveable { mutableStateOf("") }
+    var subcategoryId by rememberSaveable { mutableStateOf("") }
+    var rightsConfirmed by rememberSaveable { mutableStateOf(false) }
+    var policyAccepted by rememberSaveable { mutableStateOf(false) }
+    var policyDialog by rememberSaveable { mutableStateOf(false) }
+    var formError by rememberSaveable { mutableStateOf("") }
+
+    // حالة الرفع تأتي من الـViewModel كي لا يلغيها التدوير.
+    val submitting = contribution.submitting
+    val merging = contribution.merging
+    val progress = contribution.progress
+    val error = formError.ifEmpty { contribution.error }
+
+    // عند فتح الشاشة من جديد تُنظَّف نتيجة رفعٍ سابق (لا تُنظَّف عند التدوير).
+    var sessionStarted by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (!sessionStarted) {
+            sessionStarted = true
+            if (!vm.contribution.value.submitting) vm.clearContributionState()
+        }
+    }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
@@ -114,11 +128,11 @@ fun ContributeScreen(vm: AppViewModel) {
         if (combined.size > 1) {
             val bad = combined.firstOrNull { !AudioMerger.isMp3(it.name) }
             if (bad != null) {
-                error = "لدمج عدة ملفات يجب أن تكون جميعها MP3 — «${bad.name}» ليس كذلك."
+                formError = "لدمج عدة ملفات يجب أن تكون جميعها MP3 — «${bad.name}» ليس كذلك."
                 return@rememberLauncherForActivityResult
             }
         }
-        error = if (combined.size > AudioMerger.maxFiles) {
+        formError = if (combined.size > AudioMerger.maxFiles) {
             "الحد الأقصى ${AudioMerger.maxFiles} ملفات للدرس الواحد — أُبقي أولها."
         } else {
             ""
@@ -131,6 +145,8 @@ fun ContributeScreen(vm: AppViewModel) {
     }
 
     val categories = content.categories
+    val category = content.categoryById[categoryId]
+    val subcategory = content.subcategoryById[subcategoryId]
     val subsForCategory = category?.let { chosen ->
         content.subcategories.filter { it.categoryId == chosen.id }
     }.orEmpty()
@@ -146,72 +162,20 @@ fun ContributeScreen(vm: AppViewModel) {
 
     fun submit() {
         if (!canSubmit) {
-            error = "أكمل الحقول المطلوبة، ثم أكّد حقك في النشر والموافقة على ضوابط المحتوى."
+            formError = "أكمل الحقول المطلوبة، ثم أكّد حقك في النشر والموافقة على ضوابط المحتوى."
             return
         }
         val cat = category ?: return
         val sub = subcategory ?: return
-        scope.launch {
-            submitting = true
-            merging = false
-            progress = 0
-            error = ""
-            var mergedTemp: File? = null
-            try {
-                // ملف واحد يُرفع كما هو؛ أكثر يُدمج محلياً أولاً ثم يُرفع الناتج.
-                val (uploadUri, uploadName) = if (files.size == 1) {
-                    files.single().uri to files.single().name
-                } else {
-                    var total = 0L
-                    for (file in files) {
-                        total += context.contentResolver.openAssetFileDescriptor(file.uri, "r")
-                            ?.use { it.length } ?: 0L
-                    }
-                    if (total > SubmissionRepository.MAX_FILE_BYTES) error("file_too_large")
-                    merging = true
-                    val timestamp = System.currentTimeMillis()
-                    mergedTemp = withContext(Dispatchers.IO) {
-                        val cache = File(context.cacheDir, "merge_$timestamp").apply { mkdirs() }
-                        val locals = files.mapIndexed { index, picked ->
-                            File(cache, "part_$index.mp3").also { target ->
-                                context.contentResolver.openInputStream(picked.uri)!!.use { input ->
-                                    target.outputStream().use(input::copyTo)
-                                }
-                            }
-                        }
-                        AudioMerger.mergeMp3(locals, File(cache, "merged_$timestamp.mp3").absolutePath)
-                            .also { locals.forEach(File::delete) }
-                    }
-                    merging = false
-                    Uri.fromFile(mergedTemp) to "merged_$timestamp.mp3"
-                }
-                vm.submissions.submit(
-                    SubmissionDraft(
-                        audioUri = uploadUri,
-                        fileName = uploadName,
-                        title = title,
-                        category = cat,
-                        subcategory = sub,
-                        submitterName = name,
-                        note = note,
-                        rightsConfirmed = rightsConfirmed,
-                        contentPolicyAccepted = policyAccepted,
-                    ),
-                ) { progress = it }
-                successDialog = true
-            } catch (failure: Throwable) {
-                merging = false
-                error = when {
-                    failure is Mp3FormatException -> "تعذّر دمج الملفات — تأكد أنها ملفات MP3 سليمة."
-                    failure.message?.contains("file_too_large") == true ->
-                        "الحجم الكلي أكبر من الحدّ المسموح (100MB)."
-                    else -> "تعذّر إرسال المساهمة. تحقق من اتصالك وحاول مجدداً."
-                }
-            } finally {
-                mergedTemp?.delete()
-                submitting = false
-            }
-        }
+        formError = ""
+        vm.submitContribution(
+            files = files.toList(),
+            title = title,
+            category = cat,
+            subcategory = sub,
+            submitterName = name,
+            note = note,
+        )
     }
 
     Column(
@@ -336,8 +300,8 @@ fun ContributeScreen(vm: AppViewModel) {
                     DropdownMenuItem(
                         text = { Text(item.name) },
                         onClick = {
-                            category = item
-                            subcategory = null
+                            categoryId = item.id
+                            subcategoryId = ""
                             categoryMenu = false
                         },
                     )
@@ -364,7 +328,7 @@ fun ContributeScreen(vm: AppViewModel) {
                     DropdownMenuItem(
                         text = { Text(item.name) },
                         onClick = {
-                            subcategory = item
+                            subcategoryId = item.id
                             subcategoryMenu = false
                         },
                     )
@@ -457,9 +421,14 @@ fun ContributeScreen(vm: AppViewModel) {
             },
         )
     }
-    if (successDialog) {
+    if (contribution.done) {
+        val close = {
+            vm.clearContributionState()
+            vm.back()
+            Unit
+        }
         AlertDialog(
-            onDismissRequest = { successDialog = false; vm.back() },
+            onDismissRequest = close,
             icon = { Icon(Icons.Filled.MarkEmailRead, null, tint = GreenBrand, modifier = Modifier.size(40.dp)) },
             title = { Text("وصل طلبك للمشرفين") },
             text = {
@@ -469,7 +438,7 @@ fun ContributeScreen(vm: AppViewModel) {
                 )
             },
             confirmButton = {
-                TextButton(onClick = { successDialog = false; vm.back() }) { Text("حسناً") }
+                TextButton(onClick = close) { Text("حسناً") }
             },
         )
     }

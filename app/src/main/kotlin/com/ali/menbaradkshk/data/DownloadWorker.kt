@@ -40,18 +40,23 @@ object DownloadScheduler {
     /// وما دونه → عمل خلفية عادي. يسقط تلقائياً إلى WorkManager إن تعذّرت
     /// جدولة وظيفة UIDT (مثلاً حين يُستدعى والتطبيق في الخلفية).
     fun enqueue(context: Context) {
+        // علم «واي فاي فقط» محفوظ مع الطابور نفسه ليطبَّق على الناقل الفعلي.
+        val wifiOnly = LocalStore.get(context).downloadQueueWifiOnly()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            if (scheduleUserInitiated(context)) return
+            if (scheduleUserInitiated(context, wifiOnly)) return
         }
-        enqueueBackgroundWork(context)
+        enqueueBackgroundWork(context, wifiOnly)
     }
 
     @androidx.annotation.RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-    private fun scheduleUserInitiated(context: Context): Boolean = runCatching {
+    private fun scheduleUserInitiated(context: Context, wifiOnly: Boolean): Boolean = runCatching {
         val scheduler = context.getSystemService(JobScheduler::class.java) ?: return false
         val network = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            .apply {
+                if (wifiOnly) addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+            }
             .build()
         val info = JobInfo.Builder(
             JOB_ID,
@@ -69,10 +74,14 @@ object DownloadScheduler {
         scheduler.schedule(info) == JobScheduler.RESULT_SUCCESS
     }.getOrDefault(false)
 
-    private fun enqueueBackgroundWork(context: Context) {
+    private fun enqueueBackgroundWork(context: Context, wifiOnly: Boolean) {
         val request = OneTimeWorkRequestBuilder<LessonDownloadWorker>()
             .setConstraints(
-                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
+                Constraints.Builder()
+                    .setRequiredNetworkType(
+                        if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED,
+                    )
+                    .build(),
             )
             .setBackoffCriteria(BackoffPolicy.LINEAR, 10, TimeUnit.SECONDS)
             .build()

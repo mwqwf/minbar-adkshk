@@ -228,14 +228,16 @@ class LocalStore private constructor(context: Context) {
         setIntMap(KEY_DURATIONS, values)
     }
 
-    fun shouldCountView(lessonId: String): Boolean {
+    /// قراءة فقط: العلامة تُكتب بـ[markViewCounted] بعد نجاح الكتابة للخادم فقط،
+    /// كي لا تضيع المشاهدة نهائياً عند فشل النداء (الخادم يمنع التكرار بنفسه).
+    fun isViewCountedToday(lessonId: String): Boolean {
         if (lessonId.isBlank()) return false
-        val values = jsonObject(KEY_VIEW_COUNTED)
-        val today = todayKey()
-        if (values.optString(lessonId) == today) return false
-        values.put(lessonId, today)
-        putJson(KEY_VIEW_COUNTED, values)
-        return true
+        return jsonObject(KEY_VIEW_COUNTED).optString(lessonId) == todayKey()
+    }
+
+    fun markViewCounted(lessonId: String) {
+        if (lessonId.isBlank()) return
+        putJson(KEY_VIEW_COUNTED, jsonObject(KEY_VIEW_COUNTED).put(lessonId, todayKey()))
     }
 
     fun favoriteIds(): List<String> = stringList(KEY_FAVORITES)
@@ -357,35 +359,55 @@ class LocalStore private constructor(context: Context) {
     fun markHintSeen(key: String) = write { putBoolean("hint_$key", true) }
 
     // ---- طابور التحميل الخلفي (يُعالَج عبر WorkManager ويصمد لإغلاق التطبيق) ----
+    /// قفل يحمي دورة قراءة-تعديل-كتابة الطابور من التزامن بين الخيوط.
+    private val queueLock = Any()
+
     fun downloadQueue(): List<String> = stringList("download_queue")
-    fun addToDownloadQueue(ids: List<String>, label: String) {
-        val current = downloadQueue().toMutableList()
-        val added = ids.filter { it !in current }
-        if (added.isEmpty()) return
-        current += added
-        write {
-            putString("download_queue", JSONArray(current).toString())
-            putString("download_queue_label", label)
-            putLong("download_queue_total", (downloadQueueTotal() + added.size).toLong())
+
+    /// [wifiOnly] يُحفظ مع الطابور ليطبّقه الناقل الفعلي (دفعات التحميل التلقائي).
+    fun addToDownloadQueue(ids: List<String>, label: String, wifiOnly: Boolean = false) {
+        synchronized(queueLock) {
+            val current = downloadQueue().toMutableList()
+            val added = ids.filter { it !in current }
+            if (added.isEmpty()) return
+            current += added
+            write {
+                putString("download_queue", JSONArray(current).toString())
+                putString("download_queue_label", label)
+                putLong("download_queue_total", (downloadQueueTotal() + added.size).toLong())
+                putBoolean("download_queue_wifi_only", wifiOnly)
+            }
         }
     }
 
     fun removeFromDownloadQueue(id: String) {
-        val current = downloadQueue().toMutableList()
-        if (!current.remove(id)) return
-        write {
-            putString("download_queue", JSONArray(current).toString())
-            if (current.isEmpty()) putLong("download_queue_total", 0L)
+        synchronized(queueLock) {
+            val current = downloadQueue().toMutableList()
+            if (!current.remove(id)) return
+            write {
+                putString("download_queue", JSONArray(current).toString())
+                if (current.isEmpty()) putLong("download_queue_total", 0L)
+            }
         }
     }
 
-    fun clearDownloadQueue() = write {
+    fun clearDownloadQueue() = synchronized(queueLock) { clearQueueLocked() }
+
+    /// يمسح الطابور فقط إن كان فارغاً فعلاً، كي لا تُبتلع دفعة أُضيفت أثناء
+    /// انتهاء المعالج.
+    fun clearDownloadQueueIfEmpty() = synchronized(queueLock) {
+        if (downloadQueue().isEmpty()) clearQueueLocked()
+    }
+
+    private fun clearQueueLocked() = write {
         remove("download_queue")
+        remove("download_queue_wifi_only")
         putLong("download_queue_total", 0L)
     }
 
     fun downloadQueueLabel(): String = string("download_queue_label")
     fun downloadQueueTotal(): Int = long("download_queue_total").toInt()
+    fun downloadQueueWifiOnly(): Boolean = bool("download_queue_wifi_only")
 
     fun wardHour(): Int = long(KEY_WARD_HOUR, -1L).toInt()
     fun wardMinute(): Int = long(KEY_WARD_MINUTE, 0L).toInt()

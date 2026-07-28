@@ -68,7 +68,7 @@ class DownloadQueueProcessor(private val context: Context) {
         }
 
         downloads.queueState.value = null
-        store.clearDownloadQueue()
+        store.clearDownloadQueueIfEmpty()
         showDone(
             if (failures == 0) "اكتمل تحميل الدروس للاستماع دون إنترنت."
             else "اكتمل التحميل مع تعذّر $failures درساً.",

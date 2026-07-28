@@ -447,17 +447,21 @@ private fun notificationIcon(type: String): ImageVector = when (type) {
 /// لا متناهٍ من الإشعارات القديمة (طلب المستخدم 2026-07-23).
 private const val NOTIFICATIONS_WINDOW_MS = 30L * 24 * 60 * 60 * 1_000
 
+/// الفلتر المعتمد للإشعارات المعروضة — تستعمله الشاشة وشارة الجرس معاً
+/// كي لا يعدّ العدّاد ما لا يظهر فعلاً.
+fun visibleNotifications(vm: AppViewModel, all: List<NotificationItem>): List<NotificationItem> {
+    val dismissed = vm.store.dismissedNotificationIds().toSet()
+    val cutoff = System.currentTimeMillis() - NOTIFICATIONS_WINDOW_MS
+    return all.filterNot { it.id in dismissed }
+        .filter { it.createdAtMs >= cutoff }
+}
+
 @Composable
 fun NotificationsScreen(vm: AppViewModel) {
     val revision by vm.store.revision.collectAsState()
     val all by vm.notifications.collectAsState()
     val content by vm.content.state.collectAsState()
-    val items = remember(all, revision) {
-        val dismissed = vm.store.dismissedNotificationIds().toSet()
-        val cutoff = System.currentTimeMillis() - NOTIFICATIONS_WINDOW_MS
-        all.filterNot { it.id in dismissed }
-            .filter { it.createdAtMs >= cutoff }
-    }
+    val items = remember(all, revision) { visibleNotifications(vm, all) }
 
     fun openTarget(n: NotificationItem) {
         when (n.type) {

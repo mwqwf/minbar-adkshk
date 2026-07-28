@@ -10,6 +10,8 @@ import androidx.media3.session.MediaSessionService
 import com.ali.menbaradkshk.MainActivity
 import com.ali.menbaradkshk.data.ContentRepository
 import com.ali.menbaradkshk.data.LocalStore
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -36,7 +38,6 @@ class PlaybackService : MediaSessionService() {
             addListener(
                 object : Player.Listener {
                     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                        persistPosition()
                         trackedLessonId = mediaItem?.mediaId.orEmpty()
                         lastTrackedPositionMs = currentPosition.coerceAtLeast(0L)
                         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
@@ -55,6 +56,21 @@ class PlaybackService : MediaSessionService() {
                                 ContentRepository.get(this@PlaybackService)
                                     .incrementView(trackedLessonId)
                             }
+                        }
+                    }
+
+                    /// موضع الدرس المغادَر يُحفظ من oldPosition لأن المشغّل صار على الجديد.
+                    override fun onPositionDiscontinuity(
+                        oldPosition: Player.PositionInfo,
+                        newPosition: Player.PositionInfo,
+                        reason: Int,
+                    ) {
+                        val oldId = oldPosition.mediaItem?.mediaId.orEmpty()
+                        if (oldId.isBlank() || oldId == newPosition.mediaItem?.mediaId) return
+                        if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) {
+                            store.markCompleted(oldId)
+                        } else {
+                            store.setPosition(oldId, oldPosition.positionMs)
                         }
                     }
 
@@ -78,6 +94,7 @@ class PlaybackService : MediaSessionService() {
         )
         mediaSession = MediaSession.Builder(this, player)
             .setSessionActivity(activityIntent)
+            .setCallback(resumptionCallback)
             .build()
         trackingJob = scope.launch {
             while (isActive) {
@@ -94,6 +111,30 @@ class PlaybackService : MediaSessionService() {
                     persistPosition()
                 }
             }
+        }
+    }
+
+    /// استئناف التشغيل بعد موت العملية (زر التشغيل في الودجت/السماعة).
+    private val resumptionCallback = object : MediaSession.Callback {
+        override fun onPlaybackResumption(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            val lessonId = store.recentPlayedIds().firstOrNull().orEmpty()
+            val lesson = store.lessons().firstOrNull { it.id == lessonId }
+            val local = lessonId.takeIf(String::isNotBlank)?.let(store::localAudioPath)
+            if (lesson == null || (local == null && lesson.audioUrl.isBlank())) {
+                return Futures.immediateFailedFuture(
+                    UnsupportedOperationException("لا يوجد درس سابق للاستئناف"),
+                )
+            }
+            return Futures.immediateFuture(
+                MediaSession.MediaItemsWithStartPosition(
+                    listOf(PlaybackController.mediaItemFor(lesson, local)),
+                    0,
+                    store.position(lessonId),
+                ),
+            )
         }
     }
 

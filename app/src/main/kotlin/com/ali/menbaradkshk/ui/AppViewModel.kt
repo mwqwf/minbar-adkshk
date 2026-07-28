@@ -9,10 +9,14 @@ import com.ali.menbaradkshk.data.DownloadRepository
 import com.ali.menbaradkshk.data.LocalStore
 import com.ali.menbaradkshk.data.NotificationItem
 import com.ali.menbaradkshk.data.NotificationsRepository
+import com.ali.menbaradkshk.data.SubmissionDraft
 import com.ali.menbaradkshk.data.SubmissionRepository
 import com.ali.menbaradkshk.media.PlaybackController
 import com.ali.menbaradkshk.notification.BackgroundScheduler
+import com.ali.menbaradkshk.util.AudioMerger
+import com.ali.menbaradkshk.util.Mp3FormatException
 import com.google.firebase.messaging.FirebaseMessaging
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -21,6 +25,8 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
+import java.io.File
 
 sealed interface Route {
     // تبويبات الشريط السفلي الخمسة.
@@ -44,6 +50,15 @@ sealed interface Route {
     data object Notifications : Route
 }
 
+/// حالة رفع المساهمة — تعيش في الـViewModel كي لا يلغيها تدوير الشاشة.
+data class ContributionState(
+    val submitting: Boolean = false,
+    val merging: Boolean = false,
+    val progress: Int = 0,
+    val error: String = "",
+    val done: Boolean = false,
+)
+
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     val store = LocalStore.get(application)
     val content = ContentRepository.get(application)
@@ -63,6 +78,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
+
+    /// حالة شاشة «شارك درساً» (دمج/رفع/خطأ/نجاح).
+    private val _contribution = MutableStateFlow(ContributionState())
+    val contribution: StateFlow<ContributionState> = _contribution.asStateFlow()
 
     /// ورقة الإعدادات السفلية (زر ⋮ في الشريط العلوي — نمط الأصل).
     private val _showSettings = MutableStateFlow(false)
@@ -116,6 +135,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             playback.play(lesson, playlist.ifEmpty { listOf(lesson) })
         }
         open(Route.Lesson(lesson.id))
+    }
+
+    /// يستبدل المسار الحالي دون لمس مكدّس الرجوع — لاستهلاك معاملات تُنفَّذ
+    /// مرة واحدة فقط (مثل `startAtMs` القادم من رابط «لحظة»).
+    fun replaceRoute(route: Route) {
+        _route.value = route
     }
 
     fun openRoot(route: Route) {
@@ -222,6 +247,84 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setAutoDownloadWifiOnly(enabled: Boolean) {
         store.setAutoDownloadWifiOnly(enabled)
         BackgroundScheduler.scheduleAutoDownload(getApplication())
+    }
+
+    /// يدمج الملفات (عند تعددها) ثم يرفع المساهمة داخل `viewModelScope`،
+    /// فيستمر الرفع رغم تدوير الشاشة أو إعادة إنشاء النشاط.
+    fun submitContribution(
+        files: List<PickedFile>,
+        title: String,
+        category: com.ali.menbaradkshk.data.Category,
+        subcategory: com.ali.menbaradkshk.data.Subcategory,
+        submitterName: String,
+        note: String,
+    ) {
+        if (_contribution.value.submitting || files.isEmpty()) return
+        _contribution.value = ContributionState(submitting = true)
+        viewModelScope.launch {
+            val context = getApplication<Application>()
+            var mergedTemp: File? = null
+            try {
+                // ملف واحد يُرفع كما هو؛ أكثر يُدمج محلياً أولاً ثم يُرفع الناتج.
+                val (uploadUri, uploadName) = if (files.size == 1) {
+                    files.single().uri to files.single().name
+                } else {
+                    var total = 0L
+                    for (file in files) {
+                        total += context.contentResolver.openAssetFileDescriptor(file.uri, "r")
+                            ?.use { it.length } ?: 0L
+                    }
+                    if (total > SubmissionRepository.MAX_FILE_BYTES) error("file_too_large")
+                    _contribution.value = _contribution.value.copy(merging = true)
+                    val timestamp = System.currentTimeMillis()
+                    mergedTemp = withContext(Dispatchers.IO) {
+                        val cache = File(context.cacheDir, "merge_$timestamp").apply { mkdirs() }
+                        val locals = files.mapIndexed { index, picked ->
+                            File(cache, "part_$index.mp3").also { target ->
+                                context.contentResolver.openInputStream(picked.uri)!!.use { input ->
+                                    target.outputStream().use(input::copyTo)
+                                }
+                            }
+                        }
+                        AudioMerger.mergeMp3(locals, File(cache, "merged_$timestamp.mp3").absolutePath)
+                            .also { locals.forEach(File::delete) }
+                    }
+                    _contribution.value = _contribution.value.copy(merging = false)
+                    Uri.fromFile(mergedTemp) to "merged_$timestamp.mp3"
+                }
+                submissions.submit(
+                    SubmissionDraft(
+                        audioUri = uploadUri,
+                        fileName = uploadName,
+                        title = title,
+                        category = category,
+                        subcategory = subcategory,
+                        submitterName = submitterName,
+                        note = note,
+                        rightsConfirmed = true,
+                        contentPolicyAccepted = true,
+                    ),
+                ) { percent ->
+                    _contribution.value = _contribution.value.copy(progress = percent)
+                }
+                _contribution.value = ContributionState(done = true)
+            } catch (failure: Throwable) {
+                _contribution.value = ContributionState(
+                    error = when {
+                        failure is Mp3FormatException -> "تعذّر دمج الملفات — تأكد أنها ملفات MP3 سليمة."
+                        failure.message?.contains("file_too_large") == true ->
+                            "الحجم الكلي أكبر من الحدّ المسموح (100MB)."
+                        else -> "تعذّر إرسال المساهمة. تحقق من اتصالك وحاول مجدداً."
+                    },
+                )
+            } finally {
+                mergedTemp?.delete()
+            }
+        }
+    }
+
+    fun clearContributionState() {
+        _contribution.value = ContributionState()
     }
 
     fun showMessage(value: String) {

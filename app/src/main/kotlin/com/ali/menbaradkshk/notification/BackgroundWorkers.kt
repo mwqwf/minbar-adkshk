@@ -95,7 +95,11 @@ class AutoDownloadWorker(
         if (missing.isEmpty()) return Result.success()
         // يمرّ عبر طابور التحميل الخلفي نفسه ليستفيد من الاستئناف عند
         // انقطاع الشبكة وإعادة المحاولة التلقائية وإشعار التقدّم.
-        store.addToDownloadQueue(missing, if (target == "main") "خلاصتك المقترحة" else "أحدث الدروس")
+        store.addToDownloadQueue(
+            missing,
+            if (target == "main") "خلاصتك المقترحة" else "أحدث الدروس",
+            wifiOnly = store.autoDownloadWifiOnly(),
+        )
         com.ali.menbaradkshk.data.DownloadScheduler.enqueue(applicationContext)
         return Result.success()
     }

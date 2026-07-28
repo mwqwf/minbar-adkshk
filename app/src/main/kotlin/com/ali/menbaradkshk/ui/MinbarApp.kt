@@ -243,7 +243,7 @@ private fun NotificationBell(vm: AppViewModel) {
     val revision by vm.store.revision.collectAsState()
     val unread = remember(items, revision) {
         val lastSeen = vm.store.notificationLastSeenMs()
-        items.count { it.createdAtMs > lastSeen }
+        visibleNotifications(vm, items).count { it.createdAtMs > lastSeen }
     }
     IconButton(onClick = { vm.open(Route.Notifications) }) {
         if (unread > 0) {

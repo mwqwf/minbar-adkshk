@@ -258,12 +258,12 @@ class ContentRepository private constructor(context: Context) {
     }
 
     suspend fun incrementView(lessonId: String) {
-        if (!store.shouldCountView(lessonId)) return
+        if (lessonId.isBlank() || store.isViewCountedToday(lessonId)) return
         runCatching {
             ensureSignedIn()
             functions.getHttpsCallable("incrementLessonView")
                 .call(mapOf("lessonId" to lessonId)).await()
-        }
+        }.onSuccess { store.markViewCounted(lessonId) }
     }
 
     suspend fun sendFeedback(lessonId: String, type: String, note: String) {

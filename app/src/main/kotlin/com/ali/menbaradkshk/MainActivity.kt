@@ -13,6 +13,7 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.core.content.ContextCompat
@@ -40,10 +41,14 @@ class MainActivity : ComponentActivity() {
         )
         viewModel.handleDeepLink(intent?.data)
         setContent {
+            // القراءة الفعلية لـrevision داخل النطاق شرط إعادة التركيب عند
+            // تغيير السمة أو حجم الخط من الإعدادات.
             val revision by viewModel.store.revision.collectAsState()
+            val themeMode = remember(revision) { viewModel.store.themeMode() }
+            val fontScale = remember(revision) { viewModel.store.fontScale() }
             MinbarTheme(
-                themeMode = viewModel.store.themeMode(),
-                fontScale = viewModel.store.fontScale(),
+                themeMode = themeMode,
+                fontScale = fontScale,
             ) {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                     MinbarApp(viewModel, ::requestNotificationPermission)

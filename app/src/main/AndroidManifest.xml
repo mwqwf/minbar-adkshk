@@ -31,10 +31,12 @@
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="minbar_content" />
 
-        <!-- أندرويد أوتو: التحكّم بالتشغيل من شاشة السيارة. -->
-        <meta-data
-            android:name="com.google.android.gms.car.application"
-            android:resource="@xml/automotive_app_desc" />
+        <!-- ⛔ أندرويد أوتو مُزال عمداً (2026-07-29): رفضت Google النشر بسبب
+             «التطبيق لا يشغّل الصوت» على شاشة السيارة، والتطبيق لا يستهدف
+             الاستعمال داخل السيارة أصلاً. الحلّ الذي تنصّ عليه رسالة Google
+             نفسها هو حذف إعلان أوتو من المانيفست — فحُذف meta-data
+             com.google.android.gms.car.application وملف automotive_app_desc.
+             لا تُعِده إلا مع تنفيذ MediaBrowserService كامل ومُختبَر في السيارة. -->
 
         <!-- ودجت الشاشة الرئيسية: آخر درس + تشغيل/إيقاف. -->
         <receiver
@@ -56,6 +58,19 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- «المشاركة إلى منبر»: استقبال صوتيات من أي تطبيق خارجي
+                 لفتح نموذج «شارك درساً» معبّأً بها مباشرة. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="audio/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="audio/*" />
             </intent-filter>
 
             <intent-filter android:autoVerify="true">
@@ -83,9 +98,12 @@
             android:name=".media.PlaybackService"
             android:exported="true"
             android:foregroundServiceType="mediaPlayback">
+            <!-- MediaSessionService وحده: هو ما يربطه المتحكّم داخل التطبيق.
+                 حُذف android.media.browse.MediaBrowserService لأنّه المدخل
+                 الذي تكتشف به السيارة/المتصفّحات الخارجيّة التطبيق كمصدر
+                 وسائط، وهو سبب فحص أوتو الذي رفض النشر. -->
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaSessionService" />
-                <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
 

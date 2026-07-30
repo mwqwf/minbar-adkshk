@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- تعريف التطبيق لأندرويد أوتو: تشغيل الوسائط من شاشة السيارة. -->
-<automotiveApp>
-    <uses name="media" />
-</automotiveApp>

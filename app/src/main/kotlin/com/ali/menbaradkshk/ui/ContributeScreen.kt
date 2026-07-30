@@ -111,16 +111,10 @@ fun ContributeScreen(vm: AppViewModel) {
         }
     }
 
-    val picker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments(),
-    ) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        val picked = uris.map { uri ->
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            PickedFile(uri, displayNameOf(context, uri))
-        }
+    /// يضمّ ملفات جديدة (من محدّد النظام أو من مشاركة خارجية) إلى القائمة،
+    /// مع فحص شروط الدمج والحدّ الأقصى واقتراح العنوان من اسم أول ملف.
+    fun acceptFiles(picked: List<PickedFile>) {
+        if (picked.isEmpty()) return
         val existing = files.map { it.uri }.toSet()
         val combined = files + picked.filter { it.uri !in existing }
 
@@ -129,7 +123,7 @@ fun ContributeScreen(vm: AppViewModel) {
             val bad = combined.firstOrNull { !AudioMerger.isMp3(it.name) }
             if (bad != null) {
                 formError = "لدمج عدة ملفات يجب أن تكون جميعها MP3 — «${bad.name}» ليس كذلك."
-                return@rememberLauncherForActivityResult
+                return
             }
         }
         formError = if (combined.size > AudioMerger.maxFiles) {
@@ -141,6 +135,44 @@ fun ContributeScreen(vm: AppViewModel) {
         files.addAll(combined.take(AudioMerger.maxFiles))
         if (title.trim().isEmpty() && files.isNotEmpty()) {
             title = smartTitleFromFileName(files.first().name)
+        }
+    }
+
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        acceptFiles(
+            uris.map { uri ->
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                PickedFile(uri, displayNameOf(context, uri))
+            },
+        )
+    }
+
+    // ملفات وصلت من تطبيق خارجي عبر «المشاركة»: تُدرج فور جاهزيتها،
+    // وتُؤجَّل إن كان رفعٌ جارياً حتى ينتهي فلا يُمَسّ ما يُرفع الآن.
+    val shared by vm.sharedAudio.collectAsState()
+    LaunchedEffect(shared, submitting) {
+        if (submitting) return@LaunchedEffect
+        when {
+            shared.files.isNotEmpty() -> {
+                // مشاركة جديدة بعد رفعٍ ناجح تبدأ نموذجاً نظيفاً بدل التراكم.
+                if (contribution.done) {
+                    vm.clearContributionState()
+                    files.clear()
+                    title = ""
+                }
+                acceptFiles(shared.files)
+                vm.consumeSharedAudio()
+            }
+
+            shared.error.isNotEmpty() -> {
+                formError = shared.error
+                vm.consumeSharedAudio()
+            }
         }
     }
 
@@ -210,6 +242,17 @@ fun ContributeScreen(vm: AppViewModel) {
                 else " إضافة ملفات أخرى (${files.size}/${AudioMerger.maxFiles})",
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (shared.preparing) {
+            Spacer(Modifier.height(10.dp))
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "جارٍ تجهيز الملفات المشارَكة…",
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodyMedium,
             )
         }
         if (files.size > 1) {
@@ -444,7 +487,8 @@ fun ContributeScreen(vm: AppViewModel) {
     }
 }
 
-private fun displayNameOf(context: android.content.Context, uri: Uri): String {
+/// اسم الملف المعروض (يستعمله أيضاً استقبال «المشاركة» في الـViewModel).
+internal fun displayNameOf(context: android.content.Context, uri: Uri): String {
     context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
         val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
         if (index >= 0 && cursor.moveToFirst()) {

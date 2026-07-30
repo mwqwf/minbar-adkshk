@@ -50,6 +50,13 @@ sealed interface Route {
     data object Notifications : Route
 }
 
+/// ملفات صوتية وصلت من تطبيق خارجي عبر «المشاركة»، بانتظار شاشة المساهمة.
+data class SharedAudioState(
+    val preparing: Boolean = false,
+    val files: List<PickedFile> = emptyList(),
+    val error: String = "",
+)
+
 /// حالة رفع المساهمة — تعيش في الـViewModel كي لا يلغيها تدوير الشاشة.
 data class ContributionState(
     val submitting: Boolean = false,
@@ -82,6 +89,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /// حالة شاشة «شارك درساً» (دمج/رفع/خطأ/نجاح).
     private val _contribution = MutableStateFlow(ContributionState())
     val contribution: StateFlow<ContributionState> = _contribution.asStateFlow()
+
+    /// ملفات «المشاركة الخارجية» بانتظار أن تستهلكها شاشة المساهمة.
+    private val _sharedAudio = MutableStateFlow(SharedAudioState())
+    val sharedAudio: StateFlow<SharedAudioState> = _sharedAudio.asStateFlow()
 
     /// ورقة الإعدادات السفلية (زر ⋮ في الشريط العلوي — نمط الأصل).
     private val _showSettings = MutableStateFlow(false)
@@ -247,6 +258,50 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setAutoDownloadWifiOnly(enabled: Boolean) {
         store.setAutoDownloadWifiOnly(enabled)
         BackgroundScheduler.scheduleAutoDownload(getApplication())
+    }
+
+    /// «شارك إلى منبر» من تطبيق خارجي: يفتح نموذج المساهمة فوراً، ثم ينسخ
+    /// الملفات الواردة إلى كاش التطبيق. النسخ مقصود: إذن قراءة `content://`
+    /// القادم من تطبيق آخر مؤقّت ولا يقبل `takePersistableUriPermission`،
+    /// فينتهي مع النيّة وقد يسقط الرفع بعده — النسخة المحليّة تُبقيه سليماً.
+    fun receiveSharedAudio(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        if (_route.value != Route.Contribute) open(Route.Contribute)
+        _sharedAudio.value = SharedAudioState(preparing = true)
+        viewModelScope.launch {
+            val context = getApplication<Application>()
+            val prepared = withContext(Dispatchers.IO) {
+                val dir = File(context.cacheDir, "shared_intake").apply { mkdirs() }
+                // نسخ مشاركات سابقة لم تُستعمل تُحذف بعد يوم كي لا يتضخّم الكاش.
+                val cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000
+                dir.listFiles()?.forEach { old ->
+                    if (old.lastModified() < cutoff) runCatching { old.delete() }
+                }
+                uris.take(AudioMerger.maxFiles).mapNotNull { uri ->
+                    runCatching {
+                        val name = displayNameOf(context, uri)
+                        val safe = name.replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").takeLast(80)
+                        val target = File(dir, "${System.nanoTime()}_$safe")
+                        context.contentResolver.openInputStream(uri)!!.use { input ->
+                            target.outputStream().use(input::copyTo)
+                        }
+                        PickedFile(Uri.fromFile(target), name)
+                    }.getOrNull()
+                }
+            }
+            _sharedAudio.value = if (prepared.isEmpty()) {
+                SharedAudioState(
+                    error = "تعذّرت قراءة الملف المشارَك — اختره من زر اختيار الملفات بالأعلى.",
+                )
+            } else {
+                SharedAudioState(files = prepared)
+            }
+        }
+    }
+
+    /// تستدعيها شاشة المساهمة بعد إدراج الملفات الواردة في قائمتها.
+    fun consumeSharedAudio() {
+        _sharedAudio.value = SharedAudioState()
     }
 
     /// يدمج الملفات (عند تعددها) ثم يرفع المساهمة داخل `viewModelScope`،

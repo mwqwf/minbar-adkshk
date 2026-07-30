@@ -3,6 +3,7 @@ package com.ali.menbaradkshk
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -40,6 +41,8 @@ class MainActivity : ComponentActivity() {
             },
         )
         viewModel.handleDeepLink(intent?.data)
+        // إعادة إنشاء النشاط (تدوير الشاشة) تعيد النيّة نفسها — لا تُلتقط مرّتين.
+        if (savedInstanceState == null) captureShare(intent)
         setContent {
             // القراءة الفعلية لـrevision داخل النطاق شرط إعادة التركيب عند
             // تغيير السمة أو حجم الخط من الإعدادات.
@@ -61,6 +64,45 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         viewModel.handleDeepLink(intent.data)
+        captureShare(intent)
+    }
+
+    /// «مشاركة إلى منبر»: يستخرج روابط الصوت من نيّة SEND / SEND_MULTIPLE
+    /// ويمرّرها إلى الـViewModel ليفتح نموذج «شارك درساً» معبّأً بها.
+    private fun captureShare(intent: Intent?) {
+        if (intent == null) return
+        // حمولة تطبيق آخر قد تكون تالفة أو من نوع غير Uri — لا تُسقط التطبيق.
+        val uris: List<Uri> = runCatching { sharedAudioUris(intent) }.getOrDefault(emptyList())
+        if (uris.isEmpty()) return
+        // تُستهلك النيّة فوراً كي لا تتكرّر الملفات إن عاد النشاط إليها.
+        runCatching { intent.removeExtra(Intent.EXTRA_STREAM) }
+        viewModel.receiveSharedAudio(uris)
+    }
+
+    private fun sharedAudioUris(intent: Intent): List<Uri> {
+        return when (intent.action) {
+            Intent.ACTION_SEND -> {
+                val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                }
+                listOfNotNull(uri)
+            }
+
+            Intent.ACTION_SEND_MULTIPLE -> {
+                val list = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                }
+                list.orEmpty().filterNotNull()
+            }
+
+            else -> emptyList()
+        }
     }
 
     private fun requestNotificationPermission() {

@@ -7,11 +7,13 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -23,6 +25,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.ali.menbaradkshk.ui.AppViewModel
 import com.ali.menbaradkshk.ui.MinbarApp
 import com.ali.menbaradkshk.ui.MinbarTheme
+import com.ali.menbaradkshk.ui.isDarkTheme
 
 class MainActivity : ComponentActivity() {
     private val viewModel: AppViewModel by viewModels()
@@ -49,6 +52,26 @@ class MainActivity : ComponentActivity() {
             val revision by viewModel.store.revision.collectAsState()
             val themeMode = remember(revision) { viewModel.store.themeMode() }
             val fontScale = remember(revision) { viewModel.store.fontScale() }
+            // شريطا النظام يتبعان سمة **التطبيق** لا سمة الجهاز: المستخدم قد
+            // يختار داكناً بينما النظام فاتح، فتصير الأيقونات غير مقروءة لو
+            // تُركت للسلوك التلقائي. والشريط العلوي داكن في السمتين (Teal /
+            // DarkAppBar) فأيقونات الحالة فاتحة دائماً، بينما شريط التنقّل
+            // السفلي يتبع سطح التطبيق. هذا يحلّ محلّ statusBarColor/
+            // navigationBarColor المتوقّفتين في أندرويد 15.
+            val dark = isDarkTheme(themeMode)
+            LaunchedEffect(dark) {
+                enableEdgeToEdge(
+                    statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+                    navigationBarStyle = if (dark) {
+                        SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                    } else {
+                        SystemBarStyle.light(
+                            android.graphics.Color.TRANSPARENT,
+                            android.graphics.Color.TRANSPARENT,
+                        )
+                    },
+                )
+            }
             MinbarTheme(
                 themeMode = themeMode,
                 fontScale = fontScale,

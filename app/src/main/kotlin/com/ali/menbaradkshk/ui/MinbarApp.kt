@@ -36,8 +36,10 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -87,6 +89,26 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
             snackbar.showSnackbar(it)
             vm.consumeMessage()
         }
+    }
+    // فشل التشغيل كان صامتاً خارج شاشة المشغّل (صفوف القوائم/المشغّل المصغّر):
+    // نعرضه عالمياً مع «إعادة المحاولة». شاشة المشغّل لها شريطها الثابت فلا نكرّره.
+    // نعرض الرسالة مرة واحدة لكل خطأ؛ كل محاولة جديدة تُصفّر الخطأ أولاً فيُعاد عرضه.
+    var shownError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(playback.error, route) {
+        val error = playback.error
+        if (error == null) {
+            shownError = null
+            return@LaunchedEffect
+        }
+        if (route is Route.Lesson || error == shownError) return@LaunchedEffect
+        shownError = error
+        val result = snackbar.showSnackbar(
+            message = error,
+            actionLabel = "إعادة المحاولة",
+            withDismissAction = true,
+            duration = SnackbarDuration.Long,
+        )
+        if (result == SnackbarResult.ActionPerformed) vm.playback.retry()
     }
     BackHandler(enabled = !isRoot) { vm.back() }
 
@@ -164,6 +186,8 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                             },
                             onToggle = vm.playback::toggle,
                             onNext = { vm.playback.next() },
+                            onRetry = { vm.playback.retry() },
+                            onDismissError = { vm.playback.clearError() },
                         )
                     }
                     if (isRoot) {

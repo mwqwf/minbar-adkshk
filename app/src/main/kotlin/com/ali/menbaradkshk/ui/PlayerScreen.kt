@@ -258,8 +258,14 @@ fun PlayerScreen(
                 ) {
                     Text(error, Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer)
                     TextButton(onClick = {
-                        vm.playback.clearError()
-                        vm.playback.play(current, listOf(current) + similar, restart = true)
+                        // الدرس المعروض هو المُشغَّل ⇒ retry() يُعيد التهيئة من القائمة
+                        // نفسها (المشغّل في STATE_IDLE بعد الخطأ)؛ وإلّا نبني قائمة جديدة.
+                        if (active) {
+                            vm.playback.retry()
+                        } else {
+                            vm.playback.clearError()
+                            vm.playback.play(current, listOf(current) + similar, restart = true)
+                        }
                     }) { Text("إعادة المحاولة") }
                 }
                 Spacer(Modifier.height(8.dp))

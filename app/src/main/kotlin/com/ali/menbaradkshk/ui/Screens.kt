@@ -203,6 +203,42 @@ private fun androidx.compose.foundation.lazy.LazyListScope.railItem(
     }
 }
 
+/// حالة «القائمة فارغة» مفرّقة إلى ثلاث: أثناء التحميل مؤشّر دوّار، وعند انقطاع
+/// الاتصال رسالة الاتصال مع «إعادة المحاولة»، وغير ذلك رسالة الفراغ الصحيحة —
+/// كي لا يُنسب الفراغ للإنترنت وهو محمّل أصلاً أو ما زال قيد التحميل.
+@Composable
+private fun EmptyOrLoadingState(
+    loading: Boolean,
+    offline: Boolean,
+    offlineMessage: String,
+    emptyMessage: String,
+    onRetry: () -> Unit,
+) {
+    Box(
+        modifier = Modifier.fillMaxWidth().padding(top = 80.dp, start = 24.dp, end = 24.dp),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        when {
+            loading -> CircularProgressIndicator()
+            offline -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    offlineMessage,
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                Spacer(Modifier.height(10.dp))
+                TextButton(onClick = onRetry) { Text("إعادة المحاولة") }
+            }
+
+            else -> Text(
+                emptyMessage,
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        }
+    }
+}
+
 @Composable
 private fun RailHeader(title: String) {
     Text(
@@ -307,14 +343,15 @@ fun CategoryScreen(vm: AppViewModel, categoryId: String, state: ContentState) {
     var certificateFor by remember { mutableStateOf<Subcategory?>(null) }
 
     if (subs.isEmpty()) {
-        Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.TopCenter) {
-            Text(
-                "لا توجد أقسام فرعية في هذا القسم.",
-                textAlign = TextAlign.Center,
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.padding(top = 96.dp),
-            )
-        }
+        EmptyOrLoadingState(
+            loading = state.loading,
+            // رسالة الاتصال لا تصحّ إلا حين لا نسخة محفوظة أصلاً؛ ومع وجود نسخة
+            // يكون الفراغ فراغ قسم لا انقطاع شبكة.
+            offline = state.offline && state.subcategories.isEmpty(),
+            offlineMessage = "يجب الاتصال بالإنترنت أول مرة لتحميل الأقسام. بعد ذلك يمكنك التصفّح دون إنترنت.",
+            emptyMessage = "لا توجد أقسام فرعية في هذا القسم.",
+            onRetry = { vm.refresh(true) },
+        )
         return
     }
 
@@ -585,13 +622,14 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
         }
         if (lessons.isEmpty()) {
             item {
-                Box(Modifier.fillMaxWidth().padding(top = 96.dp, start = 24.dp, end = 24.dp)) {
-                    Text(
-                        "يجب الاتصال بالإنترنت أول مرة لتحميل الدروس. بعد ذلك يمكنك الاستماع دون إنترنت.",
-                        textAlign = TextAlign.Center,
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                }
+                EmptyOrLoadingState(
+                    loading = content.loading,
+                    // مع وجود دروس محفوظة يكون القسم فارغاً فعلاً لا الاتصال منقطعاً.
+                    offline = content.offline && content.lessons.isEmpty(),
+                    offlineMessage = "يجب الاتصال بالإنترنت أول مرة لتحميل الدروس. بعد ذلك يمكنك الاستماع دون إنترنت.",
+                    emptyMessage = "لا توجد دروس في هذا القسم.",
+                    onRetry = { vm.refresh(true) },
+                )
             }
         } else {
             items(ordered, key = { "${it.id}-$revision" }) { lesson ->

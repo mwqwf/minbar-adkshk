@@ -40,6 +40,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -302,6 +303,8 @@ fun MiniPlayer(
     onOpen: () -> Unit,
     onToggle: () -> Unit,
     onNext: () -> Unit,
+    onRetry: () -> Unit = {},
+    onDismissError: () -> Unit = {},
 ) {
     if (state.mediaId.isBlank()) return
     Surface(
@@ -310,6 +313,34 @@ fun MiniPlayer(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
     ) {
         Column {
+            // شريط خطأ ثابت فوق المشغّل: الفشل خارج شاشة المشغّل كان صامتاً تماماً.
+            state.error?.let { error ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.errorContainer)
+                        .padding(start = 12.dp, end = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        error,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    TextButton(onClick = onRetry) { Text("إعادة المحاولة") }
+                    IconButton(onClick = onDismissError) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "إخفاء التنبيه",
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
             if (state.loading) {
                 LinearProgressIndicator(
                     modifier = Modifier.fillMaxWidth().height(2.dp),

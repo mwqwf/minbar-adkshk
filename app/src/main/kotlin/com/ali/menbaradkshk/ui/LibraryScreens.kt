@@ -45,6 +45,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -57,7 +58,9 @@ import androidx.compose.ui.unit.dp
 import com.ali.menbaradkshk.data.Playlist
 import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.formatDuration
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /// صفحة «قوائمي»: تجمع «السجل» و«قوائم التشغيل» بتبويبين — السجل هو
 /// الافتراضي الذي يظهر أولاً (طلب المستخدم 2026-07-23).
@@ -242,6 +245,8 @@ fun PlaylistDetailScreen(vm: AppViewModel, playlistId: String) {
     val lessons = remember(revision, content.lessons) {
         playlist?.lessonIds.orEmpty().mapNotNull(content.lessonById::get)
     }
+    // المدد تُقرأ مرّة واحدة لا مرّة لكل صفّ (كل قراءة تحليل JSON كامل).
+    val durations = remember(revision) { vm.store.durations() }
     if (playlist == null) {
         EmptyState("القائمة غير موجودة", "")
         return
@@ -258,7 +263,7 @@ fun PlaylistDetailScreen(vm: AppViewModel, playlistId: String) {
     }
     LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
         items(lessons, key = { "${it.id}-$revision" }) { lesson ->
-            val duration = vm.store.duration(lesson.id)
+            val duration = lesson.durationMs.takeIf { it > 0L } ?: (durations[lesson.id] ?: 0L)
             Card(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp)) {
                 ListItem(
                     modifier = Modifier.clickable { vm.openPlayer(lesson, lessons) },
@@ -305,9 +310,15 @@ fun DownloadsScreen(vm: AppViewModel) {
     val items = remember(revision, content.lessons) {
         downloadsMap.keys.mapNotNull(content.lessonById::get)
     }
-    val totalBytes = remember(downloadsMap) {
-        downloadsMap.values.sumOf { path -> java.io.File(path).length().coerceAtLeast(0L) }
+    // مسح أحجام الملفات على خيط الإدخال/الإخراج لا داخل التركيب — مفتاحه خريطة
+    // التنزيلات فلا يتكرّر مع نبضات `revision` أثناء التشغيل.
+    val totalBytes by produceState(0L, downloadsMap) {
+        value = withContext(Dispatchers.IO) {
+            downloadsMap.values.sumOf { path -> java.io.File(path).length().coerceAtLeast(0L) }
+        }
     }
+    // مدد الدروس تُقرأ مرّة واحدة لكل تركيب بدل تحليل JSON كامل لكل صفّ.
+    val durations = remember(revision) { vm.store.durations() }
     // تجميع التنزيلات حسب القسم الفرعي (الأحدث تحميلاً يبقى ترتيبه داخل قسمه).
     val grouped = remember(items, content.subcategories) {
         items.groupBy { it.subcategoryId }
@@ -426,7 +437,7 @@ fun DownloadsScreen(vm: AppViewModel) {
                     )
                 }
                 items(lessons, key = { "${it.id}-$revision" }) { lesson ->
-                    val duration = vm.store.duration(lesson.id)
+                    val duration = lesson.durationMs.takeIf { it > 0L } ?: (durations[lesson.id] ?: 0L)
                     Card(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp)) {
                         ListItem(
                             modifier = Modifier.clickable { vm.openPlayer(lesson, items) },

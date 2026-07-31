@@ -61,11 +61,31 @@ class PlaybackController(context: Context) {
     private var released = false
     private var pendingPlay: (() -> Unit)? = null
     private var sleepJob: Job? = null
+    // آخر طلب تشغيل — ملاذ إعادة البناء حين تُفرَّغ قائمة المشغّل (خدمة قُتلت)
+    // فلا ينفع prepare() وحده.
+    private var lastLesson: Lesson? = null
+    private var lastQueue: List<Lesson> = emptyList()
 
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) = publish(player)
+
         override fun onPlayerError(error: PlaybackException) {
-            _state.value = _state.value.copy(error = "تعذّر تشغيل الصوت. تحقق من الاتصال ثم أعد المحاولة.")
+            // بعد أيّ خطأ يعود المشغّل إلى STATE_IDLE؛ نُصفّر مؤشّرات الحالة كي لا
+            // تبقى عالقة على «جارٍ التحميل» فتُعطَّل أزرار التشغيل.
+            _state.value = _state.value.copy(
+                error = messageFor(error),
+                playing = false,
+                loading = false,
+            )
+        }
+
+        // أوّل تشغيل ناجح يمسح خطأ المحاولة السابقة كي لا يبقى معلّقاً أبداً.
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_READY) clearError()
+        }
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (isPlaying) clearError()
         }
     }
 
@@ -111,7 +131,9 @@ class PlaybackController(context: Context) {
             return
         }
         if (!restart && player.currentMediaItem?.mediaId == lesson.id && startAtMs == null) {
-            if (player.isPlaying) player.pause() else player.play()
+            // نفس الدرس ⇒ تبديل تشغيل/إيقاف عبر toggle() لا نداء player.play() مباشرةً،
+            // كي تُعاد التهيئة إن كان المشغّل في STATE_IDLE بعد خطأ سابق.
+            toggle()
             return
         }
         // الفحص قبل بناء القائمة: ifEmpty تُعيد الدرس نفسه فتُخفي غياب الصوت.
@@ -128,13 +150,73 @@ class PlaybackController(context: Context) {
         val position = startAtMs
             ?: store.position(lesson.id).takeIf { it > 3_000L }
             ?: 0L
+        lastLesson = lesson
+        lastQueue = queue
+        // محاولة جديدة ⇒ خطأ المحاولة السابقة لم يعد يمثّل الحالة.
+        _state.value = _state.value.copy(error = null)
         player.setMediaItems(playable.map(::toMediaItem), index, position)
         player.prepare()
         player.play()
     }
 
     fun toggle() {
-        controller?.let { if (it.isPlaying) it.pause() else it.play() }
+        val player = controller
+        if (player == null) {
+            // لا متحكّم بعد ⇒ نُعيد بناء آخر طلب (يُؤجَّل حتى اكتمال الربط).
+            replayLast()
+            return
+        }
+        if (player.isPlaying) {
+            player.pause()
+            return
+        }
+        // قائمة فارغة في STATE_IDLE (خدمة قُتلت) ⇒ prepare() لا يجد ما يُهيّئه.
+        if (player.playbackState == Player.STATE_IDLE && player.mediaItemCount == 0) {
+            replayLast()
+            return
+        }
+        prepareIfIdle(player)
+        player.play()
+    }
+
+    /// إعادة التهيئة قبل أيّ استئناف: بعد أيّ خطأ يبقى المشغّل في STATE_IDLE،
+    /// و`play()` عليه لا يفعل شيئاً — فتموت أزرار التشغيل إلى الأبد بلا هذا.
+    private fun prepareIfIdle(player: Player) {
+        if (player.playbackState == Player.STATE_IDLE && player.mediaItemCount > 0) {
+            _state.value = _state.value.copy(error = null)
+            player.prepare()
+        }
+    }
+
+    /// إعادة بناء قائمة التشغيل من آخر طلب — restart كي لا يعود إلى فرع التبديل.
+    private fun replayLast() {
+        val lesson = lastLesson ?: return
+        play(lesson, lastQueue, restart = true)
+    }
+
+    /// إعادة المحاولة بعد فشل التشغيل — يستدعيها شريط الخطأ في الواجهة.
+    fun retry() {
+        val player = controller
+        if (player == null || player.mediaItemCount == 0) {
+            replayLast()
+            return
+        }
+        _state.value = _state.value.copy(error = null)
+        player.prepare()
+        player.play()
+    }
+
+    /// رسالة عربية مناسبة لسبب الفشل — الشبكة أشيع الأسباب.
+    private fun messageFor(error: PlaybackException): String {
+        val network = error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+        val missing = error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
+            error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+        return when {
+            network -> "تعذّر تشغيل الصوت — تحقّق من الاتصال ثم أعد المحاولة."
+            missing -> "الملف الصوتي غير متاح الآن. أعد المحاولة لاحقاً."
+            else -> "تعذّر تشغيل الصوت. أعد المحاولة."
+        }
     }
 
     fun seekTo(milliseconds: Long) {
@@ -156,8 +238,17 @@ class PlaybackController(context: Context) {
         controller?.let { it.seekTo((it.currentPosition - seconds * 1_000L).coerceAtLeast(0L)) }
     }
 
-    fun next() = controller?.seekToNextMediaItem()
-    fun previous() = controller?.seekToPreviousMediaItem()
+    fun next() {
+        val player = controller ?: return
+        prepareIfIdle(player)
+        player.seekToNextMediaItem()
+    }
+
+    fun previous() {
+        val player = controller ?: return
+        prepareIfIdle(player)
+        player.seekToPreviousMediaItem()
+    }
 
     fun setSpeed(speed: Float) {
         val safe = speed.coerceIn(0.75f, 2f)

@@ -60,6 +60,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -68,7 +69,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 /// «الإعدادات» — ورقة منسدلة شبه كاملة بنمط نبراس (SettingsBottomSheetWidget):
@@ -92,9 +95,14 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
     val wardHour = remember(revision) { vm.store.wardHour() }
     val wardMinute = remember(revision) { vm.store.wardMinute() }
     val weeklyGoal = remember(revision) { vm.store.weeklyGoalMinutes() }
-    val downloadsCount = remember(revision) { vm.store.downloads().size }
-    val downloadsBytes = remember(revision) {
-        vm.store.downloads().values.sumOf { java.io.File(it).length().coerceAtLeast(0L) }
+    val downloadsMap = remember(revision) { vm.store.downloads() }
+    val downloadsCount = downloadsMap.size
+    // حجم التنزيلات = مسح للقرص: يُحسب على خيط الإدخال/الإخراج ومفتاحه خريطة
+    // التنزيلات نفسها، فلا يتكرّر مع نبضات `revision` أثناء التشغيل.
+    val downloadsBytes by produceState(0L, downloadsMap) {
+        value = withContext(Dispatchers.IO) {
+            downloadsMap.values.sumOf { java.io.File(it).length().coerceAtLeast(0L) }
+        }
     }
     val favorites = remember(revision, content.lessons) { vm.content.favorites() }
     val continueList = remember(revision, content.lessons) { vm.content.continueListening() }

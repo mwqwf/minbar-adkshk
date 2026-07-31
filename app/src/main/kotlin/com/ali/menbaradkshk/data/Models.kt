@@ -111,10 +111,11 @@ data class Lesson(
     val featuredUntilMs: Long = 0L,
     val publishAtMs: Long? = null,
 ) {
+    /// العنوان كما يُعرض: أي عنوان غير فارغ يُحترم مهما قصر («صوم»، «حج»)،
+    /// ولا يُستبدل باسم المتحدّث إلا حين لا عنوان أصلاً.
     val displayTitle: String
-        get() = title.trim().takeIf { it.length > 3 }
+        get() = title.trim().takeIf { it.isNotBlank() }
             ?: speaker.trim().takeIf { it.isNotEmpty() }
-            ?: title.trim().takeIf { it.isNotEmpty() }
             ?: "درس صوتي"
 
     val isPublished: Boolean

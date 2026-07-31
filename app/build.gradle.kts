@@ -35,8 +35,10 @@ android {
         applicationId = "com.ali.menbaradkshk"
         minSdk = 23
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.3.2"
+        // 7 / 1.3.3: نسخة معالجة رفض Play (فحص أندرويد أوتو «لا يشغّل الصوت»).
+        // رقم الإصدار **يجب** أن يزيد عن 6 وإلا رفض المتجر الرفع أصلاً.
+        versionCode = 7
+        versionName = "1.3.3"
         manifestPlaceholders["appLabel"] = "منبر ادكصهك"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

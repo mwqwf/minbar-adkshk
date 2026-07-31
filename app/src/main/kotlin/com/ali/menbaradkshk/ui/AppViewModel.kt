@@ -55,6 +55,9 @@ data class SharedAudioState(
     val preparing: Boolean = false,
     val files: List<PickedFile> = emptyList(),
     val error: String = "",
+    /// عدد الملفات التي شاركها المستخدم فعلياً قبل قصّها على حدّ الدمج —
+    /// يبقى محفوظاً كي لا يظنّ أن درسه وصل كاملاً حين يتجاوز الحدّ.
+    val originalCount: Int = 0,
 )
 
 /// حالة رفع المساهمة — تعيش في الـViewModel كي لا يلغيها تدوير الشاشة.
@@ -267,7 +270,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun receiveSharedAudio(uris: List<Uri>) {
         if (uris.isEmpty()) return
         if (_route.value != Route.Contribute) open(Route.Contribute)
-        _sharedAudio.value = SharedAudioState(preparing = true)
+        _sharedAudio.value = SharedAudioState(preparing = true, originalCount = uris.size)
+        // الحدّ الأقصى للدمج يُطبَّق هنا، لكنّ العدد الأصلي يُحفظ ويُبلَّغ صراحةً
+        // كي لا يسقط الزائد بصمت ويظنّ المستخدم درسه كاملاً.
+        val accepted = uris.take(AudioMerger.maxFiles)
+        val overflow = uris.size - accepted.size
         viewModelScope.launch {
             val context = getApplication<Application>()
             val prepared = withContext(Dispatchers.IO) {
@@ -277,7 +284,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 dir.listFiles()?.forEach { old ->
                     if (old.lastModified() < cutoff) runCatching { old.delete() }
                 }
-                uris.take(AudioMerger.maxFiles).mapNotNull { uri ->
+                accepted.mapNotNull { uri ->
                     runCatching {
                         val name = displayNameOf(context, uri)
                         val safe = name.replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").takeLast(80)
@@ -292,9 +299,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _sharedAudio.value = if (prepared.isEmpty()) {
                 SharedAudioState(
                     error = "تعذّرت قراءة الملف المشارَك — اختره من زر اختيار الملفات بالأعلى.",
+                    originalCount = uris.size,
                 )
             } else {
-                SharedAudioState(files = prepared)
+                SharedAudioState(files = prepared, originalCount = uris.size)
+            }
+            if (prepared.isNotEmpty()) {
+                val unreadable = accepted.size - prepared.size
+                val notes = buildList {
+                    if (overflow > 0) {
+                        add(
+                            "شاركتَ ${uris.size} ملفاً والحدّ الأقصى ${AudioMerger.maxFiles} ملفات " +
+                                "للدرس الواحد — أُدرجت أول ${accepted.size}، وأرسل البقية في مساهمة أخرى.",
+                        )
+                    }
+                    if (unreadable > 0) {
+                        add("تعذّرت قراءة $unreadable من الملفات المشارَكة — أضِفها من زر اختيار الملفات.")
+                    }
+                }
+                if (notes.isNotEmpty()) showMessage(notes.joinToString(" "))
             }
         }
     }

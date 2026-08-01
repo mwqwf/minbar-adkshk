@@ -94,6 +94,7 @@ import androidx.compose.ui.unit.dp
 import com.ali.menbaradkshk.data.Lesson
 import com.ali.menbaradkshk.data.LessonSubmission
 import com.ali.menbaradkshk.data.NotificationItem
+import com.ali.menbaradkshk.data.TranscriptSubmissionItem
 import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.formatDuration
 import kotlinx.coroutines.flow.catch
@@ -440,6 +441,7 @@ private fun notificationIcon(type: String): ImageVector = when (type) {
     "subcategory" -> Icons.Filled.FolderOpen
     "book" -> Icons.Filled.MenuBook
     "submission" -> Icons.Filled.HowToVote
+    "transcript" -> Icons.Filled.MenuBook
     else -> Icons.Filled.Campaign
 }
 
@@ -474,7 +476,7 @@ fun NotificationsScreen(vm: AppViewModel) {
 
     fun openTarget(n: NotificationItem) {
         when (n.type) {
-            "submission" -> vm.open(Route.MySubmissions)
+            "submission", "transcript" -> vm.open(Route.MySubmissions)
             "lesson" -> {
                 val lesson = content.lessonById[n.refId]
                 if (lesson != null) {
@@ -602,13 +604,17 @@ fun MySubmissionsScreen(vm: AppViewModel) {
     val scope = rememberCoroutineScope()
     val flow = remember { vm.submissions.mine().catch { emit(emptyList()) } }
     val submissions by flow.collectAsState(initial = null)
+    // اقتراحات «النص المشروح» تُعرض بجانب الدروس الصوتية في نفس الشاشة.
+    val transcriptsFlow = remember { vm.transcripts.mine().catch { emit(emptyList()) } }
+    val transcriptSubmissions by transcriptsFlow.collectAsState(initial = emptyList())
     var withdrawTarget by remember { mutableStateOf<LessonSubmission?>(null) }
+    var withdrawTranscript by remember { mutableStateOf<TranscriptSubmissionItem?>(null) }
 
     when {
         submissions == null -> {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         }
-        submissions.orEmpty().isEmpty() -> {
+        submissions.orEmpty().isEmpty() && transcriptSubmissions.isEmpty() -> {
             Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
@@ -619,7 +625,7 @@ fun MySubmissionsScreen(vm: AppViewModel) {
                     )
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        "لم ترسل أي مساهمة بعد.\nمن «شارك درساً» يمكنك اقتراح دروس صوتية تُنشر بعد موافقة المشرفين.",
+                        "لم ترسل أي مساهمة بعد.\nمن «شارك درساً» يمكنك اقتراح دروس صوتية، ومن شاشة التشغيل يمكنك المساهمة بالنص المشروح — تُنشر بعد موافقة المشرفين.",
                         textAlign = TextAlign.Center,
                     )
                 }
@@ -627,6 +633,9 @@ fun MySubmissionsScreen(vm: AppViewModel) {
         }
         else -> {
             LazyColumn(contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)) {
+                items(transcriptSubmissions, key = { "t_${it.id}" }) { item ->
+                    TranscriptSubmissionCard(item) { withdrawTranscript = item }
+                }
                 items(submissions.orEmpty(), key = LessonSubmission::id) { submission ->
                     val (color, icon, label) = when (submission.status) {
                         "approved" -> Triple(GreenBrand, Icons.Filled.CheckCircleOutline, "نُشرت كما هي")
@@ -699,5 +708,90 @@ fun MySubmissionsScreen(vm: AppViewModel) {
                 TextButton(onClick = { withdrawTarget = null }) { Text("إلغاء") }
             },
         )
+    }
+
+    withdrawTranscript?.let { item ->
+        AlertDialog(
+            onDismissRequest = { withdrawTranscript = null },
+            title = { Text("سحب اقتراح النص؟") },
+            text = { Text("سيُحذف الاقتراح قبل أن يراجعه المشرفون.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    withdrawTranscript = null
+                    scope.launch {
+                        runCatching { vm.transcripts.deletePending(item) }
+                            .onFailure { vm.showMessage("تعذّر حذف الاقتراح.") }
+                    }
+                }) { Text("سحب") }
+            },
+            dismissButton = {
+                TextButton(onClick = { withdrawTranscript = null }) { Text("إلغاء") }
+            },
+        )
+    }
+}
+
+/// بطاقة اقتراح «نص مشروح» في «مساهماتي» — شارة 📖 تميّزها عن الدروس الصوتية.
+@Composable
+private fun TranscriptSubmissionCard(
+    item: TranscriptSubmissionItem,
+    onWithdraw: () -> Unit,
+) {
+    val (color, icon, label) = when (item.status) {
+        "approved" -> Triple(GreenBrand, Icons.Filled.CheckCircleOutline, "اعتُمد النص")
+        "approved_edited" -> Triple(Teal, Icons.Filled.PublishedWithChanges, "اعتُمد بعد تعديل")
+        "rejected" -> Triple(MaterialTheme.colorScheme.error, Icons.Filled.Cancel, "لم يُعتمد")
+        else -> Triple(OrangeBrand, Icons.Filled.HourglassTop, "قيد المراجعة")
+    }
+    Card(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, null, tint = color, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    item.lessonTitle.ifBlank { "نص مشروح" },
+                    modifier = Modifier.weight(1f),
+                    fontWeight = FontWeight.Bold,
+                )
+                Box(
+                    Modifier
+                        .background(color.copy(alpha = 0.12f), RoundedCornerShape(999.dp))
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                ) {
+                    Text(label, color = color, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.MenuBook,
+                    null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "نص مشروح" + if (item.hasImages) " + صور صفحات" else "",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (item.status == "rejected" && item.rejectReason.isNotBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "السبب: ${item.rejectReason}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            if (item.isPending) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onWithdraw) {
+                        Icon(Icons.Filled.Undo, null, modifier = Modifier.size(18.dp))
+                        Text(" سحب الاقتراح")
+                    }
+                }
+            }
+        }
     }
 }

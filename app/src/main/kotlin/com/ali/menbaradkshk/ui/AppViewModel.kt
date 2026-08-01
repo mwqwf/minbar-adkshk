@@ -11,6 +11,7 @@ import com.ali.menbaradkshk.data.NotificationItem
 import com.ali.menbaradkshk.data.NotificationsRepository
 import com.ali.menbaradkshk.data.SubmissionDraft
 import com.ali.menbaradkshk.data.SubmissionRepository
+import com.ali.menbaradkshk.data.TranscriptRepository
 import com.ali.menbaradkshk.media.PlaybackController
 import com.ali.menbaradkshk.notification.BackgroundScheduler
 import com.ali.menbaradkshk.util.AudioMerger
@@ -74,6 +75,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val content = ContentRepository.get(application)
     val downloads = DownloadRepository.get(application)
     val submissions = SubmissionRepository.get(application)
+    val transcripts = TranscriptRepository.get(application)
     val playback = PlaybackController(application)
     private val notificationsRepository = NotificationsRepository(submissions)
 

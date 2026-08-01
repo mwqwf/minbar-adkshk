@@ -147,6 +147,10 @@ dependencies {
     implementation("androidx.media3:media3-session:$media3Version")
     implementation("androidx.media3:media3-common-ktx:$media3Version")
 
+    // عرض صور «النص المشروح» (صفحات الكتاب) — نفس نسخة لوحة الإدارة.
+    implementation("io.coil-kt.coil3:coil-compose:3.2.0")
+    implementation("io.coil-kt.coil3:coil-network-okhttp:3.2.0")
+
     val firebaseBom = platform("com.google.firebase:firebase-bom:34.16.0")
     implementation(firebaseBom)
     implementation("com.google.firebase:firebase-auth")

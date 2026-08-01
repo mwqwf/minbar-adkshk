@@ -456,6 +456,11 @@ fun PlayerScreen(
             }
             HorizontalDivider(Modifier.padding(vertical = 16.dp))
 
+            // 📖 المتن/المقطع الأصلي الذي تشرحه الصوتية (يُجلب عند الفتح فقط).
+            TranscriptSection(lesson = current)
+
+            HorizontalDivider(Modifier.padding(vertical = 16.dp))
+
             // التنقّل إلى القسم الفرعي/الرئيسي.
             if (current.subcategoryId.isNotBlank()) {
                 FilledTonalButton(

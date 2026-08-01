@@ -150,6 +150,8 @@ dependencies {
     // عرض صور «النص المشروح» (صفحات الكتاب) — نفس نسخة لوحة الإدارة.
     implementation("io.coil-kt.coil3:coil-compose:3.2.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.2.0")
+    // قصّ صور صفحات الكتاب قبل الإرفاق (واجهة قصّ جاهزة عبر ActivityResult).
+    implementation("com.vanniktech:android-image-cropper:4.6.0")
 
     val firebaseBom = platform("com.google.firebase:firebase-bom:34.16.0")
     implementation(firebaseBom)

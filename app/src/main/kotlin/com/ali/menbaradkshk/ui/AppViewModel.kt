@@ -47,9 +47,18 @@ sealed interface Route {
     data object Car : Route
     data object Stats : Route
     data object Contribute : Route
+    data object ContributeTranscript : Route
     data object MySubmissions : Route
     data object Notifications : Route
 }
+
+/// صورة/نص وصلا من تطبيق خارجي عبر «المشاركة» لميزة «ساهم بالنص».
+data class SharedTranscriptState(
+    val preparing: Boolean = false,
+    val text: String = "",
+    val images: List<Uri> = emptyList(),
+    val error: String = "",
+)
 
 /// ملفات صوتية وصلت من تطبيق خارجي عبر «المشاركة»، بانتظار شاشة المساهمة.
 data class SharedAudioState(
@@ -98,6 +107,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /// ملفات «المشاركة الخارجية» بانتظار أن تستهلكها شاشة المساهمة.
     private val _sharedAudio = MutableStateFlow(SharedAudioState())
     val sharedAudio: StateFlow<SharedAudioState> = _sharedAudio.asStateFlow()
+
+    private val _sharedTranscript = MutableStateFlow(SharedTranscriptState())
+    val sharedTranscript: StateFlow<SharedTranscriptState> = _sharedTranscript.asStateFlow()
 
     /// ورقة الإعدادات السفلية (زر ⋮ في الشريط العلوي — نمط الأصل).
     private val _showSettings = MutableStateFlow(false)
@@ -329,6 +341,56 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _sharedAudio.value = SharedAudioState()
     }
 
+    /// «شارك إلى منبر» صورةً أو نصاً: يفتح «ساهم بالنص» (باختيار الدرس)
+    /// مع الحمولة الواردة. الصور تُنسخ لكاش التطبيق لنفس سبب نسخ الصوتيات
+    /// (إذن قراءة content:// الخارجي مؤقّت وينتهي مع النيّة).
+    fun receiveSharedTranscript(text: String, imageUris: List<Uri>) {
+        if (text.isBlank() && imageUris.isEmpty()) return
+        if (_route.value != Route.ContributeTranscript) open(Route.ContributeTranscript)
+        val accepted = imageUris.take(TranscriptRepository.MAX_IMAGES)
+        if (accepted.isEmpty()) {
+            _sharedTranscript.value = SharedTranscriptState(text = text.trim())
+            return
+        }
+        _sharedTranscript.value = SharedTranscriptState(preparing = true, text = text.trim())
+        viewModelScope.launch {
+            val context = getApplication<Application>()
+            val prepared = withContext(Dispatchers.IO) {
+                val dir = File(context.cacheDir, "shared_pages").apply { mkdirs() }
+                val cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000
+                dir.listFiles()?.forEach { old ->
+                    if (old.lastModified() < cutoff) runCatching { old.delete() }
+                }
+                accepted.mapNotNull { uri ->
+                    runCatching {
+                        val target = File(dir, "${System.nanoTime()}_page.jpg")
+                        context.contentResolver.openInputStream(uri)!!.use { input ->
+                            target.outputStream().use(input::copyTo)
+                        }
+                        Uri.fromFile(target)
+                    }.getOrNull()
+                }
+            }
+            _sharedTranscript.value = if (prepared.isEmpty() && text.isBlank()) {
+                SharedTranscriptState(
+                    error = "تعذّرت قراءة الصورة المشارَكة — أرفقها من زر الصور داخل النموذج.",
+                )
+            } else {
+                SharedTranscriptState(text = text.trim(), images = prepared)
+            }
+            if (imageUris.size > accepted.size) {
+                showMessage(
+                    "شاركتَ ${imageUris.size} صور والحدّ ${TranscriptRepository.MAX_IMAGES} " +
+                        "— أُدرجت أول ${accepted.size}.",
+                )
+            }
+        }
+    }
+
+    fun consumeSharedTranscript() {
+        _sharedTranscript.value = SharedTranscriptState()
+    }
+
     /// يدمج الملفات (عند تعددها) ثم يرفع المساهمة داخل `viewModelScope`،
     /// فيستمر الرفع رغم تدوير الشاشة أو إعادة إنشاء النشاط.
     fun submitContribution(
@@ -342,6 +404,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // ليراهما المشرف عند المراجعة، ولا يمنعان الإرسال إطلاقاً.
         rightsConfirmed: Boolean = false,
         contentPolicyAccepted: Boolean = false,
+        // «النص المشروح» الاختياري: يُرفع مع المساهمة ويُنشر مع الدرس عند اعتماده.
+        transcript: com.ali.menbaradkshk.data.TranscriptExtras =
+            com.ali.menbaradkshk.data.TranscriptExtras(),
     ) {
         // لا خروج صامت: كل منع يصل للمستخدم كرسالة تشرح سببه.
         if (_contribution.value.submitting) return
@@ -396,6 +461,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         note = note,
                         rightsConfirmed = rightsConfirmed,
                         contentPolicyAccepted = contentPolicyAccepted,
+                        transcript = transcript,
                     ),
                 ) { percent ->
                     _contribution.value = _contribution.value.copy(progress = percent)

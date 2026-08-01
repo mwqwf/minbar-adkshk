@@ -242,31 +242,40 @@ fun TranscriptSection(lesson: Lesson) {
             }
         }
 
+        // شريط مدمج لا بطاقة ضخمة: القسم صار أعلى المشغّل، فحالة «لا نص»
+        // يجب أن تدعو للمساهمة دون أن تزاحم أدوات التشغيل.
         else -> Card(
             shape = RoundedCornerShape(14.dp),
             colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                containerColor = GreenBrand.copy(alpha = 0.08f),
             ),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { contributeSheet = true },
         ) {
-            Column(
-                Modifier.fillMaxWidth().padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    "لم يُوثَّق النص الذي تشرحه هذه الصوتية بعد.",
-                    textAlign = TextAlign.Center,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Icon(
+                    Icons.Filled.AddPhotoAlternate,
+                    contentDescription = null,
+                    tint = GreenBrand,
+                    modifier = Modifier.size(22.dp),
                 )
-                Spacer(Modifier.height(10.dp))
-                FilledTonalButton(onClick = { contributeSheet = true }) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.MenuBook,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "ساهم بنص هذا الدرس",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = GreenBrand,
                     )
-                    Text(" ساهم بالنص أو صورة الصفحة")
+                    Text(
+                        "انقل المقطع من الكتاب أو صوّر صفحته — يُنشر بعد مراجعة المشرفين.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
@@ -300,14 +309,6 @@ private fun TranscriptContributeSheet(
     var progress by remember { mutableIntStateOf(0) }
     var message by remember { mutableStateOf("") }
     var done by remember { mutableStateOf(false) }
-
-    val picker = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetMultipleContents(),
-    ) { uris ->
-        uris.forEach { uri ->
-            if (images.size < TranscriptRepository.MAX_IMAGES) images.add(uri)
-        }
-    }
 
     ModalBottomSheet(onDismissRequest = { if (!sending) onDismiss() }) {
         Column(
@@ -390,58 +391,12 @@ private fun TranscriptContributeSheet(
             )
             Spacer(Modifier.height(12.dp))
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "صور صفحات الكتاب (${images.size}/${TranscriptRepository.MAX_IMAGES})",
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                Spacer(Modifier.weight(1f))
-                IconButton(
-                    onClick = { picker.launch("image/*") },
-                    enabled = !sending && images.size < TranscriptRepository.MAX_IMAGES,
-                ) {
-                    Icon(
-                        Icons.Filled.AddPhotoAlternate,
-                        contentDescription = "إرفاق صورة من الكتاب",
-                        tint = GreenBrand,
-                    )
-                }
-            }
-            if (images.isNotEmpty()) {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(images.size) { i ->
-                        Box(Modifier.size(88.dp)) {
-                            AsyncImage(
-                                model = images[i],
-                                contentDescription = "صورة مرفقة ${i + 1}",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(
-                                        MaterialTheme.colorScheme.surfaceVariant,
-                                        RoundedCornerShape(10.dp),
-                                    ),
-                            )
-                            IconButton(
-                                onClick = { images.removeAt(i) },
-                                enabled = !sending,
-                                modifier = Modifier
-                                    .size(22.dp)
-                                    .align(Alignment.TopEnd)
-                                    .background(Color.Black.copy(alpha = 0.55f), CircleShape),
-                            ) {
-                                Icon(
-                                    Icons.Filled.Close,
-                                    contentDescription = "إزالة",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(13.dp),
-                                )
-                            }
-                        }
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-            }
+            TranscriptImagesEditor(
+                images = images,
+                enabled = !sending,
+                onError = { message = it },
+            )
+            Spacer(Modifier.height(8.dp))
 
             OutlinedTextField(
                 value = name,
@@ -470,6 +425,15 @@ private fun TranscriptContributeSheet(
             Spacer(Modifier.height(16.dp))
             Button(
                 onClick = {
+                    // الزر لا يُعطَّل؛ النقص يُشرح بعينه (نفس نهج «شارك درساً»).
+                    if (text.trim().length < 10 && images.isEmpty()) {
+                        message = if (text.isBlank()) {
+                            "أضف نص المقطع من الكتاب أو أرفق صورة صفحة واحدة على الأقل."
+                        } else {
+                            "النص قصير جداً (١٠ أحرف على الأقل) — أكمله أو أرفق صورة الصفحة."
+                        }
+                        return@Button
+                    }
                     sending = true
                     message = ""
                     scope.launch {
@@ -494,7 +458,7 @@ private fun TranscriptContributeSheet(
                         sending = false
                     }
                 },
-                enabled = !sending && (text.trim().length >= 10 || images.isNotEmpty()),
+                enabled = !sending,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 if (sending) {

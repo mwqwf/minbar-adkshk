@@ -1,0 +1,382 @@
+package com.ali.menbaradkshk.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.CheckCircleOutline
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.ali.menbaradkshk.data.Lesson
+import com.ali.menbaradkshk.data.TranscriptDraft
+import com.ali.menbaradkshk.data.TranscriptRepository
+import com.ali.menbaradkshk.util.normalizeArabic
+import kotlinx.coroutines.launch
+
+/**
+ * 📖 «ساهم بالنص» شاشةً مستقلة — تُفتح من مشاركة صورة/نص من تطبيق خارجي:
+ * يختار المستمع الدرس المقصود (بحث عربي)، ثم نفس نموذج المساهمة (نص +
+ * صور صفحات بقصّ ودمج وترتيب) ويُرسل لمراجعة المشرفين.
+ */
+@Composable
+fun TranscriptContributeScreen(vm: AppViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    val repo = remember { TranscriptRepository.get(context) }
+    val content by vm.content.state.collectAsState()
+    val shared by vm.sharedTranscript.collectAsState()
+
+    var lessonId by rememberSaveable { mutableStateOf("") }
+    var query by rememberSaveable { mutableStateOf("") }
+    var text by rememberSaveable { mutableStateOf("") }
+    var bookTitle by rememberSaveable { mutableStateOf("") }
+    var sourceRef by rememberSaveable { mutableStateOf("") }
+    var note by rememberSaveable { mutableStateOf("") }
+    var name by rememberSaveable { mutableStateOf(vm.store.submitterName()) }
+    val images = remember { mutableStateListOf<android.net.Uri>() }
+    var sending by remember { mutableStateOf(false) }
+    var progress by remember { mutableIntStateOf(0) }
+    var message by rememberSaveable { mutableStateOf("") }
+    var done by remember { mutableStateOf(false) }
+
+    // حمولة المشاركة الخارجية تُدرج مرة واحدة فور تجهيزها.
+    LaunchedEffect(shared) {
+        if (shared.preparing) return@LaunchedEffect
+        if (shared.text.isNotEmpty() || shared.images.isNotEmpty()) {
+            if (shared.text.isNotEmpty() && text.isBlank()) {
+                text = shared.text.take(TranscriptRepository.MAX_TEXT_CHARS)
+            }
+            shared.images.forEach { uri ->
+                if (images.size < TranscriptRepository.MAX_IMAGES) images.add(uri)
+            }
+            vm.consumeSharedTranscript()
+        } else if (shared.error.isNotEmpty()) {
+            message = shared.error
+            vm.consumeSharedTranscript()
+        }
+    }
+
+    val lesson = content.lessonById[lessonId]
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .background(GreenBrand.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+                .padding(12.dp),
+        ) {
+            Text(
+                "أرفق النص الأصلي (أو صورة الصفحة) من الكتاب الذي تشرحه الصوتية، " +
+                    "واختر الدرس المقصود — يراجعه المشرفون قبل النشر.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        Spacer(Modifier.height(14.dp))
+
+        if (lesson == null) {
+            Text(
+                "أولاً: اختر الدرس",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(6.dp))
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("ابحث عن الدرس بعنوانه") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                singleLine = true,
+            )
+            Spacer(Modifier.height(8.dp))
+            val normalizedQuery = normalizeArabic(query.trim())
+            val matches = remember(normalizedQuery, content.lessons) {
+                if (normalizedQuery.length < 2) {
+                    emptyList()
+                } else {
+                    content.lessons
+                        .filter { normalizeArabic(it.displayTitle).contains(normalizedQuery) }
+                        .take(12)
+                }
+            }
+            if (normalizedQuery.length >= 2 && matches.isEmpty()) {
+                Text(
+                    "لا نتائج — جرّب كلمة أخرى من عنوان الدرس.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            matches.forEach { item ->
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp)
+                        .clickable { lessonId = item.id },
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(34.dp)
+                                .background(colorForCategory(item.categoryId), CircleShape),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Filled.PlayArrow,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                item.displayTitle,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            content.subcategoryById[item.subcategoryId]?.name
+                                ?.takeIf(String::isNotBlank)?.let {
+                                    Text(
+                                        it,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                        }
+                    }
+                }
+            }
+        } else {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.MenuBook,
+                        contentDescription = null,
+                        tint = GreenBrand,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        lesson.displayTitle,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    IconButton(onClick = { lessonId = "" }, enabled = !sending) {
+                        Icon(Icons.Filled.Edit, contentDescription = "تغيير الدرس", tint = GreenBrand)
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = bookTitle,
+                onValueChange = { if (it.length <= 200) bookTitle = it },
+                label = { Text("اسم الكتاب/المتن (اختياري)") },
+                singleLine = true,
+                enabled = !sending,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = sourceRef,
+                onValueChange = { if (it.length <= 300) sourceRef = it },
+                label = { Text("المقطع: من … إلى … (اختياري)") },
+                singleLine = true,
+                enabled = !sending,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = text,
+                onValueChange = { if (it.length <= TranscriptRepository.MAX_TEXT_CHARS) text = it },
+                label = { Text("النص الأصلي المشروح") },
+                minLines = 5,
+                maxLines = 12,
+                enabled = !sending,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(10.dp))
+            if (shared.preparing) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+            }
+            TranscriptImagesEditor(
+                images = images,
+                enabled = !sending,
+                onError = { message = it },
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = name,
+                onValueChange = { if (it.length <= 50) name = it },
+                label = { Text("اسمك (اختياري — يظهر مع النص عند الاعتماد)") },
+                singleLine = true,
+                enabled = !sending,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = note,
+                onValueChange = { if (it.length <= 300) note = it },
+                label = { Text("ملاحظة للمشرفين (اختياري)") },
+                minLines = 1,
+                maxLines = 3,
+                enabled = !sending,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        if (message.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                message,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        Spacer(Modifier.height(14.dp))
+        if (sending && images.isNotEmpty() && progress in 1..99) {
+            LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+        }
+        FilledTonalButton(
+            onClick = {
+                // النقص يُشرح بعينه ولا يُخرِس الزر (نفس نهج «شارك درساً»).
+                when {
+                    lesson == null -> message = "اختر الدرس أولاً — ابحث عنه بعنوانه في الأعلى."
+                    text.trim().length < 10 && images.isEmpty() ->
+                        message = "أضف نص المقطع من الكتاب أو أرفق صورة صفحة واحدة على الأقل."
+                    else -> {
+                        message = ""
+                        sending = true
+                        scope.launch {
+                            runCatching {
+                                repo.submit(
+                                    TranscriptDraft(
+                                        lessonId = lesson.id,
+                                        text = text,
+                                        bookTitle = bookTitle,
+                                        sourceRef = sourceRef,
+                                        note = note,
+                                        submitterName = name,
+                                        images = images.toList(),
+                                    ),
+                                ) { progress = it }
+                            }.onSuccess {
+                                done = true
+                            }.onFailure {
+                                message = it.message
+                                    ?: "تعذّر الإرسال. تأكد من الاتصال وحاول مجدداً."
+                            }
+                            sending = false
+                        }
+                    }
+                }
+            },
+            enabled = !sending,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (sending) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                )
+                Text("  جارٍ الإرسال…")
+            } else {
+                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)
+                Text(" إرسال للمراجعة")
+            }
+        }
+    }
+
+    if (done) {
+        val close = {
+            vm.back()
+            Unit
+        }
+        AlertDialog(
+            onDismissRequest = close,
+            icon = {
+                Icon(
+                    Icons.Filled.CheckCircleOutline,
+                    contentDescription = null,
+                    tint = GreenBrand,
+                    modifier = Modifier.size(40.dp),
+                )
+            },
+            title = { Text("وصلت مساهمتك") },
+            text = {
+                Text(
+                    "سيراجع المشرفون النص وتصلك النتيجة إشعاراً.\nتابع حالتها من «مساهماتي».",
+                    textAlign = TextAlign.Center,
+                )
+            },
+            confirmButton = { TextButton(onClick = close) { Text("حسناً") } },
+        )
+    }
+}

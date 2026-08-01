@@ -25,6 +25,8 @@ data class SubmissionDraft(
     val note: String,
     val rightsConfirmed: Boolean,
     val contentPolicyAccepted: Boolean,
+    // «النص المشروح» الاختياري المرافق — يُنشر مع الدرس عند اعتماد المساهمة.
+    val transcript: TranscriptExtras = TranscriptExtras(),
 )
 
 class SubmissionRepository private constructor(context: Context) {
@@ -69,10 +71,30 @@ class SubmissionRepository private constructor(context: Context) {
 
         var uploaded = false
         var callableStarted = false
+        val transcriptImagePaths = mutableListOf<String>()
         try {
             task.await()
             uploaded = true
             val audioUrl = reference.downloadUrl.await().toString()
+            // صور «النص المشروح» الاختيارية تُرفع لمساحة اقتراحات النصوص
+            // (قواعد التخزين تسمح لصاحبها برفع الصور هناك) بنفس معرّف المساهمة.
+            draft.transcript.images
+                .take(TranscriptRepository.MAX_IMAGES)
+                .forEachIndexed { index, imageUri ->
+                    val imageSize = appContext.contentResolver
+                        .openAssetFileDescriptor(imageUri, "r")?.use { it.length } ?: -1L
+                    require(imageSize in 1..TranscriptRepository.MAX_IMAGE_BYTES) {
+                        "حجم صورة النص ${index + 1} يتجاوز 10 ميجابايت."
+                    }
+                    val imageType = appContext.contentResolver.getType(imageUri) ?: "image/jpeg"
+                    require(imageType.startsWith("image/")) { "مرفق النص ليس صورة." }
+                    val imagePath = "transcript_submissions/${user.uid}/$id/lesson_${index}_page.jpg"
+                    storage.reference.child(imagePath).putFile(
+                        imageUri,
+                        StorageMetadata.Builder().setContentType(imageType).build(),
+                    ).await()
+                    transcriptImagePaths.add(imagePath)
+                }
             val fcmToken = if (store.notificationsEnabled()) {
                 runCatching { FirebaseMessaging.getInstance().token.await() }.getOrDefault("")
             } else {
@@ -99,6 +121,10 @@ class SubmissionRepository private constructor(context: Context) {
                 "contentPolicyAccepted" to draft.contentPolicyAccepted,
                 "contentPolicyVersion" to CONTENT_POLICY_VERSION,
                 "termsAcceptedAt" to java.time.Instant.now().toString(),
+                "transcriptText" to draft.transcript.text.trim(),
+                "transcriptBookTitle" to draft.transcript.bookTitle.trim(),
+                "transcriptSourceRef" to draft.transcript.sourceRef.trim(),
+                "transcriptImagePaths" to transcriptImagePaths,
             )
             callableStarted = true
             val result = runCatching {
@@ -118,6 +144,9 @@ class SubmissionRepository private constructor(context: Context) {
                 if (exists) return id
             } else if (uploaded) {
                 runCatching { reference.delete().await() }
+                transcriptImagePaths.forEach { path ->
+                    runCatching { storage.reference.child(path).delete().await() }
+                }
             }
             throw failure
         }

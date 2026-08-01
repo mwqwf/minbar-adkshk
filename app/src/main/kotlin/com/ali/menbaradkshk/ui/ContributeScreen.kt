@@ -7,6 +7,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,7 +23,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -60,6 +63,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.ali.menbaradkshk.data.TranscriptExtras
 import com.ali.menbaradkshk.util.AudioMerger
 import com.ali.menbaradkshk.util.smartTitleFromFileName
 
@@ -102,6 +106,14 @@ fun ContributeScreen(vm: AppViewModel) {
     var policyAccepted by rememberSaveable { mutableStateOf(false) }
     var policyDialog by rememberSaveable { mutableStateOf(false) }
     var formError by rememberSaveable { mutableStateOf("") }
+
+    // «النص المشروح» الاختياري: يُرفق مع المساهمة نفسها ويُنشر مع الدرس
+    // عند الاعتماد — من أحبّ أضافه، ومن لم يرد فلا شيء يلزمه به.
+    var transcriptOpen by rememberSaveable { mutableStateOf(false) }
+    var transcriptText by rememberSaveable { mutableStateOf("") }
+    var transcriptBookTitle by rememberSaveable { mutableStateOf("") }
+    var transcriptSourceRef by rememberSaveable { mutableStateOf("") }
+    val transcriptImages = remember { mutableStateListOf<Uri>() }
 
     // الحقل الناقص الذي أوقف آخر محاولة إرسال — يُميَّز بالأحمر ويُصفَّر بمجرّد تعديله.
     var missingField by rememberSaveable { mutableStateOf("") }
@@ -203,8 +215,9 @@ fun ContributeScreen(vm: AppViewModel) {
         content.subcategories.filter { it.categoryId == chosen.id }
     }.orEmpty()
 
-    /// أوّل حقل ناقص بترتيب منطقي (الملف ← العنوان ← القسم ← القسم الفرعي ← الاسم)
-    /// مع الرسالة التي تسمّيه بعينه. الإقرارات السفلية اختيارية فلا تدخل هنا.
+    /// أوّل حقل ناقص بترتيب منطقي (الملف ← العنوان ← القسم ← القسم الفرعي)
+    /// مع الرسالة التي تسمّيه بعينه. الإلزامي هو ما تُلزم به اللوحة نفسها
+    /// فقط؛ الاسم والملاحظة والإقرارات والنص المشروح كلها اختيارية.
     fun firstMissing(): Pair<String, String>? = when {
         files.isEmpty() -> FIELD_FILES to "اختر ملفاً صوتياً أولاً."
         title.trim().length < 3 -> FIELD_TITLE to "اكتب عنوان الدرس (٣ أحرف على الأقل)."
@@ -213,7 +226,6 @@ fun ContributeScreen(vm: AppViewModel) {
             FIELD_SUBCATEGORY to
                 "لا توجد أقسام فرعية في «${category?.name.orEmpty()}» — اختر قسماً رئيسياً آخر."
         subcategory == null -> FIELD_SUBCATEGORY to "اختر القسم الفرعي."
-        name.trim().isEmpty() -> FIELD_NAME to "اكتب اسمك كي يعرف المشرفون صاحب المساهمة."
         else -> null
     }
 
@@ -237,6 +249,16 @@ fun ContributeScreen(vm: AppViewModel) {
             subcategory = sub,
             submitterName = name,
             note = note,
+            // كان الإقراران يضيعان هنا (لا يُمرَّران) فيصلان المشرف false دائماً
+            // مهما اختار المستخدم — الآن يُنقلان كما اختارهما فعلاً.
+            rightsConfirmed = rightsConfirmed,
+            contentPolicyAccepted = policyAccepted,
+            transcript = TranscriptExtras(
+                text = transcriptText,
+                bookTitle = transcriptBookTitle,
+                sourceRef = transcriptSourceRef,
+                images = transcriptImages.toList(),
+            ),
         )
     }
 
@@ -367,7 +389,7 @@ fun ContributeScreen(vm: AppViewModel) {
                 clearMissing(FIELD_NAME)
             },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("اسمك (يظهر للمشرفين)") },
+            label = { Text("اسمك (اختياري — يظهر للمشرفين)") },
             isError = missingField == FIELD_NAME,
             enabled = !submitting,
         )
@@ -439,6 +461,86 @@ fun ContributeScreen(vm: AppViewModel) {
             minLines = 2,
             enabled = !submitting,
         )
+        Spacer(Modifier.height(12.dp))
+
+        // 📖 «النص المشروح» الاختياري — نفس مكوّنات ميزة النص في المشغّل.
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .background(
+                    GreenBrand.copy(alpha = 0.07f),
+                    RoundedCornerShape(12.dp),
+                ),
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { transcriptOpen = !transcriptOpen },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.MenuBook,
+                        contentDescription = null,
+                        tint = GreenBrand,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "النص المشروح (اختياري)",
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        Text(
+                            "أرفق نص المقطع من الكتاب أو صورة صفحته — يُنشر مع الدرس عند اعتماده.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Icon(
+                        if (transcriptOpen) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                        contentDescription = null,
+                    )
+                }
+                if (transcriptOpen) {
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = transcriptBookTitle,
+                        onValueChange = { transcriptBookTitle = it.take(200) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("اسم الكتاب/المتن (اختياري)") },
+                        enabled = !submitting,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = transcriptSourceRef,
+                        onValueChange = { transcriptSourceRef = it.take(300) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("المقطع: من … إلى … (اختياري)") },
+                        enabled = !submitting,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = transcriptText,
+                        onValueChange = {
+                            transcriptText = it.take(
+                                com.ali.menbaradkshk.data.TranscriptRepository.MAX_TEXT_CHARS,
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("النص الأصلي المشروح") },
+                        minLines = 4,
+                        maxLines = 10,
+                        enabled = !submitting,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    TranscriptImagesEditor(
+                        images = transcriptImages,
+                        enabled = !submitting,
+                        onError = { formError = it },
+                    )
+                }
+            }
+        }
         Spacer(Modifier.height(12.dp))
         // إقرارات لا تمنع الإرسال: المشرفون يتحقّقون بأنفسهم والقرار النهائي لهم.
         Text(

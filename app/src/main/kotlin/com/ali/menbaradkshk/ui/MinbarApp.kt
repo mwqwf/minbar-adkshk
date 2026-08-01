@@ -249,6 +249,7 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                 Route.Car -> CarScreen(vm, playback)
                 Route.Stats -> StatsScreen(vm)
                 Route.Contribute -> ContributeScreen(vm)
+                Route.ContributeTranscript -> TranscriptContributeScreen(vm)
                 Route.MySubmissions -> MySubmissionsScreen(vm)
                 Route.Notifications -> NotificationsScreen(vm)
             }
@@ -326,6 +327,7 @@ private fun titleFor(route: Route, vm: AppViewModel): String = when (route) {
     Route.Car -> "وضع القيادة"
     Route.Stats -> "حصادك"
     Route.Contribute -> "شارك درساً"
+    Route.ContributeTranscript -> "ساهم بالنص"
     Route.MySubmissions -> "مساهماتي"
     Route.Notifications -> "الإشعارات"
 }

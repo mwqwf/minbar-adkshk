@@ -306,6 +306,11 @@ fun PlayerScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            Spacer(Modifier.height(12.dp))
+
+            // 📖 «النص المشروح» في أعلى الشاشة عمداً — تحت العنوان مباشرة
+            // ليراه كل من يفتح الصوتية، لا في ذيل الصفحة حيث لا يصله أحد.
+            TranscriptSection(lesson = current)
             Spacer(Modifier.height(14.dp))
 
             // شريط التقدّم.
@@ -454,11 +459,6 @@ fun PlayerScreen(
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
-            HorizontalDivider(Modifier.padding(vertical = 16.dp))
-
-            // 📖 المتن/المقطع الأصلي الذي تشرحه الصوتية (يُجلب عند الفتح فقط).
-            TranscriptSection(lesson = current)
-
             HorizontalDivider(Modifier.padding(vertical = 16.dp))
 
             // التنقّل إلى القسم الفرعي/الرئيسي.

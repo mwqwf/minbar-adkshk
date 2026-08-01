@@ -26,6 +26,16 @@ data class LessonTranscript(
     val contributorName: String,
 )
 
+/** مرفق «النص المشروح» الاختياري داخل مساهمة درس صوتي («شارك درساً»). */
+data class TranscriptExtras(
+    val text: String = "",
+    val bookTitle: String = "",
+    val sourceRef: String = "",
+    val images: List<Uri> = emptyList(),
+) {
+    val isEmpty: Boolean get() = text.trim().length < 10 && images.isEmpty()
+}
+
 /** مسودة اقتراح نص مشروح من المستمع. */
 data class TranscriptDraft(
     val lessonId: String,

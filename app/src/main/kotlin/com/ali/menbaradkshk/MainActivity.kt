@@ -90,19 +90,39 @@ class MainActivity : ComponentActivity() {
         captureShare(intent)
     }
 
-    /// «مشاركة إلى منبر»: يستخرج روابط الصوت من نيّة SEND / SEND_MULTIPLE
-    /// ويمرّرها إلى الـViewModel ليفتح نموذج «شارك درساً» معبّأً بها.
+    /// «مشاركة إلى منبر»: صوتيات ← «شارك درساً»، وصور/نص ← «ساهم بالنص»
+    /// (باختيار الدرس). حمولة تطبيق آخر قد تكون تالفة — لا تُسقط التطبيق.
     private fun captureShare(intent: Intent?) {
         if (intent == null) return
-        // حمولة تطبيق آخر قد تكون تالفة أو من نوع غير Uri — لا تُسقط التطبيق.
-        val uris: List<Uri> = runCatching { sharedAudioUris(intent) }.getOrDefault(emptyList())
-        if (uris.isEmpty()) return
-        // تُستهلك النيّة فوراً كي لا تتكرّر الملفات إن عاد النشاط إليها.
-        runCatching { intent.removeExtra(Intent.EXTRA_STREAM) }
-        viewModel.receiveSharedAudio(uris)
+        val action = intent.action
+        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
+        val type = intent.type.orEmpty()
+        val uris: List<Uri> = runCatching { sharedStreamUris(intent) }.getOrDefault(emptyList())
+        when {
+            type.startsWith("audio/") && uris.isNotEmpty() -> {
+                // تُستهلك النيّة فوراً كي لا تتكرّر الملفات إن عاد النشاط إليها.
+                runCatching { intent.removeExtra(Intent.EXTRA_STREAM) }
+                viewModel.receiveSharedAudio(uris)
+            }
+
+            type.startsWith("image/") && uris.isNotEmpty() -> {
+                runCatching { intent.removeExtra(Intent.EXTRA_STREAM) }
+                viewModel.receiveSharedTranscript(text = "", imageUris = uris)
+            }
+
+            type.startsWith("text/") -> {
+                val text = runCatching {
+                    intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
+                }.getOrDefault("")
+                if (text.isNotBlank()) {
+                    runCatching { intent.removeExtra(Intent.EXTRA_TEXT) }
+                    viewModel.receiveSharedTranscript(text = text, imageUris = emptyList())
+                }
+            }
+        }
     }
 
-    private fun sharedAudioUris(intent: Intent): List<Uri> {
+    private fun sharedStreamUris(intent: Intent): List<Uri> {
         return when (intent.action) {
             Intent.ACTION_SEND -> {
                 val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

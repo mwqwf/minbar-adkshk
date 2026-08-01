@@ -1,5 +1,6 @@
 package com.ali.menbaradkshk.data
 
+import android.util.Log
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
@@ -20,6 +21,10 @@ import kotlinx.coroutines.launch
 class NotificationsRepository(private val submissions: SubmissionRepository) {
     private val db = FirebaseFirestore.getInstance()
 
+    private companion object {
+        const val TAG = "NotificationsRepo"
+    }
+
     fun stream(limit: Long = 50): Flow<List<NotificationItem>> = callbackFlow {
         var publicItems = listOf<NotificationItem>()
         var privateItems = listOf<NotificationItem>()
@@ -38,7 +43,10 @@ class NotificationsRepository(private val submissions: SubmissionRepository) {
         val publicRegistration = db.collection("notifications")
             .orderBy("createdAtMs", Query.Direction.DESCENDING)
             .limit(limit)
-            .addSnapshotListener { snapshot, _ ->
+            .addSnapshotListener { snapshot, error ->
+                // خطأ دائم (مثل رفض القواعد) يُنهي المستمع بصمت، فتبقى الشاشة
+                // فارغة بلا سبب ظاهر. تسجيله يجعل التشخيص ممكناً من logcat.
+                if (error != null) Log.w(TAG, "تعذّرت قراءة الإشعارات العامة", error)
                 publicItems = snapshot?.documents.orEmpty().map { fromDocument("public:${it.id}", it) }
                 emit()
             }

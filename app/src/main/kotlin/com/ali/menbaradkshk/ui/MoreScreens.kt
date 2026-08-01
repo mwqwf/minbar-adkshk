@@ -456,6 +456,15 @@ fun visibleNotifications(vm: AppViewModel, all: List<NotificationItem>): List<No
         .filter { it.createdAtMs >= cutoff }
 }
 
+/// عدد الإشعارات الحديثة التي أخفاها المستخدم بنفسه («مسح الكل» أو الحذف
+/// الفردي). تفرّق الشاشةُ بها بين «لم يصلك شيء» و«أنت مسحتَها» — بلا هذا
+/// التمييز يبدو التطبيق وكأنه لا يستقبل الإشعارات أصلاً.
+fun dismissedRecentCount(vm: AppViewModel, all: List<NotificationItem>): Int {
+    val dismissed = vm.store.dismissedNotificationIds().toSet()
+    val cutoff = System.currentTimeMillis() - NOTIFICATIONS_WINDOW_MS
+    return all.count { it.id in dismissed && it.createdAtMs >= cutoff }
+}
+
 @Composable
 fun NotificationsScreen(vm: AppViewModel) {
     val revision by vm.store.revision.collectAsState()
@@ -488,8 +497,25 @@ fun NotificationsScreen(vm: AppViewModel) {
     }
 
     if (items.isEmpty()) {
+        val hidden = remember(all, revision) { dismissedRecentCount(vm, all) }
         Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-            Text("لا توجد إشعارات بعد.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    if (hidden > 0) "مسحتَ إشعاراتك — لم يُفقد شيء." else "لا توجد إشعارات بعد.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (hidden > 0) {
+                    Text(
+                        "الإشعارات الجديدة ستصلك هنا كالمعتاد.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = { vm.store.clearDismissedNotifications() }) {
+                        Text("استعادة المُستبعَدة ($hidden)")
+                    }
+                }
+            }
         }
         return
     }

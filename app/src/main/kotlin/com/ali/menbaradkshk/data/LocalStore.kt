@@ -354,6 +354,11 @@ class LocalStore private constructor(context: Context) {
         setStringList(KEY_DISMISSED_NOTIFICATIONS, values)
     }
 
+    /// التراجع عن «مسح الكل»: يُعيد إظهار كل ما استُبعد يدوياً. الإشعارات
+    /// نفسها لا تُحذف من الخادم، فالاستبعاد محليّ بحت وقابل للنقض.
+    fun clearDismissedNotifications() =
+        setStringList(KEY_DISMISSED_NOTIFICATIONS, emptyList())
+
     // ---- تلميحات الإرشاد للمستخدم الجديد (تُعرض مرة واحدة) ----
     fun hintSeen(key: String): Boolean = bool("hint_$key")
     fun markHintSeen(key: String) = write { putBoolean("hint_$key", true) }

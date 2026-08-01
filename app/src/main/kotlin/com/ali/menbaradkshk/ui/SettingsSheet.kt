@@ -4,14 +4,15 @@ package com.ali.menbaradkshk.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.LocalOverscrollFactory
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -56,6 +57,7 @@ import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -66,16 +68,22 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
-/// «الإعدادات» — ورقة منسدلة شبه كاملة بنمط نبراس (SettingsBottomSheetWidget):
-/// مقبض سحب، عنوان، وبنود نظيفة؛ الخيارات المعقدة تُفتح في منتقيات فرعية.
+/// «الإعدادات» — ورقة منسدلة بنمط نبراس (ContentOptionsSheet) حرفياً:
+/// ارتفاع ثابت محسوب صراحةً (92% من الشاشة) + LazyColumn بـweight(1f)
+/// ومفاتيح بنود ثابتة وnavigationBarsPadding — البنية التي لا تتذبذب مع
+/// التمرير العنيف. الخيارات المعقدة تُفتح في حوارات ومنتقيات فرعية.
 @Composable
 fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
     val scope = rememberCoroutineScope()
@@ -158,8 +166,14 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
     }
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    // بنية نبراس (ContentOptionsSheet): ارتفاع الورقة ثابت محسوب صراحةً من
+    // ارتفاع الشاشة، لا fillMaxHeight بنسبة. النسبة تُقرأ من قيود الورقة
+    // *المتغيّرة أثناء حركتها*، فكانت تمريرة سريعة جداً تُدخل القياس والحركة
+    // في حلقة تغذية راجعة (تذبذب رسم لا يتوقّف). الارتفاع الثابت يفصلهما،
+    // وweight(1f) على القائمة يمنحها قيوداً مقيَّدة مستقرّة داخل العمود.
+    val sheetHeight = (LocalConfiguration.current.screenHeightDp * 0.92f).dp
     ModalBottomSheet(onDismissRequest = vm::closeSettings, sheetState = sheetState) {
-        Column(Modifier.fillMaxHeight(0.92f)) {
+        Column(Modifier.height(sheetHeight).fillMaxWidth()) {
             Text(
                 "الإعدادات",
                 modifier = Modifier.fillMaxWidth(),
@@ -179,15 +193,34 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                 }
             }
             Spacer(Modifier.height(8.dp))
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    start = 8.dp,
-                    end = 8.dp,
-                    bottom = 32.dp,
-                ),
-            ) {
-                item {
+            // مصدرا طاقة التذبذب عند التمريرة العنيفة، ويُغلقان معاً:
+            // (1) سرعة الـfling المتبقّية بعد بلوغ القائمة حدّها كانت تُسلَّم
+            //     إلى نابض استقرار الورقة فيهتزّ عند مرساه بلا توقّف — نبتلع
+            //     الهابط منها فقط؛ السحب البطيء (onPostScroll) يمرّ كما هو،
+            //     فيبقى الإغلاق بالسحب من المقبض أو من رأس القائمة يعمل.
+            // (2) نابض تمدّد الحواف (overscroll) نفسه قد يعلق في اهتزاز
+            //     دون-بكسلي يحرق الإطارات بلا حركة مرئية — نعطّله داخل
+            //     الورقة (لا أثر وظيفي؛ مجرد لمعة الحافّة).
+            val flingGuard = remember {
+                object : NestedScrollConnection {
+                    override suspend fun onPostFling(
+                        consumed: Velocity,
+                        available: Velocity,
+                    ): Velocity = if (available.y > 0f) available else Velocity.Zero
+                }
+            }
+            CompositionLocalProvider(LocalOverscrollFactory provides null) {
+                LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxWidth()
+                        .navigationBarsPadding()
+                        .nestedScroll(flingGuard),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        start = 8.dp,
+                        end = 8.dp,
+                        bottom = 32.dp,
+                    ),
+                ) {
+                item(key = "theme") {
                     SettingsTile(
                         icon = Icons.Filled.BrightnessMedium,
                         title = "المظهر",
@@ -204,7 +237,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         onClick = { themeDialog = true },
                     )
                 }
-                item {
+                item(key = "fontsize") {
                     SettingsTile(
                         icon = Icons.Filled.TextFields,
                         title = "حجم النص",
@@ -218,8 +251,8 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                     )
                 }
 
-                item { SectionHeader("التنزيلات") }
-                item {
+                item(key = "dl-header") { SectionHeader("التنزيلات") }
+                item(key = "autodl") {
                     SettingsTile(
                         icon = Icons.Filled.DownloadForOffline,
                         title = "التنزيل التلقائي",
@@ -236,7 +269,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                     )
                 }
                 if (autoDownload) {
-                    item {
+                    item(key = "autodl-target") {
                         SettingsTile(
                             icon = Icons.Filled.DownloadDone,
                             title = "ما الذي يُنزّل تلقائياً؟",
@@ -251,7 +284,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                             },
                         )
                     }
-                    item {
+                    item(key = "autodl-wifi") {
                         SettingsTile(
                             icon = Icons.Filled.Wifi,
                             title = "عبر Wi‑Fi فقط",
@@ -261,7 +294,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         )
                     }
                 }
-                item {
+                item(key = "dl-favs") {
                     SettingsTile(
                         icon = Icons.Filled.Favorite,
                         title = "تحميل المفضّلة كلها",
@@ -272,7 +305,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         },
                     )
                 }
-                item {
+                item(key = "dl-continue") {
                     SettingsTile(
                         icon = Icons.Filled.Headphones,
                         title = "تحميل دروس «تابع الاستماع»",
@@ -283,7 +316,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         },
                     )
                 }
-                item {
+                item(key = "dl-section") {
                     SettingsTile(
                         icon = Icons.Filled.LibraryAdd,
                         title = "تحميل قسم كامل",
@@ -291,7 +324,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         onClick = { sectionSheet = true },
                     )
                 }
-                item {
+                item(key = "dl-manage") {
                     SettingsTile(
                         icon = Icons.Filled.DownloadDone,
                         title = "إدارة التنزيلات",
@@ -303,8 +336,8 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                     )
                 }
 
-                item { SectionHeader("الإشعارات") }
-                item {
+                item(key = "notif-header") { SectionHeader("الإشعارات") }
+                item(key = "notif") {
                     SettingsTile(
                         icon = if (notifOn) Icons.Filled.NotificationsActive else Icons.Filled.NotificationsOff,
                         title = "الإشعارات",
@@ -321,7 +354,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                     )
                 }
                 if (notifOn) {
-                    item {
+                    item(key = "notif-reminder") {
                         SettingsTile(
                             icon = Icons.Filled.HistoryToggleOff,
                             title = "تذكير «تابع الاستماع»",
@@ -332,7 +365,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         )
                     }
                 }
-                item {
+                item(key = "ward") {
                     SettingsTile(
                         icon = Icons.Filled.WbSunny,
                         title = "الوِرد اليومي",
@@ -349,7 +382,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                     )
                 }
                 if (wardEnabled) {
-                    item {
+                    item(key = "ward-time") {
                         SettingsTile(
                             icon = Icons.Filled.Schedule,
                             title = "وقت الوِرد",
@@ -361,8 +394,8 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                     }
                 }
 
-                item { SectionHeader("أخرى") }
-                item {
+                item(key = "other-header") { SectionHeader("أخرى") }
+                item(key = "goal") {
                     SettingsTile(
                         icon = Icons.Filled.Flag,
                         title = "الهدف الأسبوعي للاستماع",
@@ -370,7 +403,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         onClick = { goalSheet = true },
                     )
                 }
-                item {
+                item(key = "backup") {
                     SettingsTile(
                         icon = Icons.Filled.Save,
                         title = "حفظ نسخة من بياناتي",
@@ -378,7 +411,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         onClick = { exportLauncher.launch("minbar-backup.json") },
                     )
                 }
-                item {
+                item(key = "restore") {
                     SettingsTile(
                         icon = Icons.Filled.Restore,
                         title = "استعادة نسخة",
@@ -386,7 +419,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         onClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                     )
                 }
-                item {
+                item(key = "privacy") {
                     SettingsTile(
                         icon = Icons.Filled.PrivacyTip,
                         title = "سياسة الخصوصية",
@@ -401,7 +434,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         },
                     )
                 }
-                item {
+                item(key = "submissions") {
                     SettingsTile(
                         icon = Icons.Filled.FactCheck,
                         title = "مساهماتي",
@@ -412,7 +445,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         },
                     )
                 }
-                item {
+                item(key = "delete") {
                     SettingsTile(
                         icon = Icons.Filled.DeleteForever,
                         title = "حذف بياناتي",
@@ -421,7 +454,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         onClick = { deleteDialog = true },
                     )
                 }
-                item {
+                item(key = "footer") {
                     Spacer(Modifier.height(12.dp))
                     Text(
                         "منبر ادكصهك — دروس صوتية",
@@ -429,6 +462,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
                 }
             }
         }

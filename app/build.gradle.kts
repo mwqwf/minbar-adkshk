@@ -35,11 +35,12 @@ android {
         applicationId = "com.ali.menbaradkshk"
         minSdk = 23
         targetSdk = 36
-        // 8 / 1.3.4: نسخة معالجة رفض Play (فحص أندرويد أوتو «لا يشغّل الصوت»)
-        // مع معالجة تحذير «العرض حتى حافة الشاشة» (واجهات متوقّفة في أندرويد 15).
+        // 9 / 1.3.5: يضمّ إصلاحات «شارك درساً» (الزرّ يشرح النقص، الإقرارات اختيارية)
+        // وشاشة الإشعارات (تمييز «مسحتَها أنت» عن «لم يصل شيء» مع استعادة المُستبعَدة).
+        // 8 / 1.3.4 كانت نسخة معالجة رفض Play (أندرويد أوتو) وتحذير العرض حتى الحافة.
         // رقم الإصدار **يجب** أن يزيد عن كل ما رُفع سابقاً وإلا رفض المتجر الرفع.
-        versionCode = 8
-        versionName = "1.3.4"
+        versionCode = 9
+        versionName = "1.3.5"
         manifestPlaceholders["appLabel"] = "منبر ادكصهك"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

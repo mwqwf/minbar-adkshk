@@ -132,24 +132,41 @@ fun TranscriptContributeScreen(vm: AppViewModel) {
                 value = query,
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("ابحث عن الدرس بعنوانه") },
+                label = { Text("ابحث بالعنوان أو رقم الدرس أو اسم القسم") },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                supportingText = {
+                    Text("مثال: «3 الفقه» يجد الدرس رقم 3 في قسم الفقه.")
+                },
                 singleLine = true,
             )
             Spacer(Modifier.height(8.dp))
-            val normalizedQuery = normalizeArabic(query.trim())
-            val matches = remember(normalizedQuery, content.lessons) {
-                if (normalizedQuery.length < 2) {
+            // بحث عامّ ككل بحث تعليمي: يقبل رقماً واحداً، وكل كلمة من البحث
+            // تُطابق العنوان أو القسم الرئيسي أو الفرعي — فالعناوين الرقمية
+            // («3»، «12») تتمايز باسم قسمها.
+            val tokens = remember(query) {
+                query.trim().split(Regex("\\s+"))
+                    .map { normalizeArabic(it) }
+                    .filter { it.isNotEmpty() }
+            }
+            val matches = remember(tokens, content.lessons) {
+                if (tokens.isEmpty()) {
                     emptyList()
                 } else {
-                    content.lessons
-                        .filter { normalizeArabic(it.displayTitle).contains(normalizedQuery) }
-                        .take(12)
+                    content.lessons.filter { item ->
+                        val haystack = normalizeArabic(
+                            listOfNotNull(
+                                item.displayTitle,
+                                content.subcategoryById[item.subcategoryId]?.name,
+                                content.categoryById[item.categoryId]?.name,
+                            ).joinToString(" "),
+                        )
+                        tokens.all { haystack.contains(it) }
+                    }.take(20)
                 }
             }
-            if (normalizedQuery.length >= 2 && matches.isEmpty()) {
+            if (tokens.isNotEmpty() && matches.isEmpty()) {
                 Text(
-                    "لا نتائج — جرّب كلمة أخرى من عنوان الدرس.",
+                    "لا نتائج — جرّب رقم الدرس مع اسم قسمه، مثل: «3 الفقه».",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -188,14 +205,20 @@ fun TranscriptContributeScreen(vm: AppViewModel) {
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            content.subcategoryById[item.subcategoryId]?.name
-                                ?.takeIf(String::isNotBlank)?.let {
-                                    Text(
-                                        it,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
+                            // مسار القسم كاملاً — به تتمايز العناوين الرقمية المتشابهة.
+                            val sectionPath = listOfNotNull(
+                                content.categoryById[item.categoryId]?.name
+                                    ?.takeIf(String::isNotBlank),
+                                content.subcategoryById[item.subcategoryId]?.name
+                                    ?.takeIf(String::isNotBlank),
+                            ).joinToString(" ← ")
+                            if (sectionPath.isNotEmpty()) {
+                                Text(
+                                    sectionPath,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
                 }

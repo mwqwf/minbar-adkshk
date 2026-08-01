@@ -51,6 +51,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -83,7 +84,6 @@ fun TranscriptSection(lesson: Lesson) {
     var transcript by remember(lesson.id) { mutableStateOf<LessonTranscript?>(null) }
     var contributeSheet by remember { mutableStateOf(false) }
     var viewingImage by remember { mutableStateOf("") }
-    var expanded by remember(lesson.id) { mutableStateOf(false) }
 
     LaunchedEffect(lesson.id) {
         loading = true
@@ -180,42 +180,36 @@ fun TranscriptSection(lesson: Lesson) {
                         if (t.bookTitle.isNotBlank() || t.sourceRef.isNotBlank()) {
                             Spacer(Modifier.height(10.dp))
                         }
-                        // نص قابل للتحديد والنسخ، بخط قراءة مريح وسطر متباعد.
+                        // النص كاملاً بلا نقر ولا «قراءة المزيد» — تمرير الصفحة
+                        // الطبيعي يتكفّل بالطول (قرار المستخدم الصريح).
                         SelectionContainer {
                             Text(
                                 t.text,
                                 style = MaterialTheme.typography.bodyLarge,
                                 lineHeight = 30.sp,
-                                maxLines = if (expanded) Int.MAX_VALUE else 8,
-                                overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        if (t.text.length > 320) {
-                            TextButton(
-                                onClick = { expanded = !expanded },
-                                modifier = Modifier.align(Alignment.CenterHorizontally),
-                            ) {
-                                Text(if (expanded) "طيّ النص" else "قراءة المزيد")
-                            }
-                        }
                     }
+                    // صفحات الكتاب بعرض البطاقة كاملاً وبنسبة أبعادها الطبيعية
+                    // (لا قصّ ولا تشويه) — تُقرأ مباشرة دون نقر، والنقر يفتحها
+                    // مكبَّرة أكثر للتدقيق.
                     if (t.imageUrls.isNotEmpty()) {
                         Spacer(Modifier.height(10.dp))
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(t.imageUrls.size) { i ->
-                                AsyncImage(
-                                    model = t.imageUrls[i],
-                                    contentDescription = "صفحة الكتاب ${i + 1}",
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier
-                                        .size(120.dp)
-                                        .background(
-                                            MaterialTheme.colorScheme.surfaceVariant,
-                                            RoundedCornerShape(10.dp),
-                                        )
-                                        .clickable { viewingImage = t.imageUrls[i] },
-                                )
-                            }
+                        t.imageUrls.forEachIndexed { i, url ->
+                            if (i > 0) Spacer(Modifier.height(8.dp))
+                            AsyncImage(
+                                model = url,
+                                contentDescription = "صفحة الكتاب ${i + 1}",
+                                contentScale = ContentScale.FillWidth,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(
+                                        MaterialTheme.colorScheme.surfaceVariant,
+                                        RoundedCornerShape(10.dp),
+                                    )
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { viewingImage = url },
+                            )
                         }
                     }
                     Spacer(Modifier.height(10.dp))

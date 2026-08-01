@@ -65,6 +65,13 @@ import com.ali.menbaradkshk.util.smartTitleFromFileName
 
 data class PickedFile(val uri: Uri, val name: String)
 
+/// معرّفات الحقول المطلوبة — تُستعمل لتمييز الحقل الناقص بصريّاً عند محاولة الإرسال.
+private const val FIELD_FILES = "files"
+private const val FIELD_TITLE = "title"
+private const val FIELD_CATEGORY = "category"
+private const val FIELD_SUBCATEGORY = "subcategory"
+private const val FIELD_NAME = "name"
+
 /// حافظ قائمة الملفات المختارة عبر التدوير: uri + الاسم لكل ملف بالتسلسل.
 private val pickedFilesSaver = listSaver<SnapshotStateList<PickedFile>, String>(
     save = { list -> list.flatMap { listOf(it.uri.toString(), it.name) } },
@@ -96,6 +103,9 @@ fun ContributeScreen(vm: AppViewModel) {
     var policyDialog by rememberSaveable { mutableStateOf(false) }
     var formError by rememberSaveable { mutableStateOf("") }
 
+    // الحقل الناقص الذي أوقف آخر محاولة إرسال — يُميَّز بالأحمر ويُصفَّر بمجرّد تعديله.
+    var missingField by rememberSaveable { mutableStateOf("") }
+
     // حالة الرفع تأتي من الـViewModel كي لا يلغيها التدوير.
     val submitting = contribution.submitting
     val merging = contribution.merging
@@ -111,10 +121,20 @@ fun ContributeScreen(vm: AppViewModel) {
         }
     }
 
+    /// يرفع التمييز الأحمر ورسالة النقص بمجرّد أن يعالج المستخدم الحقل المعنيّ.
+    fun clearMissing(field: String) {
+        if (missingField == field) {
+            missingField = ""
+            formError = ""
+        }
+    }
+
     /// يضمّ ملفات جديدة (من محدّد النظام أو من مشاركة خارجية) إلى القائمة،
     /// مع فحص شروط الدمج والحدّ الأقصى واقتراح العنوان من اسم أول ملف.
     fun acceptFiles(picked: List<PickedFile>) {
         if (picked.isEmpty()) return
+        // وصلت ملفات فعلاً: يُرفع تمييز «لم تختر ملفاً» قبل أي رسالة دمج لاحقة.
+        if (missingField == FIELD_FILES) missingField = ""
         val existing = files.map { it.uri }.toSet()
         val combined = files + picked.filter { it.uri !in existing }
 
@@ -183,22 +203,32 @@ fun ContributeScreen(vm: AppViewModel) {
         content.subcategories.filter { it.categoryId == chosen.id }
     }.orEmpty()
 
-    val canSubmit = !submitting &&
-        title.trim().length >= 3 &&
-        category != null &&
-        subcategory != null &&
-        files.isNotEmpty() &&
-        name.trim().isNotEmpty() &&
-        rightsConfirmed &&
-        policyAccepted
+    /// أوّل حقل ناقص بترتيب منطقي (الملف ← العنوان ← القسم ← القسم الفرعي ← الاسم)
+    /// مع الرسالة التي تسمّيه بعينه. الإقرارات السفلية اختيارية فلا تدخل هنا.
+    fun firstMissing(): Pair<String, String>? = when {
+        files.isEmpty() -> FIELD_FILES to "اختر ملفاً صوتياً أولاً."
+        title.trim().length < 3 -> FIELD_TITLE to "اكتب عنوان الدرس (٣ أحرف على الأقل)."
+        category == null -> FIELD_CATEGORY to "اختر القسم الرئيسي."
+        subcategory == null && subsForCategory.isEmpty() ->
+            FIELD_SUBCATEGORY to
+                "لا توجد أقسام فرعية في «${category?.name.orEmpty()}» — اختر قسماً رئيسياً آخر."
+        subcategory == null -> FIELD_SUBCATEGORY to "اختر القسم الفرعي."
+        name.trim().isEmpty() -> FIELD_NAME to "اكتب اسمك كي يعرف المشرفون صاحب المساهمة."
+        else -> null
+    }
 
     fun submit() {
-        if (!canSubmit) {
-            formError = "أكمل الحقول المطلوبة، ثم أكّد حقك في النشر والموافقة على ضوابط المحتوى."
+        // الزرّ لا يُعطَّل إلا أثناء الرفع؛ النقص يُشرح ولا يُخرِس الزرّ.
+        if (submitting) return
+        val missing = firstMissing()
+        if (missing != null) {
+            missingField = missing.first
+            formError = missing.second
             return
         }
         val cat = category ?: return
         val sub = subcategory ?: return
+        missingField = ""
         formError = ""
         vm.submitContribution(
             files = files.toList(),
@@ -242,6 +272,16 @@ fun ContributeScreen(vm: AppViewModel) {
                 else " إضافة ملفات أخرى (${files.size}/${AudioMerger.maxFiles})",
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (missingField == FIELD_FILES) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "الملف الصوتي مطلوب — اضغط الزر أعلاه لاختياره.",
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
             )
         }
         if (shared.preparing) {
@@ -310,17 +350,25 @@ fun ContributeScreen(vm: AppViewModel) {
         Spacer(Modifier.height(14.dp))
         OutlinedTextField(
             value = title,
-            onValueChange = { title = it.take(120) },
+            onValueChange = {
+                title = it.take(120)
+                clearMissing(FIELD_TITLE)
+            },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("عنوان الدرس") },
+            isError = missingField == FIELD_TITLE,
             enabled = !submitting,
         )
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
             value = name,
-            onValueChange = { name = it.take(50) },
+            onValueChange = {
+                name = it.take(50)
+                clearMissing(FIELD_NAME)
+            },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("اسمك (يظهر للمشرفين)") },
+            isError = missingField == FIELD_NAME,
             enabled = !submitting,
         )
         Spacer(Modifier.height(8.dp))
@@ -333,6 +381,7 @@ fun ContributeScreen(vm: AppViewModel) {
                 modifier = Modifier.fillMaxWidth().menuAnchor(),
                 label = { Text("القسم الرئيسي") },
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(categoryMenu) },
+                isError = missingField == FIELD_CATEGORY,
                 enabled = !submitting,
             )
             ExposedDropdownMenu(
@@ -346,6 +395,7 @@ fun ContributeScreen(vm: AppViewModel) {
                             categoryId = item.id
                             subcategoryId = ""
                             categoryMenu = false
+                            clearMissing(FIELD_CATEGORY)
                         },
                     )
                 }
@@ -361,6 +411,7 @@ fun ContributeScreen(vm: AppViewModel) {
                 modifier = Modifier.fillMaxWidth().menuAnchor(),
                 label = { Text("القسم الفرعي") },
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(subcategoryMenu) },
+                isError = missingField == FIELD_SUBCATEGORY,
                 enabled = category != null && !submitting,
             )
             ExposedDropdownMenu(
@@ -373,6 +424,7 @@ fun ContributeScreen(vm: AppViewModel) {
                         onClick = {
                             subcategoryId = item.id
                             subcategoryMenu = false
+                            clearMissing(FIELD_SUBCATEGORY)
                         },
                     )
                 }
@@ -387,6 +439,20 @@ fun ContributeScreen(vm: AppViewModel) {
             minLines = 2,
             enabled = !submitting,
         )
+        Spacer(Modifier.height(12.dp))
+        // إقرارات لا تمنع الإرسال: المشرفون يتحقّقون بأنفسهم والقرار النهائي لهم.
+        Text(
+            "إقرارات اختيارية",
+            style = MaterialTheme.typography.titleSmall,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            "إقرارك يساعدنا، لكنه ليس شرطاً للإرسال — كل درس يراجعه المشرفون " +
+                "ويتحقّقون منه بأنفسهم قبل النشر، والقرار النهائي لهم.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(4.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(rightsConfirmed, { rightsConfirmed = it }, enabled = !submitting)
             Column {
@@ -442,7 +508,7 @@ fun ContributeScreen(vm: AppViewModel) {
         }
         FilledTonalButton(
             onClick = ::submit,
-            enabled = canSubmit,
+            enabled = !submitting,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Icon(Icons.AutoMirrored.Filled.Send, null)

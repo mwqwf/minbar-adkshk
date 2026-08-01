@@ -39,9 +39,10 @@ class SubmissionRepository private constructor(context: Context) {
         draft: SubmissionDraft,
         onProgress: (Int) -> Unit = {},
     ): String {
-        require(draft.rightsConfirmed && draft.contentPolicyAccepted) {
-            "يجب تأكيد الحقوق وسياسة المحتوى."
-        }
+        // ⚠️ الإقرار **ليس شرطاً** للإرسال: المشرفون يتحقّقون من كل درس بأنفسهم
+        // قبل النشر ولا يبنون قرارهم على ادّعاء المستخدم. كان هنا require يمنع
+        // الإرسال بلا إقرار، فيبقى زرّ «إرسال للمراجعة» صامتاً بلا تفسير.
+        // قيمتا الإقرار تُنقَلان كما اختارهما المستخدم ليراهما المشرف عند المراجعة.
         require(draft.title.isNotBlank()) { "أدخل عنوان الدرس." }
         val user = auth.currentUser ?: auth.signInAnonymously().await().user
         requireNotNull(user) { "تعذّر إنشاء الهوية الآمنة." }
@@ -92,7 +93,10 @@ class SubmissionRepository private constructor(context: Context) {
                 "fileName" to safeName,
                 "fileSize" to size,
                 "fcmToken" to fcmToken,
-                "rightsConfirmed" to true,
+                // إقرار المستخدم كما اختاره فعلاً (لا قيمة ثابتة): المشرف يراه
+                // عند المراجعة فيعرف هل أقرّ بالحقوق أم أرسل بلا إقرار.
+                "rightsConfirmed" to draft.rightsConfirmed,
+                "contentPolicyAccepted" to draft.contentPolicyAccepted,
                 "contentPolicyVersion" to CONTENT_POLICY_VERSION,
                 "termsAcceptedAt" to java.time.Instant.now().toString(),
             )

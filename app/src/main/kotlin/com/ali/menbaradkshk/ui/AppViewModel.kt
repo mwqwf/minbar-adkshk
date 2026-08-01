@@ -336,8 +336,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         subcategory: com.ali.menbaradkshk.data.Subcategory,
         submitterName: String,
         note: String,
+        // إقرارا الحقوق والضوابط اختياريان: يُنقَلان كما اختارهما المستخدم
+        // ليراهما المشرف عند المراجعة، ولا يمنعان الإرسال إطلاقاً.
+        rightsConfirmed: Boolean = false,
+        contentPolicyAccepted: Boolean = false,
     ) {
-        if (_contribution.value.submitting || files.isEmpty()) return
+        // لا خروج صامت: كل منع يصل للمستخدم كرسالة تشرح سببه.
+        if (_contribution.value.submitting) return
+        if (files.isEmpty()) {
+            _contribution.value = ContributionState(error = "اختر ملفاً صوتياً أولاً.")
+            return
+        }
+        if (title.isBlank()) {
+            _contribution.value = ContributionState(error = "اكتب عنوان الدرس أولاً.")
+            return
+        }
         _contribution.value = ContributionState(submitting = true)
         viewModelScope.launch {
             val context = getApplication<Application>()
@@ -379,8 +392,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         subcategory = subcategory,
                         submitterName = submitterName,
                         note = note,
-                        rightsConfirmed = true,
-                        contentPolicyAccepted = true,
+                        rightsConfirmed = rightsConfirmed,
+                        contentPolicyAccepted = contentPolicyAccepted,
                     ),
                 ) { percent ->
                     _contribution.value = _contribution.value.copy(progress = percent)

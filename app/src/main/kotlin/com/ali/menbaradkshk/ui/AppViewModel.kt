@@ -15,6 +15,7 @@ import com.ali.menbaradkshk.data.TranscriptRepository
 import com.ali.menbaradkshk.media.PlaybackController
 import com.ali.menbaradkshk.notification.BackgroundScheduler
 import com.ali.menbaradkshk.util.AudioMerger
+import com.ali.menbaradkshk.util.AudioTranscodeMerger
 import com.ali.menbaradkshk.util.Mp3FormatException
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.Dispatchers
@@ -435,20 +436,49 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     if (total > SubmissionRepository.MAX_FILE_BYTES) error("file_too_large")
                     _contribution.value = _contribution.value.copy(merging = true)
                     val timestamp = System.currentTimeMillis()
+                    var mergedName = "merged_$timestamp.mp3"
                     mergedTemp = withContext(Dispatchers.IO) {
                         val cache = File(context.cacheDir, "merge_$timestamp").apply { mkdirs() }
                         val locals = files.mapIndexed { index, picked ->
-                            File(cache, "part_$index.mp3").also { target ->
+                            // الامتداد الأصلي يبقى (المحوّل يفحص المحتوى لا الاسم).
+                            val extension = picked.name.substringAfterLast('.', "bin")
+                                .lowercase().take(6)
+                            File(cache, "part_$index.$extension").also { target ->
                                 context.contentResolver.openInputStream(picked.uri)!!.use { input ->
                                     target.outputStream().use(input::copyTo)
                                 }
                             }
                         }
-                        AudioMerger.mergeMp3(locals, File(cache, "merged_$timestamp.mp3").absolutePath)
-                            .also { locals.forEach(File::delete) }
+                        // مساران: كل الملفات MP3 → لصق إطارات بلا إعادة ترميز
+                        // (سريع وبلا فقد)؛ غير ذلك أو تعذّر اللصق (ترميزات MP3
+                        // متنافرة) → فكّ الجميع وإعادة ترميز AAC/M4A — فيصحّ
+                        // الدمج **مهما اختلفت الصيغ** والناتج صيغة واحدة دائماً.
+                        val allMp3 = files.all { AudioMerger.isMp3(it.name) }
+                        val merged = if (allMp3) {
+                            try {
+                                AudioMerger.mergeMp3(
+                                    locals,
+                                    File(cache, "merged_$timestamp.mp3").absolutePath,
+                                )
+                            } catch (_: Mp3FormatException) {
+                                mergedName = "merged_$timestamp.m4a"
+                                AudioTranscodeMerger.mergeToM4a(
+                                    locals,
+                                    File(cache, "merged_$timestamp.m4a").absolutePath,
+                                )
+                            }
+                        } else {
+                            mergedName = "merged_$timestamp.m4a"
+                            AudioTranscodeMerger.mergeToM4a(
+                                locals,
+                                File(cache, "merged_$timestamp.m4a").absolutePath,
+                            )
+                        }
+                        locals.forEach(File::delete)
+                        merged
                     }
                     _contribution.value = _contribution.value.copy(merging = false)
-                    Uri.fromFile(mergedTemp) to "merged_$timestamp.mp3"
+                    Uri.fromFile(mergedTemp) to mergedName
                 }
                 submissions.submit(
                     SubmissionDraft(
@@ -470,7 +500,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } catch (failure: Throwable) {
                 _contribution.value = ContributionState(
                     error = when {
-                        failure is Mp3FormatException -> "تعذّر دمج الملفات — تأكد أنها ملفات MP3 سليمة."
+                        failure is AudioTranscodeMerger.UnsupportedAudioException ->
+                            failure.message ?: "تعذّر فكّ أحد الملفات الصوتية."
+                        failure is Mp3FormatException ->
+                            "تعذّر دمج الملفات — أحدها ليس ملفاً صوتياً سليماً."
                         failure.message?.contains("file_too_large") == true ->
                             "الحجم الكلي أكبر من الحدّ المسموح (100MB)."
                         else -> "تعذّر إرسال المساهمة. تحقق من اتصالك وحاول مجدداً."

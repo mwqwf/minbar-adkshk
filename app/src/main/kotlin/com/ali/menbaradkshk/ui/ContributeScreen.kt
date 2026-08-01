@@ -150,14 +150,8 @@ fun ContributeScreen(vm: AppViewModel) {
         val existing = files.map { it.uri }.toSet()
         val combined = files + picked.filter { it.uri !in existing }
 
-        // الدمج المباشر لا يصح إلا لملفات MP3.
-        if (combined.size > 1) {
-            val bad = combined.firstOrNull { !AudioMerger.isMp3(it.name) }
-            if (bad != null) {
-                formError = "لدمج عدة ملفات يجب أن تكون جميعها MP3 — «${bad.name}» ليس كذلك."
-                return
-            }
-        }
+        // قيد «MP3 فقط» أُلغي نهائياً: الدمج صار يقبل أي صيغ (فكّ إلى PCM
+        // ثم إعادة ترميز AAC/M4A عند اختلافها) — لا عبء تحويل على المستخدم.
         formError = if (combined.size > AudioMerger.maxFiles) {
             "الحد الأقصى ${AudioMerger.maxFiles} ملفات للدرس الواحد — أُبقي أولها."
         } else {

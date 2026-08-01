@@ -223,8 +223,13 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
             }
         },
     ) { padding ->
+        // حافظ حالة الشاشات عبر التنقل: بلاه كان تبديل الشاشة (مثلاً مشاركة
+        // صورة تفتح «ساهم بالنص») يدمّر rememberSaveable لنموذج «شارك درساً»
+        // المفتوح فيمسح ملفات المستخدم وعنوانه بصمت.
+        val screenStateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
         Box(Modifier.padding(padding)) {
-            when (val current = route) {
+            screenStateHolder.SaveableStateProvider(route::class.java.simpleName) {
+                when (val current = route) {
                 Route.Home -> HomeScreen(vm, content, playback)
                 Route.Library -> LibraryScreen(vm, content)
                 Route.MyLists -> MyListsScreen(vm, playback)
@@ -252,6 +257,7 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                 Route.ContributeTranscript -> TranscriptContributeScreen(vm)
                 Route.MySubmissions -> MySubmissionsScreen(vm)
                 Route.Notifications -> NotificationsScreen(vm)
+                }
             }
         }
     }

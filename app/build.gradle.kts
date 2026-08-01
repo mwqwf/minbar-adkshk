@@ -180,3 +180,28 @@ tasks.matching {
         }
     }
 }
+
+// تحذير Play «لم يتم تحميل أي رموز لتصحيح الأخطاء»: كل المكتبات الأصلية هنا
+// تأتي من AndroidX مجرّدةً من جدول الرموز الكامل (.symtab)، فمهمة AGP
+// extractReleaseNativeSymbolTables تخرج صفر ملفات ولا يُضمَّن شيء في الحزمة
+// فيبقى التحذير. المكتبات تحتفظ بجدولها الديناميكي (.dynsym) — وهو كل ما
+// يملكه أحد أصلاً لهذه المكتبات — فنضمّنه بأنفسنا بصيغة <lib>.so.sym التي
+// تلتقطها حزمة AAB في BUNDLE-METADATA/com.android.tools.build.debugsymbols
+// فيزول التحذير وتتحسّن قراءة أعطالها في Play بلا أي أثر على التطبيق.
+tasks.matching { it.name == "extractReleaseNativeSymbolTables" }.configureEach {
+    doLast {
+        val mergedLibs = layout.buildDirectory
+            .dir("intermediates/merged_native_libs/release/mergeReleaseNativeLibs/out/lib")
+            .get().asFile
+        val symbolsOut = layout.buildDirectory
+            .dir("intermediates/native_symbol_tables/release/extractReleaseNativeSymbolTables/out")
+            .get().asFile
+        mergedLibs.walkTopDown().filter { it.isFile && it.extension == "so" }.forEach { so ->
+            val target = File(symbolsOut, "${so.parentFile.name}/${so.name}.sym")
+            if (!target.exists()) {
+                target.parentFile.mkdirs()
+                so.copyTo(target)
+            }
+        }
+    }
+}

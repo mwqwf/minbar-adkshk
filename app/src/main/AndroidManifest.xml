@@ -25,6 +25,18 @@
         android:theme="@style/Theme.Minbar"
         android:usesCleartextTraffic="false">
 
+        <!-- MinbarApplication configures WorkManager with a JobScheduler ID range
+             that cannot collide with the user-initiated download job. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                tools:node="remove" />
+        </provider>
+
         <!-- شبكة أمان: أيّ رسالة FCM تُشير إلى قناة غير موجودة تسقط على
              هذه القناة بدل أن تُحجب. -->
         <meta-data
@@ -119,7 +131,7 @@
             android:name="com.canhub.cropper.CropImageActivity"
             android:exported="false"
             android:theme="@style/Theme.AppCompat.DayNight"
-            tools:replace="android:theme,android:exported" />
+            tools:replace="android:exported" />
 
         <service
             android:name=".media.PlaybackService"
@@ -146,7 +158,8 @@
         <service
             android:name=".data.LessonDownloadJobService"
             android:exported="false"
-            android:permission="android.permission.BIND_JOB_SERVICE" />
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            tools:targetApi="34" />
 
         <service
             android:name=".notification.MinbarMessagingService"

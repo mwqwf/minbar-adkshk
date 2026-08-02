@@ -71,6 +71,27 @@ private val rootTabs = listOf(
     RootTab(Route.Favorites, "المفضّلة", Icons.Outlined.FavoriteBorder, Icons.Filled.Favorite),
 )
 
+/** مفتاح حالة يميّز محتوى المسار، ويتجاهل startAtMs المؤقت لنفس الدرس. */
+private fun routeStateKey(route: Route): String = when (route) {
+    Route.Home -> "Home"
+    Route.Library -> "Library"
+    Route.MyLists -> "MyLists"
+    Route.Downloads -> "Downloads"
+    Route.Favorites -> "Favorites"
+    is Route.Category -> "Category:${route.id}"
+    is Route.Subcategory -> "Subcategory:${route.id}"
+    is Route.Lesson -> "Lesson:${route.id}"
+    is Route.Search -> "Search:${route.initial}"
+    is Route.Playlist -> "Playlist:${route.id}"
+    Route.Radio -> "Radio"
+    Route.Car -> "Car"
+    Route.Stats -> "Stats"
+    Route.Contribute -> "Contribute"
+    Route.ContributeTranscript -> "ContributeTranscript"
+    Route.MySubmissions -> "MySubmissions"
+    Route.Notifications -> "Notifications"
+}
+
 @Composable
 fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
     val route by vm.route.collectAsState()
@@ -78,9 +99,12 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
     val playback by vm.playback.state.collectAsState()
     val message by vm.message.collectAsState()
     val showSettings by vm.showSettings.collectAsState()
+    val transcriptContribution by vm.transcriptContribution.collectAsState()
     val snackbar = remember { SnackbarHostState() }
 
     val isRoot = rootTabs.any { it.route == route }
+    val navigationBlocked = route == Route.ContributeTranscript &&
+        transcriptContribution.submitting
     // المشغّل ووضع القيادة شاشتان بملء الشاشة بلا أشرطة (نمط الأصل).
     val fullScreen = route is Route.Lesson || route == Route.Car
 
@@ -110,7 +134,10 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         )
         if (result == SnackbarResult.ActionPerformed) vm.playback.retry()
     }
-    BackHandler(enabled = !isRoot) { vm.back() }
+    BackHandler(enabled = !isRoot && !navigationBlocked) { vm.back() }
+    BackHandler(enabled = navigationBlocked) {
+        vm.showMessage("انتظر اكتمال إرسال المساهمة قبل الرجوع.")
+    }
 
     Scaffold(
         topBar = {
@@ -125,7 +152,10 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                     ),
                     navigationIcon = {
                         if (!isRoot) {
-                            IconButton(onClick = { vm.back() }) {
+                            IconButton(
+                                onClick = { vm.back() },
+                                enabled = !navigationBlocked,
+                            ) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, "رجوع")
                             }
                         }
@@ -228,7 +258,7 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         // المفتوح فيمسح ملفات المستخدم وعنوانه بصمت.
         val screenStateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
         Box(Modifier.padding(padding)) {
-            screenStateHolder.SaveableStateProvider(route::class.java.simpleName) {
+            screenStateHolder.SaveableStateProvider(routeStateKey(route)) {
                 when (val current = route) {
                 Route.Home -> HomeScreen(vm, content, playback)
                 Route.Library -> LibraryScreen(vm, content)

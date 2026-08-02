@@ -11,6 +11,7 @@ import com.ali.menbaradkshk.data.NotificationItem
 import com.ali.menbaradkshk.data.NotificationsRepository
 import com.ali.menbaradkshk.data.SubmissionDraft
 import com.ali.menbaradkshk.data.SubmissionRepository
+import com.ali.menbaradkshk.data.TranscriptDraft
 import com.ali.menbaradkshk.data.TranscriptRepository
 import com.ali.menbaradkshk.media.PlaybackController
 import com.ali.menbaradkshk.notification.BackgroundScheduler
@@ -80,6 +81,15 @@ data class ContributionState(
     val done: Boolean = false,
 )
 
+/** حالة رفع مساهمة النص — في الـViewModel كي يواصل الرفع بعد تدوير الشاشة. */
+data class TranscriptContributionState(
+    val lessonId: String = "",
+    val submitting: Boolean = false,
+    val progress: Int = 0,
+    val error: String = "",
+    val done: Boolean = false,
+)
+
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     val store = LocalStore.get(application)
     val content = ContentRepository.get(application)
@@ -104,6 +114,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /// حالة شاشة «شارك درساً» (دمج/رفع/خطأ/نجاح).
     private val _contribution = MutableStateFlow(ContributionState())
     val contribution: StateFlow<ContributionState> = _contribution.asStateFlow()
+
+    private val _transcriptContribution = MutableStateFlow(TranscriptContributionState())
+    val transcriptContribution: StateFlow<TranscriptContributionState> =
+        _transcriptContribution.asStateFlow()
 
     /// ملفات «المشاركة الخارجية» بانتظار أن تستهلكها شاشة المساهمة.
     private val _sharedAudio = MutableStateFlow(SharedAudioState())
@@ -392,6 +406,43 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _sharedTranscript.value = SharedTranscriptState()
     }
 
+    /**
+     * يرفع مساهمة النص في نطاق الـViewModel؛ نطاق الشاشة كان يُلغى عند
+     * التدوير أو الرجوع فتتوقف المساهمة بصمت بعد أن بدأ رفع صورها.
+     */
+    fun submitTranscript(draft: TranscriptDraft) {
+        if (_transcriptContribution.value.submitting) return
+        _transcriptContribution.value = TranscriptContributionState(
+            lessonId = draft.lessonId,
+            submitting = true,
+        )
+        viewModelScope.launch {
+            try {
+                transcripts.submit(draft) { percent ->
+                    _transcriptContribution.value = _transcriptContribution.value.copy(
+                        progress = percent,
+                    )
+                }
+                _transcriptContribution.value = TranscriptContributionState(
+                    lessonId = draft.lessonId,
+                    done = true,
+                )
+            } catch (failure: Throwable) {
+                _transcriptContribution.value = TranscriptContributionState(
+                    lessonId = draft.lessonId,
+                    error = failure.message
+                        ?: "تعذّر الإرسال. تأكد من الاتصال وحاول مجدداً.",
+                )
+            }
+        }
+    }
+
+    fun clearTranscriptContribution() {
+        if (!_transcriptContribution.value.submitting) {
+            _transcriptContribution.value = TranscriptContributionState()
+        }
+    }
+
     /// يدمج الملفات (عند تعددها) ثم يرفع المساهمة داخل `viewModelScope`،
     /// فيستمر الرفع رغم تدوير الشاشة أو إعادة إنشاء النشاط.
     fun submitContribution(
@@ -423,6 +474,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val context = getApplication<Application>()
             var mergedTemp: File? = null
+            var mergeCache: File? = null
             try {
                 // ملف واحد يُرفع كما هو؛ أكثر يُدمج محلياً أولاً ثم يُرفع الناتج.
                 val (uploadUri, uploadName) = if (files.size == 1) {
@@ -438,7 +490,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     val timestamp = System.currentTimeMillis()
                     var mergedName = "merged_$timestamp.mp3"
                     mergedTemp = withContext(Dispatchers.IO) {
+                        // قتل العملية قد يمنع finally؛ نكنس فقط المحاولات القديمة
+                        // ثم نحذف مجلد المحاولة الحالية حتماً في finally أدناه.
+                        val cutoff = timestamp - 24L * 60 * 60 * 1000
+                        context.cacheDir.listFiles()?.forEach { stale ->
+                            if (stale.isDirectory && stale.name.startsWith("merge_") &&
+                                stale.lastModified() < cutoff
+                            ) {
+                                runCatching { stale.deleteRecursively() }
+                            }
+                        }
                         val cache = File(context.cacheDir, "merge_$timestamp").apply { mkdirs() }
+                        mergeCache = cache
                         val locals = files.mapIndexed { index, picked ->
                             // الامتداد الأصلي يبقى (المحوّل يفحص المحتوى لا الاسم).
                             val extension = picked.name.substringAfterLast('.', "bin")
@@ -506,11 +569,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             "تعذّر دمج الملفات — أحدها ليس ملفاً صوتياً سليماً."
                         failure.message?.contains("file_too_large") == true ->
                             "الحجم الكلي أكبر من الحدّ المسموح (100MB)."
+                        failure is IllegalArgumentException || failure is IllegalStateException ->
+                            failure.message
+                                ?: "تعذّر إرسال المساهمة. تحقق من اتصالك وحاول مجدداً."
                         else -> "تعذّر إرسال المساهمة. تحقق من اتصالك وحاول مجدداً."
                     },
                 )
             } finally {
-                mergedTemp?.delete()
+                mergeCache?.let { runCatching { it.deleteRecursively() } }
+                    ?: mergedTemp?.delete()
             }
         }
     }

@@ -310,7 +310,7 @@ fun PlayerScreen(
 
             // 📖 «النص المشروح» في أعلى الشاشة عمداً — تحت العنوان مباشرة
             // ليراه كل من يفتح الصوتية، لا في ذيل الصفحة حيث لا يصله أحد.
-            TranscriptSection(lesson = current)
+            TranscriptSection(vm = vm, lesson = current)
             Spacer(Modifier.height(14.dp))
 
             // شريط التقدّم.

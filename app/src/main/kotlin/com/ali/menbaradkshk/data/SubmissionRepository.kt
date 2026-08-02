@@ -53,6 +53,20 @@ class SubmissionRepository private constructor(context: Context) {
             ?.use { it.length }
             ?: -1L
         require(size in 0..MAX_FILE_BYTES) { "حجم الملف يتجاوز 100 ميجابايت." }
+        // افحص كل صور النص قبل رفع الصوت؛ كان اكتشاف صورة كبيرة/غير صالحة
+        // يحدث بعد رفع ملف صوتي قد يبلغ 100MB، فيُحذف ثم يعاد رفعه عند المحاولة.
+        val validatedTranscriptImages = draft.transcript.images
+            .take(TranscriptRepository.MAX_IMAGES)
+            .mapIndexed { index, imageUri ->
+                val imageSize = appContext.contentResolver
+                    .openAssetFileDescriptor(imageUri, "r")?.use { it.length } ?: -1L
+                require(imageSize in 1..TranscriptRepository.MAX_IMAGE_BYTES) {
+                    "حجم صورة النص ${index + 1} يتجاوز 10 ميجابايت."
+                }
+                val imageType = appContext.contentResolver.getType(imageUri) ?: "image/jpeg"
+                require(imageType.startsWith("image/")) { "مرفق النص ليس صورة." }
+                imageUri to imageType
+            }
         if (draft.submitterName.isNotBlank()) store.setSubmitterName(draft.submitterName)
 
         val id = "sub_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}"
@@ -78,16 +92,8 @@ class SubmissionRepository private constructor(context: Context) {
             val audioUrl = reference.downloadUrl.await().toString()
             // صور «النص المشروح» الاختيارية تُرفع لمساحة اقتراحات النصوص
             // (قواعد التخزين تسمح لصاحبها برفع الصور هناك) بنفس معرّف المساهمة.
-            draft.transcript.images
-                .take(TranscriptRepository.MAX_IMAGES)
-                .forEachIndexed { index, imageUri ->
-                    val imageSize = appContext.contentResolver
-                        .openAssetFileDescriptor(imageUri, "r")?.use { it.length } ?: -1L
-                    require(imageSize in 1..TranscriptRepository.MAX_IMAGE_BYTES) {
-                        "حجم صورة النص ${index + 1} يتجاوز 10 ميجابايت."
-                    }
-                    val imageType = appContext.contentResolver.getType(imageUri) ?: "image/jpeg"
-                    require(imageType.startsWith("image/")) { "مرفق النص ليس صورة." }
+            validatedTranscriptImages
+                .forEachIndexed { index, (imageUri, imageType) ->
                     val imagePath = "transcript_submissions/${user.uid}/$id/lesson_${index}_page.jpg"
                     storage.reference.child(imagePath).putFile(
                         imageUri,

@@ -27,6 +27,11 @@ val hasReleaseSigning = listOf(
     releaseStorePassword,
 ).all { !it.isNullOrBlank() } && releaseStorePath?.let(::file)?.exists() == true
 
+// الاسم الظاهر للمستخدم. ثابت واحد لكل أنواع البناء بلا أي لاحقة
+// («تجريبي»/dev/beta/…). الفصل عن نسخة Play مضمون بلاحقة الحزمة `.dev`
+// وحدها. الحارس أسفل كتلة `android` يوقف البناء إن عاد أحد فأضاف لاحقة.
+val canonicalAppLabel = "منبر ادكصهك"
+
 android {
     namespace = "com.ali.menbaradkshk"
     compileSdk = 36
@@ -35,13 +40,14 @@ android {
         applicationId = "com.ali.menbaradkshk"
         minSdk = 23
         targetSdk = 36
-        // 9 / 1.3.5: يضمّ إصلاحات «شارك درساً» (الزرّ يشرح النقص، الإقرارات اختيارية)
-        // وشاشة الإشعارات (تمييز «مسحتَها أنت» عن «لم يصل شيء» مع استعادة المُستبعَدة).
+        // 10 / 1.3.6: يضمّ النص المشروح ومشاركة الصور/النص، ودمج الصوتيات
+        // متعدّدة الصيغ، مع إصلاح حفظ النماذج ودوران الصور وتنظيف كاش الدمج.
+        // 9 / 1.3.5: إصلاحات «شارك درساً» والإشعارات.
         // 8 / 1.3.4 كانت نسخة معالجة رفض Play (أندرويد أوتو) وتحذير العرض حتى الحافة.
         // رقم الإصدار **يجب** أن يزيد عن كل ما رُفع سابقاً وإلا رفض المتجر الرفع.
-        versionCode = 9
-        versionName = "1.3.5"
-        manifestPlaceholders["appLabel"] = "منبر ادكصهك"
+        versionCode = 10
+        versionName = "1.3.6"
+        manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -62,7 +68,9 @@ android {
         debug {
             applicationIdSuffix = ".dev"
             versionNameSuffix = "-dev"
-            manifestPlaceholders["appLabel"] = "منبر ادكصهك (تجريبي)"
+            // الاسم الظاهر للمستخدم هو «منبر ادكصهك» في كل الأنواع بلا استثناء.
+            // لا تُضِف هنا أي لاحقة (تجريبي/dev/beta) — الفصل عن نسخة Play
+            // مضمون أصلاً بلاحقة الحزمة `.dev` أعلاه، لا بالاسم الظاهر.
         }
         release {
             if (hasReleaseSigning) {
@@ -96,6 +104,12 @@ android {
         localeFilters += listOf("ar")
     }
     packaging {
+        // These two dependency binaries are already stripped by their publishers. Avoid asking
+        // AGP to strip them again (which only emits a warning); native metadata is added below.
+        jniLibs.keepDebugSymbols += setOf(
+            "**/libandroidx.graphics.path.so",
+            "**/libdatastore_shared_counter.so",
+        )
         resources.excludes += setOf(
             "/META-INF/{AL2.0,LGPL2.1}",
             // بيانات وصفيّة لا يقرأها شيء وقت التشغيل: مِجسّات تصحيح
@@ -152,6 +166,9 @@ dependencies {
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.2.0")
     // قصّ صور صفحات الكتاب قبل الإرفاق (واجهة قصّ جاهزة عبر ActivityResult).
     implementation("com.vanniktech:android-image-cropper:4.6.0")
+    // موجودة انتقالياً أصلاً عبر Coil/Media3؛ نعلنها مباشرة لأن دمج الصور
+    // يقرأ اتجاه EXIF بنفسه، بلا إضافة أي بايت جديد إلى الحزمة النهائية.
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
 
     val firebaseBom = platform("com.google.firebase:firebase-bom:34.16.0")
     implementation(firebaseBom)
@@ -187,6 +204,24 @@ tasks.matching {
     }
 }
 
+// حارس دائم لاسم التطبيق الظاهر. سبق أن سُلّمت نسخة باسم «منبر ادكصهك (تجريبي)»
+// إلى الجهاز، وهو خطأ لا يجوز تكراره: الاسم الذي يراه المستخدم هو
+// «منبر ادكصهك» في **كل** أنواع البناء بلا استثناء، والفصل عن نسخة Play
+// يكون بلاحقة الحزمة `.dev` لا بالاسم. يعمل بعد اكتمال كل كتل الـDSL،
+// فيلتقط أي لاحقة تُضاف لاحقاً في أي نوع بناء ويوقف البناء فوراً.
+androidComponents {
+    finalizeDsl { extension ->
+        extension.buildTypes.forEach { buildType ->
+            val label = buildType.manifestPlaceholders["appLabel"]
+            check(label == null || label == canonicalAppLabel) {
+                "اسم التطبيق الظاهر في نوع البناء «${buildType.name}» صار «$label». " +
+                    "يجب أن يبقى «$canonicalAppLabel» بلا أي لاحقة (تجريبي/dev/beta) " +
+                    "في كل الأنواع — الفصل عن نسخة Play بلاحقة الحزمة لا بالاسم."
+            }
+        }
+    }
+}
+
 // تحذير Play «لم يتم تحميل أي رموز لتصحيح الأخطاء»: كل المكتبات الأصلية هنا
 // تأتي من AndroidX مجرّدةً من جدول الرموز الكامل (.symtab)، فمهمة AGP
 // extractReleaseNativeSymbolTables تخرج صفر ملفات ولا يُضمَّن شيء في الحزمة
@@ -204,10 +239,8 @@ tasks.matching { it.name == "extractReleaseNativeSymbolTables" }.configureEach {
             .get().asFile
         mergedLibs.walkTopDown().filter { it.isFile && it.extension == "so" }.forEach { so ->
             val target = File(symbolsOut, "${so.parentFile.name}/${so.name}.sym")
-            if (!target.exists()) {
-                target.parentFile.mkdirs()
-                so.copyTo(target)
-            }
+            target.parentFile.mkdirs()
+            so.copyTo(target, overwrite = true)
         }
     }
 }

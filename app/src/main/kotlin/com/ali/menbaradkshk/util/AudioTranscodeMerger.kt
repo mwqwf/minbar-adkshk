@@ -130,7 +130,17 @@ object AudioTranscodeMerger {
         }
 
         try {
-            inputs.forEach { file -> decodeInto(file, ::feedPcm) }
+            inputs.forEach { file ->
+                // كل ملف يجب أن يساهم بصوت فعلي؛ كان الملف المبتور الذي يفكّ
+                // صفر عيّنات يسقط بصمت ويُرفع الدرس المدموج ناقصاً جزءاً كاملاً.
+                val framesBefore = totalFrames
+                decodeInto(file, ::feedPcm)
+                if (totalFrames == framesBefore) {
+                    throw UnsupportedAudioException(
+                        "تعذّر استخراج صوت من «${file.name}» — الملف تالف أو فارغ.",
+                    )
+                }
+            }
             // راية نهاية التدفق ثم تصريف كامل.
             while (true) {
                 val inIndex = encoder.dequeueInputBuffer(TIMEOUT_US)

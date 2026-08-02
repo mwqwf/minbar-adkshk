@@ -39,11 +39,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -57,7 +55,6 @@ import com.ali.menbaradkshk.data.Lesson
 import com.ali.menbaradkshk.data.TranscriptDraft
 import com.ali.menbaradkshk.data.TranscriptRepository
 import com.ali.menbaradkshk.util.normalizeArabic
-import kotlinx.coroutines.launch
 
 /**
  * 📖 «ساهم بالنص» شاشةً مستقلة — تُفتح من مشاركة صورة/نص من تطبيق خارجي:
@@ -66,11 +63,9 @@ import kotlinx.coroutines.launch
  */
 @Composable
 fun TranscriptContributeScreen(vm: AppViewModel) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val scope = rememberCoroutineScope()
-    val repo = remember { TranscriptRepository.get(context) }
     val content by vm.content.state.collectAsState()
     val shared by vm.sharedTranscript.collectAsState()
+    val submission by vm.transcriptContribution.collectAsState()
 
     var lessonId by rememberSaveable { mutableStateOf("") }
     var query by rememberSaveable { mutableStateOf("") }
@@ -79,18 +74,29 @@ fun TranscriptContributeScreen(vm: AppViewModel) {
     var sourceRef by rememberSaveable { mutableStateOf("") }
     var note by rememberSaveable { mutableStateOf("") }
     var name by rememberSaveable { mutableStateOf(vm.store.submitterName()) }
-    val images = remember { mutableStateListOf<android.net.Uri>() }
-    var sending by remember { mutableStateOf(false) }
-    var progress by remember { mutableIntStateOf(0) }
+    val images = rememberSaveable(saver = uriStateListSaver) {
+        mutableStateListOf<android.net.Uri>()
+    }
     var message by rememberSaveable { mutableStateOf("") }
-    var done by remember { mutableStateOf(false) }
+    val ownsSubmission = lessonId.isNotBlank() && submission.lessonId == lessonId
+    val sending = submission.submitting
+    val progress = if (ownsSubmission) submission.progress else 0
+    val done = ownsSubmission && submission.done
+    val visibleMessage = message.ifBlank {
+        if (ownsSubmission) submission.error else ""
+    }
 
     // حمولة المشاركة الخارجية تُدرج مرة واحدة فور تجهيزها.
     LaunchedEffect(shared) {
         if (shared.preparing) return@LaunchedEffect
         if (shared.text.isNotEmpty() || shared.images.isNotEmpty()) {
-            if (shared.text.isNotEmpty() && text.isBlank()) {
-                text = shared.text.take(TranscriptRepository.MAX_TEXT_CHARS)
+            if (shared.text.isNotEmpty()) {
+                val incoming = shared.text.take(TranscriptRepository.MAX_TEXT_CHARS)
+                text = when {
+                    text.isBlank() -> incoming
+                    text.contains(incoming) -> text
+                    else -> "$text\n\n$incoming".take(TranscriptRepository.MAX_TEXT_CHARS)
+                }
             }
             shared.images.forEach { uri ->
                 if (images.size < TranscriptRepository.MAX_IMAGES) images.add(uri)
@@ -138,6 +144,7 @@ fun TranscriptContributeScreen(vm: AppViewModel) {
                     Text("مثال: «3 الفقه» يجد الدرس رقم 3 في قسم الفقه.")
                 },
                 singleLine = true,
+                enabled = !sending,
             )
             Spacer(Modifier.height(8.dp))
             // بحث عامّ ككل بحث تعليمي: يقبل رقماً واحداً، وكل كلمة من البحث
@@ -179,7 +186,7 @@ fun TranscriptContributeScreen(vm: AppViewModel) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = 3.dp)
-                        .clickable { lessonId = item.id },
+                        .clickable(enabled = !sending) { lessonId = item.id },
                 ) {
                     Row(
                         Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -312,10 +319,10 @@ fun TranscriptContributeScreen(vm: AppViewModel) {
             )
         }
 
-        if (message.isNotEmpty()) {
+        if (visibleMessage.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
             Text(
-                message,
+                visibleMessage,
                 modifier = Modifier.fillMaxWidth(),
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.error,
@@ -336,28 +343,17 @@ fun TranscriptContributeScreen(vm: AppViewModel) {
                         message = "أضف نص المقطع من الكتاب أو أرفق صورة صفحة واحدة على الأقل."
                     else -> {
                         message = ""
-                        sending = true
-                        scope.launch {
-                            runCatching {
-                                repo.submit(
-                                    TranscriptDraft(
-                                        lessonId = lesson.id,
-                                        text = text,
-                                        bookTitle = bookTitle,
-                                        sourceRef = sourceRef,
-                                        note = note,
-                                        submitterName = name,
-                                        images = images.toList(),
-                                    ),
-                                ) { progress = it }
-                            }.onSuccess {
-                                done = true
-                            }.onFailure {
-                                message = it.message
-                                    ?: "تعذّر الإرسال. تأكد من الاتصال وحاول مجدداً."
-                            }
-                            sending = false
-                        }
+                        vm.submitTranscript(
+                            TranscriptDraft(
+                                lessonId = lesson.id,
+                                text = text,
+                                bookTitle = bookTitle,
+                                sourceRef = sourceRef,
+                                note = note,
+                                submitterName = name,
+                                images = images.toList(),
+                            ),
+                        )
                     }
                 }
             },
@@ -379,6 +375,15 @@ fun TranscriptContributeScreen(vm: AppViewModel) {
 
     if (done) {
         val close = {
+            lessonId = ""
+            query = ""
+            text = ""
+            bookTitle = ""
+            sourceRef = ""
+            note = ""
+            images.clear()
+            message = ""
+            vm.clearTranscriptContribution()
             vm.back()
             Unit
         }

@@ -88,6 +88,14 @@ private val pickedFilesSaver = listSaver<SnapshotStateList<PickedFile>, String>(
     },
 )
 
+/** حافظ Uri للصور عبر التدوير والتنقل المحفوظ؛ الملفات نفسها في كاش التطبيق. */
+internal val uriStateListSaver = listSaver<SnapshotStateList<Uri>, String>(
+    save = { list -> list.map(Uri::toString) },
+    restore = { saved ->
+        mutableStateListOf<Uri>().apply { saved.forEach { add(Uri.parse(it)) } }
+    },
+)
+
 /// 📤 «شارك درساً» — النقل الأمين لـ contribute_screen.dart:
 /// عدّة ملفات MP3 تُدمج محلياً بالترتيب المختار في درس واحد قبل الرفع.
 @Composable
@@ -113,7 +121,9 @@ fun ContributeScreen(vm: AppViewModel) {
     var transcriptText by rememberSaveable { mutableStateOf("") }
     var transcriptBookTitle by rememberSaveable { mutableStateOf("") }
     var transcriptSourceRef by rememberSaveable { mutableStateOf("") }
-    val transcriptImages = remember { mutableStateListOf<Uri>() }
+    val transcriptImages = rememberSaveable(saver = uriStateListSaver) {
+        mutableStateListOf<Uri>()
+    }
 
     // الحقل الناقص الذي أوقف آخر محاولة إرسال — يُميَّز بالأحمر ويُصفَّر بمجرّد تعديله.
     var missingField by rememberSaveable { mutableStateOf("") }

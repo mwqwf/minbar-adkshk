@@ -42,19 +42,18 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -64,10 +63,8 @@ import androidx.compose.ui.window.Dialog
 import coil3.compose.AsyncImage
 import com.ali.menbaradkshk.data.Lesson
 import com.ali.menbaradkshk.data.LessonTranscript
-import com.ali.menbaradkshk.data.LocalStore
 import com.ali.menbaradkshk.data.TranscriptDraft
 import com.ali.menbaradkshk.data.TranscriptRepository
-import kotlinx.coroutines.launch
 
 /**
  * 📖 «النص المشروح» في شاشة التشغيل: يعرض المتن/المقطع الأصلي الذي تشرحه
@@ -76,18 +73,15 @@ import kotlinx.coroutines.launch
  * الظهور (نفس دورة «شارك درساً»).
  */
 @Composable
-fun TranscriptSection(lesson: Lesson) {
-    val context = LocalContext.current
-    val repo = remember { TranscriptRepository.get(context) }
-
+fun TranscriptSection(vm: AppViewModel, lesson: Lesson) {
     var loading by remember(lesson.id) { mutableStateOf(true) }
     var transcript by remember(lesson.id) { mutableStateOf<LessonTranscript?>(null) }
-    var contributeSheet by remember { mutableStateOf(false) }
+    var contributeSheet by rememberSaveable(lesson.id) { mutableStateOf(false) }
     var viewingImage by remember { mutableStateOf("") }
 
     LaunchedEffect(lesson.id) {
         loading = true
-        transcript = runCatching { repo.fetch(lesson.id) }.getOrNull()
+        transcript = runCatching { vm.transcripts.fetch(lesson.id) }.getOrNull()
         loading = false
     }
 
@@ -112,6 +106,7 @@ fun TranscriptSection(lesson: Lesson) {
 
     if (contributeSheet) {
         TranscriptContributeSheet(
+            vm = vm,
             lesson = lesson,
             existing = transcript,
             onDismiss = { contributeSheet = false },
@@ -284,27 +279,46 @@ fun TranscriptSection(lesson: Lesson) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TranscriptContributeSheet(
+    vm: AppViewModel,
     lesson: Lesson,
     existing: LessonTranscript?,
     onDismiss: () -> Unit,
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val repo = remember { TranscriptRepository.get(context) }
-    val store = remember { LocalStore.get(context) }
+    val submission by vm.transcriptContribution.collectAsState()
+    var text by rememberSaveable(lesson.id) { mutableStateOf(existing?.text.orEmpty()) }
+    var bookTitle by rememberSaveable(lesson.id) {
+        mutableStateOf(existing?.bookTitle.orEmpty())
+    }
+    var sourceRef by rememberSaveable(lesson.id) {
+        mutableStateOf(existing?.sourceRef.orEmpty())
+    }
+    var note by rememberSaveable(lesson.id) { mutableStateOf("") }
+    var name by rememberSaveable(lesson.id) { mutableStateOf(vm.store.submitterName()) }
+    val images = rememberSaveable(lesson.id, saver = uriStateListSaver) {
+        mutableStateListOf<Uri>()
+    }
+    var message by rememberSaveable(lesson.id) { mutableStateOf("") }
+    val ownsSubmission = submission.lessonId == lesson.id
+    val sending = submission.submitting
+    val progress = if (ownsSubmission) submission.progress else 0
+    val done = ownsSubmission && submission.done
+    val visibleMessage = message.ifBlank { if (ownsSubmission) submission.error else "" }
+    val close = {
+        if (!sending) {
+            vm.clearTranscriptContribution()
+            onDismiss()
+        }
+    }
+    val sheetState = androidx.compose.material3.rememberModalBottomSheetState(
+        confirmValueChange = { target ->
+            !sending || target != androidx.compose.material3.SheetValue.Hidden
+        },
+    )
 
-    var text by remember { mutableStateOf(existing?.text.orEmpty()) }
-    var bookTitle by remember { mutableStateOf(existing?.bookTitle.orEmpty()) }
-    var sourceRef by remember { mutableStateOf(existing?.sourceRef.orEmpty()) }
-    var note by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf(store.submitterName()) }
-    val images = remember { mutableStateListOf<Uri>() }
-    var sending by remember { mutableStateOf(false) }
-    var progress by remember { mutableIntStateOf(0) }
-    var message by remember { mutableStateOf("") }
-    var done by remember { mutableStateOf(false) }
-
-    ModalBottomSheet(onDismissRequest = { if (!sending) onDismiss() }) {
+    ModalBottomSheet(
+        onDismissRequest = close,
+        sheetState = sheetState,
+    ) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -354,7 +368,7 @@ private fun TranscriptContributeSheet(
                         lineHeight = 24.sp,
                     )
                     Spacer(Modifier.height(16.dp))
-                    Button(onClick = onDismiss) { Text("حسناً") }
+                    Button(onClick = close) { Text("حسناً") }
                 }
                 return@Column
             }
@@ -408,10 +422,10 @@ private fun TranscriptContributeSheet(
                 maxLines = 3,
                 modifier = Modifier.fillMaxWidth(),
             )
-            if (message.isNotEmpty()) {
+            if (visibleMessage.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    message,
+                    visibleMessage,
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -428,29 +442,18 @@ private fun TranscriptContributeSheet(
                         }
                         return@Button
                     }
-                    sending = true
                     message = ""
-                    scope.launch {
-                        runCatching {
-                            repo.submit(
-                                TranscriptDraft(
-                                    lessonId = lesson.id,
-                                    text = text,
-                                    bookTitle = bookTitle,
-                                    sourceRef = sourceRef,
-                                    note = note,
-                                    submitterName = name,
-                                    images = images.toList(),
-                                ),
-                            ) { progress = it }
-                        }.onSuccess {
-                            done = true
-                        }.onFailure {
-                            message = it.message
-                                ?: "تعذّر الإرسال. تأكد من الاتصال وحاول مجدداً."
-                        }
-                        sending = false
-                    }
+                    vm.submitTranscript(
+                        TranscriptDraft(
+                            lessonId = lesson.id,
+                            text = text,
+                            bookTitle = bookTitle,
+                            sourceRef = sourceRef,
+                            note = note,
+                            submitterName = name,
+                            images = images.toList(),
+                        ),
+                    )
                 },
                 enabled = !sending,
                 modifier = Modifier.fillMaxWidth(),

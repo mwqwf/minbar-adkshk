@@ -12,8 +12,15 @@ import com.google.firebase.FirebaseOptions
 import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.messaging.FirebaseMessaging
+import androidx.work.Configuration
 
-class MinbarApplication : Application() {
+class MinbarApplication : Application(), Configuration.Provider {
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder()
+            // Keep WorkManager's IDs separate from DownloadScheduler.JOB_ID (4210).
+            .setJobSchedulerJobIdRange(1_000, 3_000)
+            .build()
+
     override fun onCreate() {
         super.onCreate()
         LocalStore.get(this)

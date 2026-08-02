@@ -116,6 +116,18 @@ class TranscriptRepository private constructor(context: Context) {
         require(
             draft.text.trim().length >= 10 || draft.images.isNotEmpty(),
         ) { "أدخل نص المقطع أو أرفق صورة صفحة واحدة على الأقل." }
+        // تحقّق من المجموعة كاملة قبل أول رفع، كي لا نرفع صوراً ثم نحذفها
+        // لمجرّد أن صورة لاحقة كبيرة أو ليست صورة.
+        val validatedImages = draft.images.take(MAX_IMAGES).mapIndexed { index, uri ->
+            val size = appContext.contentResolver.openAssetFileDescriptor(uri, "r")
+                ?.use { it.length } ?: -1L
+            require(size in 1..MAX_IMAGE_BYTES) {
+                "حجم الصورة ${index + 1} يتجاوز 10 ميجابايت."
+            }
+            val contentType = appContext.contentResolver.getType(uri) ?: "image/jpeg"
+            require(contentType.startsWith("image/")) { "الملف المرفق ليس صورة." }
+            uri to contentType
+        }
         val user = auth.currentUser ?: auth.signInAnonymously().await().user
         requireNotNull(user) { "تعذّر إنشاء الهوية الآمنة." }
         if (draft.submitterName.isNotBlank()) store.setSubmitterName(draft.submitterName)
@@ -124,14 +136,7 @@ class TranscriptRepository private constructor(context: Context) {
         val uploadedPaths = mutableListOf<String>()
         var callableStarted = false
         try {
-            draft.images.take(MAX_IMAGES).forEachIndexed { index, uri ->
-                val size = appContext.contentResolver.openAssetFileDescriptor(uri, "r")
-                    ?.use { it.length } ?: -1L
-                require(size in 1..MAX_IMAGE_BYTES) {
-                    "حجم الصورة ${index + 1} يتجاوز 10 ميجابايت."
-                }
-                val contentType = appContext.contentResolver.getType(uri) ?: "image/jpeg"
-                require(contentType.startsWith("image/")) { "الملف المرفق ليس صورة." }
+            validatedImages.forEachIndexed { index, (uri, contentType) ->
                 val path = "transcript_submissions/${user.uid}/$id/${index}_page.jpg"
                 storage.reference.child(path).putFile(
                     uri,

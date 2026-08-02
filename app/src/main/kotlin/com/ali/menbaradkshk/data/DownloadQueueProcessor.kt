@@ -1,11 +1,15 @@
 package com.ali.menbaradkshk.data
 
+import android.Manifest
 import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import com.ali.menbaradkshk.MainActivity
 import com.ali.menbaradkshk.notification.NotificationChannels
 
@@ -79,16 +83,30 @@ class DownloadQueueProcessor(private val context: Context) {
     private fun notify(text: String, onProgressNotification: (Notification) -> Unit) {
         val notification = build(text, ongoing = true)
         onProgressNotification(notification)
-        runCatching {
-            NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification)
+        if (
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            runCatching {
+                NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification)
+            }
         }
     }
 
     private fun showDone(text: String) {
-        runCatching {
-            NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
-            NotificationManagerCompat.from(context)
-                .notify(NOTIFICATION_ID + 1, build(text, ongoing = false))
+        val manager = NotificationManagerCompat.from(context)
+        manager.cancel(NOTIFICATION_ID)
+        if (
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            runCatching { manager.notify(NOTIFICATION_ID + 1, build(text, ongoing = false)) }
         }
     }
 

@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.LibraryBooks
 import androidx.compose.material.icons.automirrored.outlined.LibraryBooks
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.HistoryEdu
@@ -32,10 +33,12 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NotificationsNone
 import androidx.compose.material.icons.filled.Outbox
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LibraryMusic
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -52,7 +55,9 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -61,12 +66,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import com.ali.menbaradkshk.data.AppConfigRepository
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.flow.catch
 
@@ -114,7 +121,36 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
     val message by vm.message.collectAsState()
     val showSettings by vm.showSettings.collectAsState()
     val transcriptContribution by vm.transcriptContribution.collectAsState()
+    val updateStatus by vm.updateStatus.collectAsState()
     val snackbar = remember { SnackbarHostState() }
+
+    // 🔔 تذكير التحديث. لا يحجب شيئاً أبداً — الدروس المنزَّلة تبقى قابلة
+    // للاستماع مهما قدُم الإصدار. «لاحقاً» تُخفيه لهذه الجلسة، والتذكير
+    // اللطيف لا يعود بعد صرفه إلا حين تصدر نسخة أحدث منه.
+    var updateSnoozed by rememberSaveable { mutableStateOf(false) }
+    (updateStatus as? AppConfigRepository.Status.Required)?.let { required ->
+        if (!updateSnoozed) {
+            AlertDialog(
+                onDismissRequest = { updateSnoozed = true },
+                icon = { Icon(Icons.Filled.SystemUpdate, contentDescription = null) },
+                title = { Text("حدِّث منبر ادكصهك") },
+                text = {
+                    Text(
+                        required.message.ifBlank {
+                            "نسختك من التطبيق قديمة، وبعض المزايا قد لا تعمل كما ينبغي. " +
+                                "التحديث سريع ويحفظ تنزيلاتك وقوائمك كما هي."
+                        },
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { vm.openStore(required.storeUrl) }) { Text("تحديث الآن") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { updateSnoozed = true }) { Text("لاحقاً") }
+                },
+            )
+        }
+    }
 
     val isRoot = rootTabs.any { it.route == route }
     val navigationBlocked = route == Route.ContributeTranscript &&
@@ -282,7 +318,19 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         // صورة تفتح «ساهم بالنص») يدمّر rememberSaveable لنموذج «شارك درساً»
         // المفتوح فيمسح ملفات المستخدم وعنوانه بصمت.
         val screenStateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
-        Box(Modifier.padding(padding)) {
+        Column(Modifier.padding(padding)) {
+        // تذكير لطيف بنسخة أحدث — على الرئيسية وحدها كي لا يزاحم بقيّة
+        // الشاشات، ويدفع المحتوى لأسفل بدل أن يغطّيه.
+        (updateStatus as? AppConfigRepository.Status.Optional)
+            ?.takeIf { route == Route.Home }
+            ?.let { optional ->
+                UpdateBanner(
+                    message = optional.message,
+                    onUpdate = { vm.openStore(optional.storeUrl) },
+                    onDismiss = { vm.dismissUpdateReminder() },
+                )
+            }
+        Box(Modifier.weight(1f)) {
             screenStateHolder.SaveableStateProvider(routeStateKey(route)) {
                 when (val current = route) {
                 Route.Home -> HomeScreen(vm, content, playback)
@@ -315,10 +363,51 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                 }
             }
         }
+        }
     }
 
     if (showSettings) {
         SettingsSheet(vm, requestNotifications)
+    }
+}
+
+/// شريط «تتوفّر نسخة أحدث» — تذكير لا بوّابة: يُصرَف نهائياً لهذه النسخة،
+/// ولا يمنع الاستماع ولا يظهر إلا على الرئيسية.
+@Composable
+private fun UpdateBanner(
+    message: String,
+    onUpdate: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.SystemUpdate,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                message.ifBlank { "تتوفّر نسخة أحدث من منبر ادكصهك." },
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onUpdate) { Text("تحديث") }
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "إخفاء التذكير",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
     }
 }
 

@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.ali.menbaradkshk.data.AppConfigRepository
 import com.ali.menbaradkshk.data.ContentRepository
 import com.ali.menbaradkshk.data.DownloadRepository
 import com.ali.menbaradkshk.data.LocalStore
@@ -162,12 +163,67 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    /// تذكير التحديث — قراءة وثيقة إعداد واحدة بحدّ أدنى ست ساعات، وأي فشل
+    /// يُبقي الحالة `None` فلا يظهر تذكير بلا يقين.
+    ///
+    /// ⚠️ هذه الإعلانات **قبل `init`** عمداً: خصائص الصنف تُهيَّأ بترتيب
+    /// ظهورها، فاستدعاء `checkForUpdate()` من `init` وهي معلَنة بعده كان
+    /// يقرأ `_updateStatus` وهي `null` فينهار التطبيق عند الإقلاع.
+    private val appConfig = AppConfigRepository.get(application)
+    private val _updateStatus =
+        MutableStateFlow<AppConfigRepository.Status>(AppConfigRepository.Status.None)
+    val updateStatus: StateFlow<AppConfigRepository.Status> = _updateStatus.asStateFlow()
+
     init {
         refresh(false)
+        checkForUpdate()
     }
 
     fun refresh(force: Boolean = true) {
         viewModelScope.launch { content.refresh(force) }
+    }
+
+    fun checkForUpdate() {
+        viewModelScope.launch {
+            val status = runCatching { appConfig.status() }
+                .getOrDefault(AppConfigRepository.Status.None)
+            // التذكير اللطيف لا يعود بعد صرفه، إلا حين تصدر نسخة أحدث منه.
+            _updateStatus.value =
+                if (status is AppConfigRepository.Status.Optional &&
+                    appConfig.isDismissed(status.latest)
+                ) {
+                    AppConfigRepository.Status.None
+                } else {
+                    status
+                }
+        }
+    }
+
+    fun dismissUpdateReminder() {
+        val status = _updateStatus.value
+        if (status is AppConfigRepository.Status.Optional) appConfig.dismiss(status.latest)
+        _updateStatus.value = AppConfigRepository.Status.None
+    }
+
+    /// يفتح صفحة التطبيق في المتجر (تطبيق Play إن وُجد، وإلا المتصفّح).
+    /// المعرّف ثابت لا `packageName`: نسخة التطوير تحمل لاحقة `.dev` وليست
+    /// على المتجر، فبناء الرابط منها يفتح صفحة غير موجودة.
+    fun openStore(url: String) {
+        val context = getApplication<android.app.Application>()
+        val target = url.ifBlank { AppConfigRepository.PLAY_URL }
+        val intents = listOf(
+            "market://details?id=${AppConfigRepository.STORE_PACKAGE}",
+            target,
+        ).map { uri ->
+            android.content.Intent(
+                android.content.Intent.ACTION_VIEW,
+                android.net.Uri.parse(uri),
+            ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        for (intent in intents) {
+            if (runCatching { context.startActivity(intent) }.isSuccess) return
+        }
+        _message.value = "تعذّر فتح المتجر."
     }
 
     fun open(route: Route) {

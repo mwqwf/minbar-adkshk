@@ -600,9 +600,25 @@ fun DownloadsScreen(vm: AppViewModel) {
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
+                        // عدّاد البايتات: `done/total` وحدها تعني «الدروس
+                        // المكتملة»، فتبقى صفراً طوال تحميل درس واحد ويبدو
+                        // الشريط متجمّداً. نعرض نسبة الملفّ الجاري وحجمه.
+                        if (!state.waitingForNetwork && state.filePercent >= 0) {
+                            Text(
+                                buildString {
+                                    append("${state.filePercent}%")
+                                    if (state.fileTotalBytes > 0) {
+                                        append(" — ${formatBytes(state.fileDownloadedBytes)}")
+                                        append(" من ${formatBytes(state.fileTotalBytes)}")
+                                    }
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
                         ClassicLinearProgress(
-                            progress = if (state.total > 0) state.done.toFloat() / state.total else 0f,
+                            progress = state.overallFraction,
                             modifier = Modifier.fillMaxWidth().height(6.dp),
                         )
                     }

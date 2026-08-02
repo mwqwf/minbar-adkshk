@@ -669,13 +669,18 @@ fun shareLessonPayload(
         val path = vm.store.localAudioPath(lesson.id) ?: return@runCatching null
         val file = java.io.File(path)
         if (!file.isFile || file.length() <= 0L) return@runCatching null
+        // الملفّ المخزَّن اسمه معرّف داخلي بامتداد قد يكون غريباً (`.ogx`
+        // مثلاً، وهو Ogg لكن واتساب لا يعرفه فيعامله ملفّاً عامّاً). نضع نسخةً
+        // للمشاركة باسم الدرس وامتداد قياسيّ — المستقبِل يرى اسماً مفهوماً
+        // ويتعرّف على الصوت.
+        val shared = shareableCopy(context, file, lesson.displayTitle) ?: file
         val uri = FileProvider.getUriForFile(
             context,
             "${context.packageName}.fileprovider",
-            file,
+            shared,
         )
         Intent(Intent.ACTION_SEND).apply {
-            type = audioMimeOf(file.name)
+            type = audioMimeOf(shared.name)
             putExtra(Intent.EXTRA_STREAM, uri)
             putExtra(Intent.EXTRA_TEXT, text)
             putExtra(Intent.EXTRA_SUBJECT, lesson.displayTitle)
@@ -691,12 +696,49 @@ fun shareLessonPayload(
     }
 }
 
+/// امتداد قياسيّ يعرفه المستقبِلون. Firebase تعطي أحياناً `.ogx`
+/// (Ogg مُتعدِّد) و`.bin` وما شابه، وواتساب لا يعدّها صوتاً.
+private fun standardAudioExtension(raw: String): String =
+    when (raw.lowercase()) {
+        "mp3", "m4a", "aac", "wav", "flac", "amr", "opus", "ogg" -> raw.lowercase()
+        "ogx", "oga", "ogv" -> "ogg"
+        "m4b", "mp4" -> "m4a"
+        "3gp", "3gpp" -> "3gp"
+        else -> "mp3"
+    }
+
+/// نسخة للمشاركة باسم الدرس وامتداد قياسيّ داخل `cache/share`.
+/// تُستبدَل في كل مشاركة فلا تتراكم، وتُنظَّف بكاش التطبيق تلقائياً.
+private fun shareableCopy(
+    context: android.content.Context,
+    source: java.io.File,
+    title: String,
+): java.io.File? = runCatching {
+    val extension = standardAudioExtension(source.name.substringAfterLast('.', ""))
+    val safeTitle = title
+        .replace(Regex("[\\\\/:*?\"<>|\\r\\n\\t]"), " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .take(80)
+        .ifBlank { "درس" }
+    val directory = java.io.File(context.cacheDir, "share").apply {
+        mkdirs()
+        // لا نُراكم نسخاً: كل مشاركة تستبدل ما قبلها.
+        listFiles()?.forEach { it.delete() }
+    }
+    val target = java.io.File(directory, "$safeTitle.$extension")
+    source.inputStream().use { input ->
+        target.outputStream().use { output -> input.copyTo(output) }
+    }
+    target.takeIf { it.length() > 0L }
+}.getOrNull()
+
 /// نوع MIME من امتداد الملف — بعض التطبيقات المستقبِلة ترفض "audio/*".
 private fun audioMimeOf(name: String): String =
     when (name.substringAfterLast('.', "").lowercase()) {
         "mp3" -> "audio/mpeg"
         "m4a", "m4b", "mp4", "aac" -> "audio/mp4"
-        "ogg", "oga", "opus" -> "audio/ogg"
+        "ogg", "oga", "ogx", "opus" -> "audio/ogg"
         "wav" -> "audio/wav"
         "flac" -> "audio/flac"
         "amr" -> "audio/amr"

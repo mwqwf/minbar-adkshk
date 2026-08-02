@@ -30,7 +30,21 @@ data class DownloadQueueState(
     val total: Int,
     val currentTitle: String = "",
     val waitingForNetwork: Boolean = false,
-)
+    /// نسبة الملفّ الجاري (0..100)، و‑1 حين لا يُعلن الخادم حجماً.
+    /// بدونها كان الشريط مبنيّاً على `done/total` وحدها، فيبقى عند الصفر
+    /// طوال تحميل درس واحد ويبدو كأنّه متجمّد.
+    val filePercent: Int = -1,
+    val fileDownloadedBytes: Long = 0L,
+    val fileTotalBytes: Long = 0L,
+) {
+    /// تقدّم الطابور كاملاً: الدروس المكتملة + كسر الدرس الجاري.
+    val overallFraction: Float
+        get() {
+            if (total <= 0) return 0f
+            val fileFraction = if (filePercent in 0..100) filePercent / 100f else 0f
+            return ((done + fileFraction) / total).coerceIn(0f, 1f)
+        }
+}
 
 /// خطأ شبكة قابل لإعادة المحاولة (يستأنف WorkManager تلقائياً عند عودة الاتصال).
 class RetryableDownloadException(cause: Throwable) : Exception(cause)
@@ -70,11 +84,20 @@ class DownloadRepository private constructor(context: Context) {
         localPath(lesson.id)?.let { return@withContext it }
 
         val directory = File(appContext.filesDir, "lessons").apply { mkdirs() }
-        val extension = uri.lastPathSegment
-            ?.substringAfterLast('.', "mp3")
-            ?.lowercase()
-            ?.takeIf { it.matches(Regex("[a-z0-9]{1,5}")) }
-            ?: "mp3"
+        // تطبيع الامتداد: التخزين يعطي أحياناً `.ogx` (Ogg مُتعدِّد) وما شابه،
+        // وتطبيقات المراسلة لا تعدّها صوتاً فتُرسلها ملفّاً عامّاً.
+        val extension = when (
+            val raw = uri.lastPathSegment
+                ?.substringAfterLast('.', "")
+                ?.lowercase()
+                ?.takeIf { it.matches(Regex("[a-z0-9]{1,5}")) }
+        ) {
+            "mp3", "m4a", "aac", "wav", "flac", "amr", "opus", "ogg" -> raw
+            "ogx", "oga", "ogv" -> "ogg"
+            "m4b", "mp4" -> "m4a"
+            "3gp", "3gpp" -> "3gp"
+            else -> "mp3"
+        }
         val safeId = lesson.id.replace(Regex("[^A-Za-z0-9_-]"), "_")
         val target = File(directory, "$safeId.$extension")
         val partial = File(directory, "$safeId.$extension.part")

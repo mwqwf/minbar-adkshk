@@ -16,6 +16,11 @@ import androidx.core.content.ContextCompat
 import com.ali.menbaradkshk.MainActivity
 import com.ali.menbaradkshk.notification.NotificationChannels
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 
 /// نتيجة معالجة طابور التحميل.
@@ -81,7 +86,43 @@ class DownloadQueueProcessor(private val context: Context) {
             notify("($done/$total) ${lesson.displayTitle}", onProgressNotification)
 
             try {
-                downloads.download(lesson)
+                // مراقب التقدّم: يقرأ بايتات الملفّ الجاري ويحدّث الحالة
+                // والإشعار مرّة كل ثانية. بدونه كان الاثنان يعرضان `done/total`
+                // فقط — أي صفراً ثابتاً طوال تحميل درس واحد.
+                coroutineScope {
+                    val watcher = launch {
+                        var lastShown = -1
+                        while (currentCoroutineContext().isActive) {
+                            val p = downloads.progress.value[id]
+                            if (p != null && p.percent != lastShown) {
+                                lastShown = p.percent
+                                downloads.queueState.value = DownloadQueueState(
+                                    label = label,
+                                    done = done,
+                                    total = total,
+                                    currentTitle = lesson.displayTitle,
+                                    filePercent = p.percent,
+                                    fileDownloadedBytes = p.downloadedBytes,
+                                    fileTotalBytes = p.totalBytes,
+                                )
+                                notify(
+                                    buildString {
+                                        append("($done/$total) ${lesson.displayTitle}")
+                                        if (p.percent in 0..100) append(" — ${p.percent}%")
+                                    },
+                                    onProgressNotification,
+                                    percent = p.percent,
+                                )
+                            }
+                            delay(PROGRESS_TICK_MS)
+                        }
+                    }
+                    try {
+                        downloads.download(lesson)
+                    } finally {
+                        watcher.cancel()
+                    }
+                }
                 store.removeFromDownloadQueue(id)
             } catch (retryable: RetryableDownloadException) {
                 // انقطاع اتصال: يبقى الدرس في الطابور ويُستأنف الملف الجزئي لاحقاً.
@@ -132,8 +173,12 @@ class DownloadQueueProcessor(private val context: Context) {
         return !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
     }
 
-    private fun notify(text: String, onProgressNotification: (Notification) -> Unit) {
-        val notification = build(text, ongoing = true)
+    private fun notify(
+        text: String,
+        onProgressNotification: (Notification) -> Unit,
+        percent: Int = -1,
+    ) {
+        val notification = build(text, ongoing = true, percent = percent)
         onProgressNotification(notification)
         if (
             Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
@@ -162,8 +207,13 @@ class DownloadQueueProcessor(private val context: Context) {
         }
     }
 
-    fun build(text: String, ongoing: Boolean): Notification =
+    fun build(text: String, ongoing: Boolean, percent: Int = -1): Notification =
         NotificationCompat.Builder(context, NotificationChannels.DOWNLOADS)
+            // شريط تقدّم حقيقيّ: غير محدَّد ما دام الحجم مجهولاً، ثمّ
+            // بالنسبة المئويّة. كان الإشعار نصّاً ثابتاً بلا أيّ شريط.
+            .apply {
+                if (ongoing) setProgress(100, percent.coerceIn(0, 100), percent !in 0..100)
+            }
             .setSmallIcon(
                 if (ongoing) android.R.drawable.stat_sys_download
                 else android.R.drawable.stat_sys_download_done,
@@ -191,6 +241,10 @@ class DownloadQueueProcessor(private val context: Context) {
 
     companion object {
         const val NOTIFICATION_ID = 90
+
+        /// نبضة تحديث شريط التقدّم. البايتات تُحدَّث مع كل قراءة (~8KB)،
+        /// فتحديث الإشعار بنفس الوتيرة يُغرق النظام — نقرأ آخر قيمة كل ثانية.
+        private const val PROGRESS_TICK_MS = 1_000L
 
         /// رابط عميق لشاشة «تنزيلاتي» بنمط `minbar://<host>` نفسه المستعمل في
         /// إشعارات الخادم (`minbar://my-submissions`).

@@ -13,17 +13,17 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 
-// لون إبراز ثابت لكل قسم بحسب معرّفه (مطابق لـ category_colors.dart في الأصل).
-// درجات عميقة منخفضة التشبّع تحقق تبايناً مناسباً مع النص الأبيض.
+// لون إبراز ثابت لكل قسم بحسب معرّفه، مشتقّ من أيقونة التطبيق (جوهر سماوي +
+// ذهب معتّق + حبر ليليّ). كلّها تحمل نصّاً أبيض بتباين لا يقلّ عن 5.98.
 private val categoryPalette = listOf(
-    Teal,
-    BlueBrand,
-    Gold,
-    GreenBrand,
-    OrangeBrand,
-    Color(0xFF685487), // بنفسجي تراثي هادئ
-    Color(0xFF884A52), // عنّابي دافئ
-    Color(0xFF2F6E70), // فيروزي عميق
+    Color(0xFF025864), // جوهر عميق (أساس الهوية)
+    Color(0xFF036E79), // جوهر متوسّط
+    Color(0xFF085956), // جوهر مخضرّ
+    Color(0xFF186B65), // فيروزي هادئ
+    Color(0xFF885618), // ذهب معتّق (Gold900)
+    Color(0xFF020E1D), // حبر الأيقونة نفسه
+    Color(0xFF14405E), // أزرق ليليّ
+    Color(0xFF7A4514), // بنّي دافئ
 )
 
 private val categoryIcons = listOf(

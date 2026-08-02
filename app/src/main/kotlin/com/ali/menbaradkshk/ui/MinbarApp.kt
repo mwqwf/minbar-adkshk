@@ -3,10 +3,20 @@
 package com.ali.menbaradkshk.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsBottomHeight
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.LibraryBooks
@@ -16,6 +26,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.HistoryEdu
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.MicExternalOn
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NotificationsNone
@@ -32,6 +43,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -50,7 +62,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.google.firebase.auth.FirebaseAuth
@@ -172,6 +186,7 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                                         )
                                     }
                                 }
+                                StreakChip(vm)
                                 NotificationBell(vm)
                                 MySubmissionsButton(vm)
                                 IconButton(onClick = { vm.open(Route.Search()) }) {
@@ -248,6 +263,16 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                                 )
                             }
                         }
+                    } else {
+                        // العرض حتى حافة الشاشة: شريط التنقّل السفلي يستهلك
+                        // حشوة شريط النظام بنفسه، فبغيابه لا يستهلكها شيء
+                        // ويسكن آخر المحتوى (والمشغّل المصغّر) خلف شريط
+                        // التنقّل. هذه المساحة تحجزها بلا أي تغيير في السمة.
+                        Spacer(
+                            Modifier
+                                .fillMaxWidth()
+                                .windowInsetsBottomHeight(WindowInsets.navigationBars),
+                        )
                     }
                 }
             }
@@ -294,6 +319,38 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
 
     if (showSettings) {
         SettingsSheet(vm, requestNotifications)
+    }
+}
+
+/// شريحة السلسلة 🔥 في الشريط العلوي — كانت مدفونة في ورقة الإعدادات
+/// و«حصادك» فقط، فلا يراها المستخدم حيث تحفّزه فعلاً. تظهر من يومين فصاعداً،
+/// والنقر يفتح «حصادك».
+@Composable
+private fun StreakChip(vm: AppViewModel) {
+    val revision by vm.store.revision.collectAsState()
+    val streak = remember(revision) { vm.store.streakDays() }
+    if (streak < 2) return
+    Row(
+        modifier = Modifier
+            .padding(horizontal = 2.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(AppBarForeground.copy(alpha = 0.16f))
+            .clickable { vm.open(Route.Stats) }
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Filled.LocalFireDepartment,
+            contentDescription = "سلسلة الاستماع: $streak يوماً",
+            tint = GoldOnDark,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            "$streak",
+            color = AppBarForeground,
+            style = MaterialTheme.typography.labelLarge,
+        )
     }
 }
 

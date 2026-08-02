@@ -637,8 +637,28 @@ fun ContributeScreen(vm: AppViewModel) {
         )
     }
     if (contribution.done) {
+        // ✅ تصفير كامل بعد النجاح: كانت حقول النموذج (rememberSaveable) تبقى
+        // كما هي طوال عمر التطبيق (بل وعبر موت العملية، إذ لا يُستدعى
+        // removeState لحالة الشاشة)، فيُعاد فتح النموذج معبّأً بنفس الملف
+        // فتكفي ضغطة واحدة لإنشاء مساهمة مكرّرة ورفع الملف مرّة أخرى.
         val close = {
             vm.clearContributionState()
+            files.clear()
+            title = ""
+            note = ""
+            categoryId = ""
+            subcategoryId = ""
+            rightsConfirmed = false
+            policyAccepted = false
+            transcriptOpen = false
+            transcriptText = ""
+            transcriptBookTitle = ""
+            transcriptSourceRef = ""
+            transcriptImages.clear()
+            formError = ""
+            missingField = ""
+            // الجلسة تبدأ من جديد عند العودة للشاشة فتُنظَّف نتيجة الرفع السابق.
+            sessionStarted = false
             vm.back()
             Unit
         }

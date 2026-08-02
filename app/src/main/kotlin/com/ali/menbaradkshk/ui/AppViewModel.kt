@@ -97,7 +97,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val submissions = SubmissionRepository.get(application)
     val transcripts = TranscriptRepository.get(application)
     val playback = PlaybackController(application)
-    private val notificationsRepository = NotificationsRepository(submissions)
+    /// مستمع «قرارات مساهماتي» لا يُفتح أصلاً لمن لم يساهم قطّ — وهم أغلبية
+    /// المستخدمين. يوفّر ذلك قراءة أوّليّة كاملة عند كل عودة إلى التطبيق.
+    private val notificationsRepository = NotificationsRepository(submissions) {
+        store.knownSubmissionStatuses().isNotEmpty() || store.submitterName().isNotBlank()
+    }
 
     private val backStack = mutableListOf<Route>()
     private val _route = MutableStateFlow<Route>(Route.Home)
@@ -106,10 +110,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /// بثّ الإشعارات الحيّ (عام + خاص + قرارات المساهمات) — يغذّي الجرس والشاشة.
     val notifications: StateFlow<List<NotificationItem>> = notificationsRepository.stream()
         .catch { emit(emptyList()) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+        // نافذة دقيقة: الخروج القصير من التطبيق والعودة إليه لا يُعيد ربط
+        // المستمعين الثلاثة ولا يُعيد قراءتهم الأوّليّة الكاملة.
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(60_000), emptyList())
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
+
+    /// آخر ختم «رآه المستخدم» قبل فتح شاشة الإشعارات. الختم نفسه يُحدَّث فور
+    /// الفتح (لتصفير شارة الجرس)، فلو قرأته الشاشة لظهر كل شيء مقروءاً ولما
+    /// عرف المستخدم ما الجديد — فنلتقطه هنا **قبل** التحديث ونمرّره للشاشة.
+    private val _notificationsSeenBefore = MutableStateFlow(0L)
+    val notificationsSeenBefore: StateFlow<Long> = _notificationsSeenBefore.asStateFlow()
 
     /// حالة شاشة «شارك درساً» (دمج/رفع/خطأ/نجاح).
     private val _contribution = MutableStateFlow(ContributionState())
@@ -163,7 +175,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         backStack += _route.value
         _route.value = route
         when (route) {
-            Route.Notifications -> store.setNotificationLastSeenMs(System.currentTimeMillis())
+            Route.Notifications -> {
+                // الالتقاط قبل التحديث شرط تمييز «الجديد» في الشاشة.
+                _notificationsSeenBefore.value = store.notificationLastSeenMs()
+                store.setNotificationLastSeenMs(System.currentTimeMillis())
+            }
             Route.MySubmissions -> store.setSubmissionsLastSeenMs(System.currentTimeMillis())
             is Route.Category -> store.incrementCategoryVisit(route.id)
             is Route.Subcategory -> store.incrementSubcategoryVisit(route.id)
@@ -205,21 +221,58 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _showSettings.value = false
     }
 
+    /**
+     * الروابط العميقة: الويب (`https://…/lesson/<id>`) والمخطّط الخاص
+     * (`minbar://my-submissions`، `minbar://subcategory/<id>`،
+     * `minbar://category/<id>`) — المعرّف يُقرأ من المضيف أو من المسار معاً
+     * كي يصحّ الشكلان. المسارات القائمة لم تتغيّر.
+     */
     fun handleDeepLink(uri: Uri?) {
         if (uri == null) return
-        if (uri.host == "my-submissions" || uri.path?.contains("my-submissions") == true) {
+        val host = uri.host.orEmpty()
+        val segments = uri.pathSegments.orEmpty()
+        if (host == "my-submissions" || uri.path?.contains("my-submissions") == true) {
             open(Route.MySubmissions)
             return
         }
-        val segments = uri.pathSegments
-        val lessonIndex = segments.indexOf("lesson")
-        if (lessonIndex >= 0 && segments.size > lessonIndex + 1) {
-            val id = segments[lessonIndex + 1]
+        // وجهة إشعار التحميل (minbar://downloads) — كان يفتح الرئيسية.
+        if (host == "downloads" || uri.path?.contains("downloads") == true) {
+            open(Route.Downloads)
+            return
+        }
+        // `minbar://lesson/<id>` (المعرّف أول جزء بعد المضيف) أو
+        // `https://…/lesson/<id>` (المعرّف بعد الكلمة داخل المسار).
+        fun idFor(keyword: String): String? {
+            if (host == keyword) return segments.firstOrNull()?.takeIf(String::isNotBlank)
+            val index = segments.indexOf(keyword)
+            return if (index >= 0 && segments.size > index + 1) {
+                segments[index + 1].takeIf(String::isNotBlank)
+            } else {
+                null
+            }
+        }
+
+        idFor("lesson")?.let { id ->
             val seconds = uri.getQueryParameter("t")?.toLongOrNull()
             viewModelScope.launch {
                 content.refresh(false)
                 open(Route.Lesson(id, seconds?.times(1_000L)))
             }
+            return
+        }
+        idFor("subcategory")?.let { id ->
+            viewModelScope.launch {
+                content.refresh(false)
+                open(Route.Subcategory(id))
+            }
+            return
+        }
+        idFor("category")?.let { id ->
+            viewModelScope.launch {
+                content.refresh(false)
+                open(Route.Category(id))
+            }
+            return
         }
     }
 

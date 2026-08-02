@@ -4,7 +4,10 @@ import android.content.Context
 import android.net.Uri
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.FieldPath
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Source
 import com.google.firebase.functions.FirebaseFunctions
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.storage.FirebaseStorage
@@ -142,14 +145,24 @@ class SubmissionRepository private constructor(context: Context) {
             check(returned.isNotBlank()) { "استجابة الخادم غير مكتملة." }
             return returned
         } catch (failure: Throwable) {
-            if (callableStarted) {
-                val exists = runCatching {
-                    val document = db.collection(COLLECTION).document(id).get().await()
-                    document.exists() && document.getString("storagePath") == storagePath
-                }.getOrDefault(false)
-                if (exists) return id
-            } else if (uploaded) {
-                runCatching { reference.delete().await() }
+            // كان التنظيف مشروطاً بـ«لم يبدأ الاستدعاء» بينما العلم يُرفع **قبل**
+            // الاستدعاء، فأي فشل بعده (تجاوز حدّ المساهمات اليومي، أو الفاصل
+            // الأدنى بين مساهمتين، أو فشل App Check، أو رفض التحقق) يترك الملف
+            // المرفوع يتيماً إلى الأبد. الآن نحذف في **كل** مسار لم تُنشأ فيه
+            // وثيقة، ونمتنع عن الحذف حين يتعذّر التحقّق أصلاً.
+            val lookup = if (callableStarted) {
+                findMySubmission(id, user.uid)
+            } else {
+                Result.success<DocumentSnapshot?>(null)
+            }
+            val document = lookup.getOrNull()
+            if (document != null) {
+                // الوثيقة موجودة: المساهمة نجحت فعلاً وضاع ردّ الخادم فقط.
+                if (document.getString("storagePath") == storagePath) return id
+                throw failure
+            }
+            if (lookup.isSuccess) {
+                if (uploaded) runCatching { reference.delete().await() }
                 transcriptImagePaths.forEach { path ->
                     runCatching { storage.reference.child(path).delete().await() }
                 }
@@ -157,6 +170,24 @@ class SubmissionRepository private constructor(context: Context) {
             throw failure
         }
     }
+
+    /**
+     * تبحث عن وثيقة المساهمة بعد فشلٍ ما. نستعمل استعلاماً مقيَّداً بـuid لا
+     * `get` مباشراً على الوثيقة: قواعد الأمان ترفض قراءة وثيقة غير موجودة
+     * أصلاً، فيلتبس «لم تُنشأ» بـ«تعذّر السؤال» ويضيع قرار حذف الملف اليتيم.
+     * نجاح ومعه وثيقة = أُنشئت، ونجاح بلا وثيقة = لم تُنشأ، وفشل = لا نعرف.
+     */
+    private suspend fun findMySubmission(id: String, uid: String): Result<DocumentSnapshot?> =
+        runCatching {
+            db.collection(COLLECTION)
+                .whereEqualTo("uid", uid)
+                .whereEqualTo(FieldPath.documentId(), id)
+                .limit(1)
+                .get(Source.SERVER)
+                .await()
+                .documents
+                .firstOrNull()
+        }
 
     fun mine(): Flow<List<LessonSubmission>> = callbackFlow {
         val uid = auth.currentUser?.uid

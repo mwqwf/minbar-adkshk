@@ -2,17 +2,24 @@ package com.ali.menbaradkshk.data
 
 import android.content.Context
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.AggregateSource
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
 import com.google.firebase.functions.FirebaseFunctions
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.time.LocalDate
 import kotlin.math.max
 import kotlin.random.Random
@@ -33,6 +40,9 @@ data class ContentState(
 
 class ContentRepository private constructor(context: Context) {
     private val store = LocalStore.get(context)
+    /// تفضيلات خاصّة بالمستودع وحده (علامات المسبار، إخفاء عناصر السجل،
+    /// ترتيب قوائم التشغيل) — لا تُخلط بمخزن التطبيق العام.
+    private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val db by lazy { FirebaseFirestore.getInstance() }
     private val functions by lazy { FirebaseFunctions.getInstance() }
     private val _state = MutableStateFlow(
@@ -45,10 +55,46 @@ class ContentRepository private constructor(context: Context) {
     )
     val state: StateFlow<ContentState> = _state.asStateFlow()
 
-    suspend fun refresh(force: Boolean = false) = withContext(Dispatchers.IO) {
+    /// نطاق خاص بالمستودع: التحديث الصريح لا يُلغى بمغادرة الشاشة، فلا تبقى
+    /// حالة «جارٍ التحديث» عالقة إن انصرف المستخدم أثناء السحب-للتحديث.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var deepJob: Job? = null
+
+    /// تحديث كامل صريح يتخطّى المسبار (سحب-للتحديث و«إعادة المحاولة»).
+    fun requestDeepRefresh() {
+        if (deepJob?.isActive == true) return
+        deepJob = scope.launch { refresh(force = true, deep = true) }
+    }
+
+    /**
+     * مزامنة المحتوى.
+     *
+     * «الطزاجة الفوريّة عند الفتح» قرار منتج مقصود ويبقى: كل عودة للتطبيق
+     * تستدعي هذه الدالة بـ[force]=true. الجديد أنّها لم تعد تُنزّل مجموعة
+     * الدروس كاملة في كل عودة (حوار صلاحية، تدوير، رجوع من الكاميرا…): يسبقها
+     * **مسبار رخيص** — ثلاثة عدّادات تجميعيّة `count()` واستعلام وثيقة واحدة
+     * لأحدث `updatedAt` — فإن طابق المخزَّن لم يُجلب شيء إطلاقاً.
+     *
+     * [deep] يتخطّى المسبار ويجلب كل شيء (سحب-للتحديث اليدوي).
+     */
+    suspend fun refresh(force: Boolean = false, deep: Boolean = false) = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
-        if (!force && now - store.lastSyncMs() < SYNC_INTERVAL_MS && _state.value.lessons.isNotEmpty()) {
+        val hasCache = _state.value.lessons.isNotEmpty()
+        if (!force && now - store.lastSyncMs() < SYNC_INTERVAL_MS && hasCache) {
             return@withContext
+        }
+        // المسبار لا يُستعمل إلا مع كاش موجود وعلامات محفوظة من مزامنة سابقة؛
+        // وأوّل تشغيل يجلب كل شيء كالمعتاد.
+        if (!deep && hasCache) {
+            val stored = storedMarks()
+            if (stored != null) {
+                // حدّ أدنى بين مسبارين: عودات متلاحقة لا تُكلّف شيئاً.
+                if (now - lastProbeMs() < PROBE_INTERVAL_MS) return@withContext
+                val server = probe()
+                setLastProbeMs(now)
+                // فشل المسبار (انقطاع/رفض) يسقط إلى الجلب الكامل كما كان.
+                if (server != null && server == stored) return@withContext
+            }
         }
         _state.value = _state.value.copy(syncing = true, error = null)
         runCatching {
@@ -66,21 +112,35 @@ class ContentRepository private constructor(context: Context) {
                 val lessons = async {
                     db.collection("lessons").get().await().documents.map { document ->
                         Lesson.fromMap(document.id, document.data.orEmpty())
-                    }.filter(Lesson::isPublished)
+                    }
                 }
-                val values = awaitAll(categories, subcategories, lessons)
-                @Suppress("UNCHECKED_CAST")
-                Triple(
-                    values[0] as List<Category>,
-                    values[1] as List<Subcategory>,
-                    values[2] as List<Lesson>,
+                val newest = async { newestUpdatedMs() }
+                Snapshot(
+                    categories = categories.await(),
+                    subcategories = subcategories.await(),
+                    lessons = lessons.await(),
+                    maxUpdatedMs = newest.await(),
                 )
             }
-        }.onSuccess { (categories, subcategories, lessons) ->
+        }.onSuccess { snapshot ->
+            val categories = snapshot.categories
+            val subcategories = snapshot.subcategories
+            // الترشيح محليّ لأن الخادم يخزّن الدروس المجدولة في نفس المجموعة.
+            val lessons = snapshot.lessons.filter(Lesson::isPublished)
             store.setCategories(categories)
             store.setSubcategories(subcategories)
             store.setLessons(lessons)
             store.setLastSyncMs(now)
+            // علامات المسبار تُحفظ بأعداد **الخادم** (قبل الترشيح) كي تُقارن بها.
+            saveMarks(
+                ProbeMarks(
+                    categories = categories.size,
+                    subcategories = subcategories.size,
+                    lessons = snapshot.lessons.size,
+                    maxUpdatedMs = snapshot.maxUpdatedMs,
+                ),
+            )
+            setLastProbeMs(now)
             // تنظيف الملفات اليتيمة لدروس أُزيلت من الخادم.
             store.pruneDownloads(lessons.map(Lesson::id).toSet())
             _state.value = ContentState(
@@ -108,6 +168,80 @@ class ContentRepository private constructor(context: Context) {
     fun refreshPersonalization() {
         _state.value = _state.value.copy(lessons = mergeDurations(_state.value.lessons))
     }
+
+    // ------------------------------------------------------------------
+    // المسبار الرخيص (لا يجلب وثائق: ثلاثة عدّادات + وثيقة واحدة)
+    // ------------------------------------------------------------------
+
+    /// نتيجة الجلب الكامل قبل الترشيح — تُشتقّ منها علامات المسبار.
+    private data class Snapshot(
+        val categories: List<Category>,
+        val subcategories: List<Subcategory>,
+        val lessons: List<Lesson>,
+        val maxUpdatedMs: Long,
+    )
+
+    /// بصمة حالة الخادم: أعداد المجموعات الثلاث + أحدث طابع تعديل.
+    private data class ProbeMarks(
+        val categories: Int,
+        val subcategories: Int,
+        val lessons: Int,
+        val maxUpdatedMs: Long,
+    )
+
+    private suspend fun probe(): ProbeMarks? = runCatching {
+        coroutineScope {
+            val categories = async { countOf("categories") }
+            val subcategories = async { countOf("subcategories") }
+            val lessons = async { countOf("lessons") }
+            val newest = async { newestUpdatedMs() }
+            ProbeMarks(
+                categories = categories.await(),
+                subcategories = subcategories.await(),
+                lessons = lessons.await(),
+                maxUpdatedMs = newest.await(),
+            )
+        }
+    }.getOrNull()
+
+    private suspend fun countOf(collection: String): Int =
+        db.collection(collection).count().get(AggregateSource.SERVER).await().count.toInt()
+
+    /// أحدث `updatedAt` في مجموعة الدروس (وثيقة واحدة). الوثائق التي لا تحمل
+    /// الحقل لا تدخل الاستعلام أصلاً، فغيابه كلّياً يعني صفراً ثابتاً ولا يضرّ.
+    private suspend fun newestUpdatedMs(): Long = runCatching {
+        db.collection("lessons")
+            .orderBy("updatedAt", Query.Direction.DESCENDING)
+            .limit(1)
+            .get()
+            .await()
+            .documents
+            .firstOrNull()
+            ?.get("updatedAt")
+            .timeMillis()
+    }.getOrDefault(0L)
+
+    private fun storedMarks(): ProbeMarks? {
+        if (!prefs.contains(KEY_MARK_LESSONS)) return null
+        return ProbeMarks(
+            categories = prefs.getInt(KEY_MARK_CATEGORIES, -1),
+            subcategories = prefs.getInt(KEY_MARK_SUBCATEGORIES, -1),
+            lessons = prefs.getInt(KEY_MARK_LESSONS, -1),
+            maxUpdatedMs = prefs.getLong(KEY_MARK_UPDATED, 0L),
+        )
+    }
+
+    private fun saveMarks(marks: ProbeMarks) = prefs.edit()
+        .putInt(KEY_MARK_CATEGORIES, marks.categories)
+        .putInt(KEY_MARK_SUBCATEGORIES, marks.subcategories)
+        .putInt(KEY_MARK_LESSONS, marks.lessons)
+        .putLong(KEY_MARK_UPDATED, marks.maxUpdatedMs)
+        .apply()
+
+    private fun lastProbeMs(): Long = prefs.getLong(KEY_LAST_PROBE, 0L)
+
+    private fun setLastProbeMs(value: Long) =
+        prefs.edit().putLong(KEY_LAST_PROBE, value).apply()
 
     fun lessonsForSubcategory(subcategoryId: String): List<Lesson> =
         _state.value.lessons
@@ -146,6 +280,8 @@ class ContentRepository private constructor(context: Context) {
             .take(limit)
 
     fun continueListening(): List<Lesson> {
+        // الرئيسية تُفتح يومياً، فختم السجل هنا يجعل رؤوس «اليوم/أمس» دقيقة.
+        touchHistoryStamps()
         val byId = _state.value.lessonById
         val completed = store.completedIds().toSet()
         val positions = store.positions()
@@ -166,6 +302,137 @@ class ContentRepository private constructor(context: Context) {
         val byId = _state.value.lessonById
         return store.favoriteIds().mapNotNull(byId::get)
     }
+
+    /// هل لدى المستخدم أي سجلّ يُبنى عليه التخصيص؟ عند غيابه تكون «مقترح لك»
+    /// نسخة طبق الأصل من «الأحدث»، فتُستبدل في الرئيسية بـ«ابدأ من هنا».
+    fun hasHistory(): Boolean =
+        store.subcategoryVisits().isNotEmpty() ||
+            store.categoryVisits().isNotEmpty() ||
+            store.playCounts().isNotEmpty()
+
+    // ---- سجلّ الاستماع: عناصر مخفيّة بالسحب ----
+
+    /// السجلّ المعروض: ترتيب الاستماع نفسه، منقوصاً منه ما أخفاه المستخدم.
+    /// أي إعادة تشغيل للدرس تُعيده إلى السجلّ تلقائياً (عدّاد التشغيل تجاوز
+    /// قيمته لحظة الإخفاء)، فلا يختفي درس يستمع إليه المستخدم من جديد.
+    fun historyLessons(): List<Lesson> {
+        touchHistoryStamps()
+        val hidden = hiddenHistory()
+        val byId = _state.value.lessonById
+        val counts = store.playCounts()
+        val revived = mutableListOf<String>()
+        val items = store.recentPlayedIds().mapNotNull { id ->
+            if (hidden.has(id)) {
+                if ((counts[id] ?: 0L) > hidden.optLong(id)) {
+                    revived += id
+                } else {
+                    return@mapNotNull null
+                }
+            }
+            byId[id]
+        }
+        if (revived.isNotEmpty()) {
+            revived.forEach { hidden.remove(it) }
+            prefs.edit().putString(KEY_HIDDEN_HISTORY, hidden.toString()).apply()
+        }
+        return items
+    }
+
+    /// إخفاء عنصر من السجلّ (سحب للحذف) — محليّ بحت وقابل للنقض بإعادة التشغيل.
+    fun hideFromHistory(lessonId: String) {
+        if (lessonId.isBlank()) return
+        val hidden = hiddenHistory().put(lessonId, store.playCounts()[lessonId] ?: 0L)
+        prefs.edit().putString(KEY_HIDDEN_HISTORY, hidden.toString()).apply()
+    }
+
+    private fun hiddenHistory(): JSONObject =
+        runCatching { JSONObject(prefs.getString(KEY_HIDDEN_HISTORY, "{}").orEmpty()) }
+            .getOrElse { JSONObject() }
+
+    /// طوابع زمنية تقريبيّة لآخر استماع: السجل نفسه لا يحمل تواريخ، فكل معرّف
+    /// يظهر فيه لأوّل مرّة — أو ازداد عدّاد تشغيله — يُختم بوقت رؤيته. التطبيق
+    /// يُفتح يومياً فالدقّة كافية تماماً لرؤوس «اليوم/أمس/هذا الأسبوع».
+    private fun touchHistoryStamps() {
+        val recent = store.recentPlayedIds()
+        if (recent.isEmpty()) return
+        val counts = store.playCounts()
+        val root = historyStampsJson()
+        val now = System.currentTimeMillis()
+        var changed = false
+        recent.forEach { id ->
+            val entry = root.optJSONObject(id)
+            val plays = counts[id] ?: 0L
+            if (entry == null || entry.optLong("plays", -1L) != plays) {
+                root.put(id, JSONObject().put("at", now).put("plays", plays))
+                changed = true
+            }
+        }
+        // ما خرج من السجل لا يُبقى له طابع.
+        val valid = recent.toSet()
+        val stale = buildList {
+            val keys = root.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                if (key !in valid) add(key)
+            }
+        }
+        if (stale.isNotEmpty()) {
+            stale.forEach { root.remove(it) }
+            changed = true
+        }
+        if (changed) prefs.edit().putString(KEY_HISTORY_STAMPS, root.toString()).apply()
+    }
+
+    /// طابع آخر استماع لكل درس في السجل (بالمللي ثانية) — لرؤوس السجل الزمنيّة.
+    fun historyStamps(): Map<String, Long> {
+        val root = historyStampsJson()
+        return buildMap {
+            val keys = root.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val at = root.optJSONObject(key)?.optLong("at") ?: 0L
+                if (at > 0L) put(key, at)
+            }
+        }
+    }
+
+    private fun historyStampsJson(): JSONObject =
+        runCatching { JSONObject(prefs.getString(KEY_HISTORY_STAMPS, "{}").orEmpty()) }
+            .getOrElse { JSONObject() }
+
+    // ---- ترتيب يدوي لقوائم التشغيل ----
+
+    /// يعيد دروس القائمة بترتيب المستخدم إن وُجد؛ وما استُجدّ من دروس يبقى في
+    /// آخر القائمة بترتيبه الأصلي.
+    fun orderedPlaylist(playlistId: String, lessons: List<Lesson>): List<Lesson> {
+        val order = playlistOrder(playlistId) ?: return lessons
+        val rank = order.withIndex().associate { (index, id) -> id to index }
+        val known = lessons.filter { rank.containsKey(it.id) }.sortedBy { rank.getValue(it.id) }
+        val fresh = lessons.filterNot { rank.containsKey(it.id) }
+        return known + fresh
+    }
+
+    /// ينقل عنصراً في القائمة المعروضة ويحفظ الترتيب الجديد.
+    fun movePlaylistItem(playlistId: String, orderedIds: List<String>, from: Int, to: Int) {
+        if (from == to || from !in orderedIds.indices || to !in orderedIds.indices) return
+        val updated = orderedIds.toMutableList()
+        updated.add(to, updated.removeAt(from))
+        val root = playlistOrders().put(playlistId, JSONArray(updated))
+        prefs.edit().putString(KEY_PLAYLIST_ORDER, root.toString()).apply()
+    }
+
+    private fun playlistOrder(playlistId: String): List<String>? {
+        val array = playlistOrders().optJSONArray(playlistId) ?: return null
+        return buildList {
+            for (index in 0 until array.length()) {
+                array.optString(index).takeIf(String::isNotEmpty)?.let(::add)
+            }
+        }.takeIf { it.isNotEmpty() }
+    }
+
+    private fun playlistOrders(): JSONObject =
+        runCatching { JSONObject(prefs.getString(KEY_PLAYLIST_ORDER, "{}").orEmpty()) }
+            .getOrElse { JSONObject() }
 
     fun recommended(limit: Int = 50): List<Lesson> {
         val pool = withAudio()
@@ -288,6 +555,17 @@ class ContentRepository private constructor(context: Context) {
 
     companion object {
         private const val SYNC_INTERVAL_MS = 2 * 60 * 1_000L
+        /// حدّ أدنى بين مسبارين — يبتلع عودات ON_RESUME المتلاحقة.
+        private const val PROBE_INTERVAL_MS = 60 * 1_000L
+        private const val PREFS = "content_repo_v1"
+        private const val KEY_MARK_CATEGORIES = "mark_categories"
+        private const val KEY_MARK_SUBCATEGORIES = "mark_subcategories"
+        private const val KEY_MARK_LESSONS = "mark_lessons"
+        private const val KEY_MARK_UPDATED = "mark_updated_ms"
+        private const val KEY_LAST_PROBE = "last_probe_ms"
+        private const val KEY_HIDDEN_HISTORY = "hidden_history_v1"
+        private const val KEY_HISTORY_STAMPS = "history_stamps_v1"
+        private const val KEY_PLAYLIST_ORDER = "playlist_order_v1"
         @Volatile private var instance: ContentRepository? = null
         fun get(context: Context): ContentRepository = instance ?: synchronized(this) {
             instance ?: ContentRepository(context.applicationContext).also { instance = it }

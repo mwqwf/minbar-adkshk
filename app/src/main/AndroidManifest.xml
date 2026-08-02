@@ -37,6 +37,19 @@
                 tools:node="remove" />
         </provider>
 
+        <!-- مشاركة الملف الصوتي نفسه بعد تنزيله (سلوك الأصل: محمّل ⇒ نشارك
+             الملف، غير محمّل ⇒ نشارك الرابط). الإذن يُمنح لكل نيّة على حدة
+             عبر FLAG_GRANT_READ_URI_PERMISSION فلا يُصدَّر المزوّد إطلاقاً. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- شبكة أمان: أيّ رسالة FCM تُشير إلى قناة غير موجودة تسقط على
              هذه القناة بدل أن تُحجب. -->
         <meta-data

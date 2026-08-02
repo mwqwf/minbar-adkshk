@@ -26,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -44,6 +45,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -76,12 +78,24 @@ import com.ali.menbaradkshk.data.TranscriptRepository
 fun TranscriptSection(vm: AppViewModel, lesson: Lesson) {
     var loading by remember(lesson.id) { mutableStateOf(true) }
     var transcript by remember(lesson.id) { mutableStateOf<LessonTranscript?>(null) }
+    // تعذّر الجلب ولا نسخة محفوظة: «لم يُجلب بعد» لا «لا نص لهذا الدرس» —
+    // الخلط بينهما كان يعرض دعوة المساهمة لدرسٍ نصُّه موجود ولم يصل فقط.
+    var unreachable by remember(lesson.id) { mutableStateOf(false) }
+    var retry by remember(lesson.id) { mutableIntStateOf(0) }
     var contributeSheet by rememberSaveable(lesson.id) { mutableStateOf(false) }
     var viewingImage by remember { mutableStateOf("") }
 
-    LaunchedEffect(lesson.id) {
+    LaunchedEffect(lesson.id, retry) {
         loading = true
-        transcript = runCatching { vm.transcripts.fetch(lesson.id) }.getOrNull()
+        runCatching { vm.transcripts.fetch(lesson.id) }
+            .onSuccess {
+                transcript = it
+                unreachable = false
+            }
+            .onFailure {
+                transcript = null
+                unreachable = true
+            }
         loading = false
     }
 
@@ -227,6 +241,44 @@ fun TranscriptSection(vm: AppViewModel, lesson: Lesson) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                }
+            }
+        }
+
+        // بلا اتصال ولم يُجلب النص بعد: لا ندعو للمساهمة كأن الدرس بلا نص —
+        // فقد يكون له نصٌّ معتمد لم يصل الجهاز أصلاً.
+        unreachable -> Card(
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Filled.CloudOff,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "النص المشروح غير متاح الآن",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "تعذّر الاتصال — إن كان لهذا الدرس نص فسيظهر عند عودة الاتصال.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = { retry++ }) {
+                    Text("إعادة", fontSize = 13.sp)
                 }
             }
         }

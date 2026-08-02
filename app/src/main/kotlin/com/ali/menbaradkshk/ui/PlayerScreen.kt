@@ -147,26 +147,22 @@ fun PlayerScreen(
         }
     }
 
+    /// محمّل ⇒ نشارك الملف الصوتي نفسه، وغير محمّل ⇒ النصّ والرابط
+    /// (سلوك الأصل). التفاصيل في `shareLessonPayload`.
     fun share(l: Lesson) {
         val posSec = if (active) playback.positionMs / 1_000L else 0L
-        var text = lessonShareText(
+        val text = lessonShareText(
             l,
             content.categoryById[l.categoryId]?.name,
             content.subcategoryById[l.subcategoryId]?.name,
             if (posSec > 10) posSec else null,
+            momentLabel = if (posSec > 10) {
+                "من الدقيقة ${posSec / 60}:${(posSec % 60).toString().padStart(2, '0')}"
+            } else {
+                null
+            },
         )
-        if (posSec > 10) {
-            text += "\nمن الدقيقة ${posSec / 60}:${(posSec % 60).toString().padStart(2, '0')}"
-        }
-        context.startActivity(
-            Intent.createChooser(
-                Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_TEXT, text)
-                },
-                "مشاركة الدرس",
-            ),
-        )
+        shareLessonPayload(context, vm, l, text)
     }
 
     Scaffold(

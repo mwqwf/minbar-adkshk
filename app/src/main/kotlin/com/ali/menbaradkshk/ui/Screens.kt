@@ -78,7 +78,7 @@ import com.ali.menbaradkshk.data.ContentState
 import com.ali.menbaradkshk.data.Lesson
 import com.ali.menbaradkshk.data.Subcategory
 import com.ali.menbaradkshk.media.PlaybackUiState
-import com.ali.menbaradkshk.util.arabicContains
+import com.ali.menbaradkshk.util.normalizeArabic
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -109,16 +109,34 @@ fun HomeScreen(
             Triple("قسم اليوم", vm.content.randomSectionToday(), false),
         )
     }
-    val feed = remember(revision, state.lessons) { vm.content.recommended() }
+    // بلا أي سجل تكون «مقترح لك» نسخة طبق الأصل من «الأحدث» (ثالث قائمة
+    // متطابقة للوافد الجديد)، فتُستبدل بـ«ابدأ من هنا»: محطّة الدروس القصيرة.
+    val hasHistory = remember(revision, state.lessons) { vm.content.hasHistory() }
+    val feed = remember(revision, state.lessons, hasHistory) {
+        if (hasHistory) vm.content.recommended() else vm.content.shortStation()
+    }
+    val feedTitle = if (hasHistory) "مقترح لك" else "ابدأ من هنا"
+
+    // لا يتكرّر درس واحد بين الريلات: أوّل ريل يظهر فيه يحتفظ به، وما بعده
+    // يسقطه — كي لا يرى المستخدم القائمة نفسها ثلاث مرات.
+    val deduped = remember(rails, feed) {
+        val seen = mutableSetOf<String>()
+        val uniqueRails = rails.map { (title, lessons, showProgress) ->
+            Triple(title, lessons.filter { seen.add(it.id) }, showProgress)
+        }
+        uniqueRails to feed.filter { it.id !in seen }
+    }
+    val visibleRails = deduped.first
+    val visibleFeed = deduped.second
 
     PullToRefreshBox(
         isRefreshing = state.syncing,
-        onRefresh = { vm.refresh(true) },
+        onRefresh = { vm.content.requestDeepRefresh() },
         modifier = Modifier.fillMaxSize(),
     ) {
         LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
             if (state.offline && state.error != null) {
-                item { OfflineBanner(state.error) { vm.refresh(true) } }
+                item { OfflineBanner(state.error) { vm.content.requestDeepRefresh() } }
             }
 
             // إجراءات سريعة: إذاعة منبر، وضع القيادة، حصادك.
@@ -148,14 +166,14 @@ fun HomeScreen(
                 item { DailyWardCard(vm, ward, feed) }
             }
 
-            rails.forEach { (title, lessons, showProgress) ->
+            visibleRails.forEach { (title, lessons, showProgress) ->
                 railItem(vm, title, lessons, playback, showProgress = showProgress)
             }
 
-            if (feed.isNotEmpty()) {
-                item { RailHeader("مقترح لك") }
-                items(feed, key = { "feed-${it.id}-$revision" }) { lesson ->
-                    AudioItem(vm, lesson, feed, playback, showActions = false)
+            if (visibleFeed.isNotEmpty()) {
+                item { RailHeader(feedTitle) }
+                items(visibleFeed, key = { "feed-${it.id}-$revision" }) { lesson ->
+                    AudioItem(vm, lesson, visibleFeed, playback, showActions = false)
                 }
             }
 
@@ -350,7 +368,7 @@ fun CategoryScreen(vm: AppViewModel, categoryId: String, state: ContentState) {
             offline = state.offline && state.subcategories.isEmpty(),
             offlineMessage = "يجب الاتصال بالإنترنت أول مرة لتحميل الأقسام. بعد ذلك يمكنك التصفّح دون إنترنت.",
             emptyMessage = "لا توجد أقسام فرعية في هذا القسم.",
-            onRetry = { vm.refresh(true) },
+            onRetry = { vm.content.requestDeepRefresh() },
         )
         return
     }
@@ -519,7 +537,10 @@ private fun CompletionCertificateDialog(vm: AppViewModel, subcategory: Subcatego
                             type = "text/plain"
                             putExtra(
                                 android.content.Intent.EXTRA_TEXT,
-                                "أتممتُ سلسلة «${subcategory.name}» في تطبيق «منبر ادكصهك» 🎓",
+                                // سطر التطبيق يجعل الشهادة دعوةً لمن يقرأها.
+                                "أتممتُ سلسلة «${subcategory.name}» في تطبيق «منبر ادكصهك» 🎓\n" +
+                                    "استمع إليه في تطبيق منبر ادكصهك — " +
+                                    "https://play.google.com/store/apps/details?id=com.ali.menbaradkshk",
                             )
                         },
                         "مشاركة",
@@ -628,7 +649,7 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
                     offline = content.offline && content.lessons.isEmpty(),
                     offlineMessage = "يجب الاتصال بالإنترنت أول مرة لتحميل الدروس. بعد ذلك يمكنك الاستماع دون إنترنت.",
                     emptyMessage = "لا توجد دروس في هذا القسم.",
-                    onRetry = { vm.refresh(true) },
+                    onRetry = { vm.content.requestDeepRefresh() },
                 )
             }
         } else {
@@ -730,21 +751,78 @@ fun SearchScreen(vm: AppViewModel, initial: String, playback: PlaybackUiState) {
         } else {
             val categories = content.categories
             val subcategories = content.subcategories
-            val catRes = categories.filter { arabicContains(it.name, q) }
-            val subRes = subcategories.filter { arabicContains(it.name, q) }
-            val lesRes = content.lessons.filter { lesson ->
-                if (arabicContains(lesson.title, q)) return@filter true
-                if (lesson.speaker.isNotBlank() && arabicContains(lesson.speaker, q)) return@filter true
-                val cat = categories.firstOrNull { it.id == lesson.categoryId }
-                if (cat != null && arabicContains(cat.name, q)) return@filter true
-                val sub = subcategories.firstOrNull { it.id == lesson.subcategoryId }
-                if (sub != null && arabicContains(sub.name, q)) return@filter true
-                false
-            }.take(80)
+            // بحث بالكلمات لا بالجملة الحرفية: **كل كلمة** في الاستعلام يجب أن
+            // ترد في العنوان أو المتحدّث أو اسم القسم — فـ«ابن باز الصيام» تجد
+            // درساً عنوانه «الصيام» لمتحدّث «ابن باز» ولو اختلف الترتيب.
+            val words = remember(q) {
+                normalizeArabic(q).split(' ', '\n', '\t').filter(String::isNotBlank)
+            }
+            val catRes = remember(words, categories) {
+                categories.filter { category ->
+                    val hay = normalizeArabic(category.name)
+                    words.all { hay.contains(it) }
+                }
+            }
+            val subRes = remember(words, subcategories) {
+                subcategories.filter { sub ->
+                    val hay = normalizeArabic(sub.name)
+                    words.all { hay.contains(it) }
+                }
+            }
+            val lesRes = remember(words, content.lessons, categories, subcategories) {
+                val categoryNames = categories.associate { it.id to it.name }
+                val subcategoryNames = subcategories.associate { it.id to it.name }
+                content.lessons.filter { lesson ->
+                    val hay = normalizeArabic(
+                        buildString {
+                            append(lesson.displayTitle)
+                            append(' ')
+                            append(lesson.speaker)
+                            append(' ')
+                            append(categoryNames[lesson.categoryId].orEmpty())
+                            append(' ')
+                            append(subcategoryNames[lesson.subcategoryId].orEmpty())
+                        },
+                    )
+                    words.all { hay.contains(it) }
+                }.take(80)
+            }
 
             if (catRes.isEmpty() && subRes.isEmpty() && lesRes.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("لا توجد نتائج")
+                // بدل شاشة فارغة: اقتراح «الأكثر استماعاً» ليبقى للمستخدم مخرج.
+                val fallback = remember(revision, content.lessons) { vm.content.mostListened() }
+                LazyColumn {
+                    item {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Text("لا توجد نتائج لـ«$q»", style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "جرّب كلمة أقصر أو اسم المتحدّث.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
+                    }
+                    if (fallback.isNotEmpty()) {
+                        item {
+                            Text(
+                                "الأكثر استماعاً",
+                                style = MaterialTheme.typography.titleLarge,
+                                modifier = Modifier.padding(
+                                    start = 16.dp,
+                                    end = 16.dp,
+                                    top = 4.dp,
+                                    bottom = 8.dp,
+                                ),
+                            )
+                        }
+                        items(fallback, key = { "top-${it.id}" }) { lesson ->
+                            AudioItem(vm, lesson, fallback, playback, showActions = false)
+                        }
+                    }
                 }
             } else {
                 LazyColumn {

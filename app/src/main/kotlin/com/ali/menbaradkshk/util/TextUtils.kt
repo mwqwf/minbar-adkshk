@@ -40,16 +40,27 @@ fun lessonShareLink(lesson: Lesson, startAtSeconds: Long? = null): String {
     return if ((startAtSeconds ?: 0L) > 0L) "$base?t=$startAtSeconds" else base
 }
 
+/// سطر ختامي يعرّف بالتطبيق ويقود إلى صفحته في المتجر — كل مستدعٍ
+/// لـ`lessonShareText` يستفيد منه تلقائياً (المشاركة كانت بلا أي ذكر للتطبيق).
+private const val shareFooter =
+    "استمع إليه في تطبيق منبر ادكصهك\n" +
+        "https://play.google.com/store/apps/details?id=com.ali.menbaradkshk"
+
+/// [momentLabel] سطر «من الدقيقة …» الاختياري — يُدرج قبل السطر التعريفي
+/// كي يبقى ختام الرسالة اسمَ التطبيق ورابط متجره.
 fun lessonShareText(
     lesson: Lesson,
     categoryName: String? = null,
     subcategoryName: String? = null,
     startAtSeconds: Long? = null,
+    momentLabel: String? = null,
 ): String = buildList {
     add(lesson.displayTitle)
     subcategoryName?.takeIf(String::isNotBlank)?.let { add("القسم: $it") }
     categoryName?.takeIf(String::isNotBlank)?.let { add("($it)") }
     add(lessonShareLink(lesson, startAtSeconds))
+    momentLabel?.takeIf(String::isNotBlank)?.let { add(it) }
+    add(shareFooter)
 }.joinToString("\n")
 
 fun progress(positionMs: Long, durationMs: Long): Float {

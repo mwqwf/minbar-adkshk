@@ -2,10 +2,14 @@ package com.ali.menbaradkshk.data
 
 import android.content.Context
 import android.net.Uri
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
@@ -39,12 +43,26 @@ class DownloadRepository private constructor(context: Context) {
 
     val queueState = MutableStateFlow<DownloadQueueState?>(null)
 
+    /// قفل لكل درس: مسارا التحميل (وظيفة UIDT وعمل WorkManager) قد يتشابكان
+    /// على المعرّف نفسه، فيفتح كلاهما `FileOutputStream` على الملف الجزئي
+    /// `<safeId>.<ext>.part` نفسه بإزاحتين مستقلّتين فيتلف الملف — خاصّةً مع
+    /// منطق الاستئناف بـRange.
+    private val lessonLocks = mutableMapOf<String, Mutex>()
+
+    private fun lockFor(lessonId: String): Mutex = synchronized(lessonLocks) {
+        lessonLocks.getOrPut(lessonId) { Mutex() }
+    }
+
     fun localPath(lessonId: String): String? = store.localAudioPath(lessonId)
     fun isDownloaded(lessonId: String): Boolean = localPath(lessonId) != null
     fun all(): Map<String, String> = store.downloads()
 
-    suspend fun download(lesson: Lesson): String = withContext(Dispatchers.IO) {
+    suspend fun download(lesson: Lesson): String {
         require(lesson.id.isNotBlank()) { "معرّف الدرس مفقود." }
+        return lockFor(lesson.id).withLock { downloadLocked(lesson) }
+    }
+
+    private suspend fun downloadLocked(lesson: Lesson): String = withContext(Dispatchers.IO) {
         val uri = Uri.parse(lesson.audioUrl)
         require(uri.scheme.equals("https", ignoreCase = true)) {
             "رابط الصوت غير آمن أو غير صالح."
@@ -89,6 +107,11 @@ class DownloadRepository private constructor(context: Context) {
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                     var received = alreadyHave
                     while (true) {
+                        // إلغاء الكوروتين لا يقاطع خيط Dispatchers.IO: بلا هذا
+                        // الفحص يستمرّ النقل حتى EOF بعد onStopJob، ثم يرمي
+                        // `withContext` إلغاءً يُلتقط كفشل دائم فيُمحى الطابور.
+                        // الرمي هنا يُغلق التيّارات (use) والاتصال (finally) فوراً.
+                        ensureActive()
                         val count = input.read(buffer)
                         if (count < 0) break
                         output.write(buffer, 0, count)
@@ -106,6 +129,10 @@ class DownloadRepository private constructor(context: Context) {
             check(partial.renameTo(target)) { "تعذّر تثبيت ملف التنزيل." }
             store.setDownload(lesson.id, target.absolutePath)
             target.absolutePath
+        } catch (cancelled: CancellationException) {
+            // إلغاء (onStopJob/إغلاق العملية) ليس فشلاً: الملف الجزئي يبقى
+            // للاستئناف، والإلغاء يُعاد رميه كما هو كي لا يُحذف الدرس من الطابور.
+            throw cancelled
         } catch (failure: java.io.IOException) {
             // انقطاع شبكة: نُبقي الملف الجزئي للاستئناف لاحقاً ونعلن قابلية الإعادة.
             throw RetryableDownloadException(failure)

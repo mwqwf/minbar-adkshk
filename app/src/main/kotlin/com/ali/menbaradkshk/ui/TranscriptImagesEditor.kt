@@ -40,6 +40,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
@@ -71,12 +72,18 @@ fun TranscriptImagesEditor(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var cropIndex by remember { mutableIntStateOf(-1) }
+    // ⚠️ حالة القصّ محفوظة (rememberSaveable) لا مجرّد remember: نتيجة شاشة
+    // القصّ تُسلَّم حتى بعد إعادة إنشاء النشاط، فلو ضاعت هذه الحالة وصلت
+    // النتيجة إلى استدعاء راجع يظنّها «صورة جديدة» لا «إعادة قصّ للصورة i»
+    // — أو تُهمَل بصمت عند بلوغ الحدّ الأقصى.
+    var cropIndex by rememberSaveable { mutableIntStateOf(-1) }
     var merging by remember { mutableStateOf(false) }
     // «القصّ أثناء المعاينة»: كل صورة تُختار تمرّ بشاشة القصّ **قبل** إدراجها
     // — لا اختيار ثم قصّ لاحق. الإلغاء داخل شاشة القصّ يعني «أدرِجها كما هي».
-    val pendingNew = remember { mutableStateListOf<Uri>() }
-    var cropActive by remember { mutableStateOf(false) }
+    val pendingNew = rememberSaveable(saver = uriStateListSaver) {
+        mutableStateListOf<Uri>()
+    }
+    var cropActive by rememberSaveable { mutableStateOf(false) }
 
     fun cropOptions(uri: Uri) = CropImageContractOptions(
         uri,
@@ -96,25 +103,42 @@ fun TranscriptImagesEditor(
             // إعادة قصّ صورة مدرجة.
             val index = cropIndex
             cropIndex = -1
-            if (result.isSuccessful && index in images.indices) {
-                result.uriContent?.let { images[index] = it }
+            val cropped = if (result.isSuccessful) result.uriContent else null
+            if (cropped != null) {
+                if (index in images.indices) {
+                    images[index] = cropped
+                } else {
+                    // أُزيلت الصورة أثناء قصّها — نخبر بدل الإهمال الصامت.
+                    onError("أُزيلت الصورة أثناء قصّها فلم يُطبَّق القصّ.")
+                }
             }
             return@rememberLauncherForActivityResult
         }
         // قصّ صورة جديدة قبل الإدراج: الناتج المقصوص أو الأصل عند الإلغاء.
         val source = pendingNew.removeFirstOrNull()
         val final = if (result.isSuccessful) (result.uriContent ?: source) else source
-        if (final != null && images.size < TranscriptRepository.MAX_IMAGES) {
-            images.add(final)
+        if (final != null) {
+            if (images.size < TranscriptRepository.MAX_IMAGES) {
+                images.add(final)
+            } else {
+                onError(
+                    "الحد الأقصى ${TranscriptRepository.MAX_IMAGES} صور — " +
+                        "لم تُضَف الصورة الأخيرة.",
+                )
+            }
         }
         cropActive = false
     }
 
     // سلسلة القصّ: صورة تلو أخرى حتى تفرغ قائمة المنتظرات.
     LaunchedEffect(pendingNew.size, cropActive) {
-        if (!cropActive && pendingNew.isNotEmpty()) {
-            cropActive = true
-            cropper.launch(cropOptions(pendingNew.first()))
+        when {
+            // لا منتظِرات: لا يبقى العلم مرفوعاً فيمنع أي قصّ لاحق.
+            pendingNew.isEmpty() -> cropActive = false
+            !cropActive -> {
+                cropActive = true
+                cropper.launch(cropOptions(pendingNew.first()))
+            }
         }
     }
 

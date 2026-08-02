@@ -54,7 +54,13 @@ class PlaybackController(context: Context) {
     private val store = LocalStore.get(context)
     private val downloads = DownloadRepository.get(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val _state = MutableStateFlow(PlaybackUiState(speed = store.playbackSpeed().toFloat()))
+    private val _state = MutableStateFlow(
+        PlaybackUiState(
+            speed = store.playbackSpeed().toFloat(),
+            // مؤقّت نوم قائم من جلسة سابقة يظهر فور إعادة فتح التطبيق.
+            sleepEndsAtMs = store.sleepEndsAtMs().takeIf { it > System.currentTimeMillis() },
+        ),
+    )
     val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
     private var controller: MediaController? = null
     private var controllerFuture: ListenableFuture<MediaController>? = null
@@ -120,6 +126,30 @@ class PlaybackController(context: Context) {
                 delay(500L)
                 controller?.let(::publish)
             }
+        }
+        restoreSleepTimer()
+    }
+
+    /// يستعيد مؤقّت النوم المحفوظ بعد إتلاف النشاط. الخدمة هي من تضمن الإيقاف
+    /// في الموعد فعلاً؛ هذا لتحديث الواجهة وإيقاف فوريّ ما دامت حيّة.
+    private fun restoreSleepTimer() {
+        val end = store.sleepEndsAtMs()
+        if (end <= 0L) return
+        if (end <= System.currentTimeMillis()) {
+            store.clearSleepTimer()
+            return
+        }
+        _state.value = _state.value.copy(sleepEndsAtMs = end)
+        armSleepJob(end)
+    }
+
+    private fun armSleepJob(endsAtMs: Long) {
+        sleepJob?.cancel()
+        sleepJob = scope.launch {
+            delay((endsAtMs - System.currentTimeMillis()).coerceAtLeast(0L))
+            controller?.pause()
+            store.clearSleepTimer()
+            _state.value = _state.value.copy(sleepEndsAtMs = null)
         }
     }
 
@@ -258,19 +288,19 @@ class PlaybackController(context: Context) {
     }
 
     fun setSleepTimer(minutes: Int) {
-        sleepJob?.cancel()
         val end = System.currentTimeMillis() + minutes.coerceAtLeast(1) * 60_000L
+        // الموعد يُحفظ ليقرأه `PlaybackService`: هذا النطاق يُحرَّر مع
+        // `AppViewModel.onCleared`، فكان سحب التطبيق يقتل المؤقّت بينما يستمرّ
+        // التشغيل عبر الخدمة الأمامية فيعمل الصوت طوال الليل.
+        store.setSleepEndsAtMs(end)
         _state.value = _state.value.copy(sleepEndsAtMs = end)
-        sleepJob = scope.launch {
-            delay((end - System.currentTimeMillis()).coerceAtLeast(0L))
-            controller?.pause()
-            _state.value = _state.value.copy(sleepEndsAtMs = null)
-        }
+        armSleepJob(end)
     }
 
     fun cancelSleepTimer() {
         sleepJob?.cancel()
         sleepJob = null
+        store.clearSleepTimer()
         _state.value = _state.value.copy(sleepEndsAtMs = null)
     }
 

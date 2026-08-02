@@ -22,6 +22,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.ali.menbaradkshk.notification.MinbarMessagingService
 import com.ali.menbaradkshk.ui.AppViewModel
 import com.ali.menbaradkshk.ui.MinbarApp
 import com.ali.menbaradkshk.ui.MinbarTheme
@@ -43,9 +44,12 @@ class MainActivity : ComponentActivity() {
                 if (event == Lifecycle.Event.ON_RESUME) viewModel.refresh(true)
             },
         )
-        viewModel.handleDeepLink(intent?.data)
         // إعادة إنشاء النشاط (تدوير الشاشة) تعيد النيّة نفسها — لا تُلتقط مرّتين.
-        if (savedInstanceState == null) captureShare(intent)
+        if (savedInstanceState == null) {
+            viewModel.handleDeepLink(deepLinkFrom(intent))
+            captureShare(intent)
+            requestNotificationPermissionOnce()
+        }
         setContent {
             // القراءة الفعلية لـrevision داخل النطاق شرط إعادة التركيب عند
             // تغيير السمة أو حجم الخط من الإعدادات.
@@ -86,8 +90,33 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        viewModel.handleDeepLink(intent.data)
+        viewModel.handleDeepLink(deepLinkFrom(intent))
         captureShare(intent)
+    }
+
+    /**
+     * وجهة النيّة: `intent.data` أولاً (الروابط العميقة وإشعارات المقدّمة
+     * التي يبنيها MinbarMessagingService)، ثم **extras**.
+     *
+     * الخادم يرسل `notification` + `data` معاً، فحين يكون التطبيق في
+     * الخلفية يرسم النظام الإشعار بنفسه ويفتح هذا النشاط بحمولة الـ`data`
+     * داخل extras لا في `intent.data` — فكان النقر يفتح الرئيسية دائماً.
+     * منطق «الحمولة ← وجهة» واحد ومشترك في `MinbarMessagingService`.
+     */
+    private fun deepLinkFrom(intent: Intent?): Uri? {
+        if (intent == null) return null
+        intent.data?.let { return it }
+        val extras = intent.extras ?: return null
+        val payload = buildMap<String, String> {
+            for (key in extras.keySet()) {
+                // حمولة FCM كلّها نصوص؛ أي مفتاح غير نصّي يُتجاهل بأمان.
+                val value = runCatching { extras.getString(key) }.getOrNull()
+                if (!value.isNullOrBlank()) put(key, value)
+            }
+        }
+        if (payload.isEmpty()) return null
+        val destination = MinbarMessagingService.destinationFor(payload) ?: return null
+        return runCatching { Uri.parse(destination) }.getOrNull()
     }
 
     /// «مشاركة إلى منبر»: صوتيات ← «شارك درساً»، وصور/نص ← «ساهم بالنص»
@@ -156,5 +185,30 @@ class MainActivity : ComponentActivity() {
         ) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+    }
+
+    /**
+     * طلب إذن الإشعارات عند أول تشغيل (نظير ما تفعله لوحة الإدارة).
+     * بلاه كان أندرويد 13+ يمنع كل إشعار مدى الحياة في تثبيت جديد: مفتاح
+     * الإعدادات مفعّل افتراضاً فلا يلمسه أحد، و`targetSdk=36` لا يعرض أي
+     * حوار تلقائي — والنتيجة صفر إشعارات (حتى متحكّم المشغّل في شاشة القفل).
+     * يُطلب مرّة واحدة فقط: العلامة تُحفظ فور العرض فلا يتحوّل إلى إزعاج
+     * متكرّر، ويبقى مفتاح الإعدادات مساراً صريحاً لمن رفض ثم بدا له.
+     */
+    private fun requestNotificationPermissionOnce() {
+        if (!viewModel.store.notificationsEnabled()) return
+        if (viewModel.store.hintSeen(NOTIFICATION_PERMISSION_ASKED)) return
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            viewModel.store.markHintSeen(NOTIFICATION_PERMISSION_ASKED)
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    private companion object {
+        const val NOTIFICATION_PERMISSION_ASKED = "notification_permission_asked"
     }
 }

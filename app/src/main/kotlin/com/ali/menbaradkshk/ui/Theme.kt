@@ -15,73 +15,115 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.sp
 import com.ali.menbaradkshk.R
 
-// هوية «منبر»: تركواز عميق مع ذهبي معتّق ودرجات طبيعية مريحة للعين.
-// مأخوذة حرفياً من theme.dart في التطبيق الأصلي (Flutter) للحفاظ على الهوية البصرية.
-val Teal = Color(0xFF1E6668)
-val Slate = Color(0xFF334A57)
-val Gold = Color(0xFF8A6724)
-val BlueBrand = Color(0xFF416A8A)
-val GreenBrand = Color(0xFF3E7661)
-val OrangeBrand = Color(0xFFA9602C)
-val SecondaryGold = Color(0xFFD4B35C)
-val PositiveOnDark = Color(0xFF9AD0B2)
-val GoldOnDark = Color(0xFFE0BD69)
+// هوية «منبر» — مشتقّة **فعلياً من أيقونة التطبيق** (لا من theme.dart القديم):
+// حبر ليليّ (خلفية الأيقونة #020E1D) + سُلّم ذهبيّ + جوهر سماويّ.
+// الرموز أدناه مقيسة من الأيقونة نفسها، ومنها تُبنى كل ألوان الواجهة.
 
-// أسطح داكنة/فاتحة مطابقة لـ scaffold/appBar/surface في الأصل.
-private val DarkAppBar = Color(0xFF1B2B31)
-private val DarkScaffold = Color(0xFF172328)
-private val DarkSurface = Color(0xFF1D2A30)
-private val LightScaffold = Color(0xFFF6F8F5)
-private val LightSurface = Color(0xFFFBFCFA)
+// ---- الحبر (الخلفيات والأسطح الداكنة) ----
+val Ink900 = Color(0xFF01050B)
+val Ink800 = Color(0xFF020E1D) // ★ خلفية الأيقونة نفسها
+val Ink700 = Color(0xFF031623)
+val Ink600 = Color(0xFF05232C)
+val Ink500 = Color(0xFF072A33)
+
+// ---- الذهب (سُلّم الأيقونة) ----
+// ⚠️ قاعدة إلزامية: Gold100–Gold800 للوضع الداكن والرسوم الكبيرة فقط.
+// وحده Gold900 يصلح **نصّاً على خلفية فاتحة** (6.19 مقابل 3.69 لـGold800).
+val Gold100 = Color(0xFFFEE469)
+val Gold200 = Color(0xFFFDD459)
+val Gold300 = Color(0xFFF9C549)
+val Gold400 = Color(0xFFF4BB44)
+val Gold500 = Color(0xFFE8A837)
+val Gold600 = Color(0xFFD7962B)
+val Gold700 = Color(0xFFC88825)
+val Gold800 = Color(0xFFB8771B)
+val Gold900 = Color(0xFF885618)
+
+// ---- الجوهر السماوي ----
+// ⚠️ #068F93 يعبر 4.5:1 على Ink800 وInk700 فقط (يهبط إلى 3.86 على Ink500):
+// نصّاً على الخلفية والسطح الأساس فقط، وأيقونات/حدوداً على الأسطح المرتفعة.
+val Gem100 = Color(0xFF068F93)
+val Gem200 = Color(0xFF02858E)
+val Gem300 = Color(0xFF027983)
+val Gem400 = Color(0xFF036E79)
+val Gem500 = Color(0xFF025864)
+
+// أسماء الهوية القديمة تبقى كما هي (يستوردها بقيّة الملفات) — تغيّرت قيمها فقط
+// لتصير مشتقّة من الأيقونة.
+val Teal = Gem500
+val Slate = Ink600
+val Gold = Gold900
+val BlueBrand = Color(0xFF14405E)
+val GreenBrand = Color(0xFF186B65)
+val OrangeBrand = Color(0xFF7A4514)
+val SecondaryGold = Gold400
+val PositiveOnDark = Color(0xFF67AF96)
+val GoldOnDark = Gold200
+
+// أسطح داكنة/فاتحة: الداكنة حبر الأيقونة نفسه، والفاتحة رماديّ أزرق محايد.
+val DarkAppBar = Ink700
+val DarkScaffold = Ink800
+val DarkSurface = Ink700
+val LightScaffold = Color(0xFFF4F7FA)
+val LightSurface = Color(0xFFFFFFFF)
 
 private val LightColors = lightColorScheme(
-    primary = Teal,
+    primary = Gem500,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFDCEBE9),
-    onPrimaryContainer = Color(0xFF0A2F30),
-    secondary = Gold,
+    primaryContainer = Color(0xFFD6EBEC),
+    onPrimaryContainer = Color(0xFF034853),
+    secondary = Gold900,
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFF1E6C7),
-    onSecondaryContainer = Color(0xFF2C2411),
-    tertiary = GreenBrand,
+    secondaryContainer = Color(0xFFFBEFCF),
+    onSecondaryContainer = Color(0xFF4A3208),
+    tertiary = Color(0xFF085956),
     onTertiary = Color.White,
     background = LightScaffold,
-    onBackground = Color(0xFF1A2226),
+    onBackground = Ink800,
     surface = LightSurface,
-    onSurface = Color(0xFF1A2226),
-    surfaceVariant = Color(0xFFE4EBE8),
-    onSurfaceVariant = Color(0xFF47555A),
-    surfaceContainer = Color(0xFFEEF3F0),
-    surfaceContainerHigh = Color(0xFFE8EFEC),
-    outline = Color(0xFF6C7A80),
-    outlineVariant = Color(0xFFC4D0CE),
+    onSurface = Ink800,
+    surfaceVariant = Color(0xFFE3EAF2),
+    onSurfaceVariant = Color(0xFF46586A),
+    surfaceContainer = Color(0xFFE9EFF5),
+    surfaceContainerHigh = Color(0xFFDFE7F0),
+    outline = Color(0xFF6E7F90),
+    outlineVariant = Color(0xFFC3CFDB),
+    error = Color(0xFFA62A1E),
+    onError = Color.White,
+    errorContainer = Color(0xFFFBDCD7),
+    onErrorContainer = Color(0xFF5B1109),
 )
 
 private val DarkColors = darkColorScheme(
-    primary = SecondaryGold,
-    onPrimary = Color(0xFF2C2411),
-    primaryContainer = Color(0xFF31575A),
-    onPrimaryContainer = Color(0xFFDCEBE9),
-    secondary = GoldOnDark,
-    onSecondary = Color(0xFF2C2411),
-    secondaryContainer = Color(0xFF3A3320),
-    onSecondaryContainer = Color(0xFFF1E6C7),
-    tertiary = PositiveOnDark,
-    onTertiary = Color(0xFF0A2F30),
-    background = DarkScaffold,
-    onBackground = Color(0xFFE5ECEC),
-    surface = DarkSurface,
-    onSurface = Color(0xFFE5ECEC),
-    surfaceVariant = Color(0xFF2A3A40),
-    onSurfaceVariant = Color(0xFFA8B5B8),
-    surfaceContainer = Color(0xFF22323A),
-    surfaceContainerHigh = Color(0xFF27383F),
-    outline = Color(0xFF6C7A80),
-    outlineVariant = Color(0xFF34444A),
+    primary = Gold400,
+    onPrimary = Ink800,
+    primaryContainer = Color(0xFF4A3208),
+    onPrimaryContainer = Color(0xFFFBEFCF),
+    secondary = PositiveOnDark,
+    onSecondary = Ink800,
+    secondaryContainer = Color(0xFF123B33),
+    onSecondaryContainer = Color(0xFFC7E7DA),
+    tertiary = Gem100,
+    onTertiary = Ink800,
+    background = Ink800,
+    onBackground = Color(0xFFE6EDF5),
+    surface = Ink700,
+    onSurface = Color(0xFFE6EDF5),
+    surfaceVariant = Color(0xFF0E2231),
+    onSurfaceVariant = Color(0xFFA6B8C9),
+    surfaceContainer = Ink600,
+    surfaceContainerHigh = Ink500,
+    outline = Color(0xFF6B7D8F),
+    outlineVariant = Color(0xFF1A2B3A),
+    error = Color(0xFFFF9E90),
+    onError = Ink800,
+    errorContainer = Color(0xFF5B221A),
+    onErrorContainer = Color(0xFFFFD9D2),
 )
 
-/// ألوان شريط التطبيق العلوي (AppBar) — تركواز بنص أبيض كما في الأصل.
-val AppBarBackgroundLight = Teal
+/// ألوان شريط التطبيق العلوي (AppBar) — داكن في الوضعين بنصّ أبيض، كي تبقى
+/// أيقونات شريط الحالة فاتحة دائماً كما يفترض MainActivity.
+val AppBarBackgroundLight = Gem500
 val AppBarBackgroundDark = DarkAppBar
 val AppBarForeground = Color.White
 

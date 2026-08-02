@@ -17,18 +17,27 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material.icons.filled.RemoveCircleOutline
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
@@ -36,10 +45,13 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -216,34 +228,132 @@ private fun PlaylistsTab(vm: AppViewModel) {
     }
 }
 
+/// رأس زمنيّ للسجل بحسب طابع آخر استماع.
+private fun historyBucket(stampMs: Long, todayStartMs: Long): String = when {
+    stampMs >= todayStartMs -> "اليوم"
+    stampMs >= todayStartMs - DAY_MS -> "أمس"
+    stampMs >= todayStartMs - 6 * DAY_MS -> "هذا الأسبوع"
+    else -> "أقدم"
+}
+
+private const val DAY_MS = 24L * 60 * 60 * 1_000
+
 @Composable
 private fun HistoryTab(vm: AppViewModel, playback: PlaybackUiState) {
     val revision by vm.store.revision.collectAsState()
     val content by vm.content.state.collectAsState()
-    val items = remember(revision, content.lessons) {
-        vm.store.recentPlayedIds().mapNotNull(content.lessonById::get)
-    }
+    // الإخفاء محليّ ولا يرفع `revision`، فيُحرّك إعادةَ التركيب عدّادٌ خاص.
+    var hiddenTick by remember { mutableIntStateOf(0) }
+    val items = remember(revision, content.lessons, hiddenTick) { vm.content.historyLessons() }
+    val stamps = remember(revision, hiddenTick) { vm.content.historyStamps() }
+    val completed = remember(revision) { vm.store.completedIds().toSet() }
+    val positions = remember(revision) { vm.store.positions() }
     if (items.isEmpty()) {
         Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
             Text("لا يوجد سجل استماع بعد.", textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyLarge)
         }
         return
     }
+    val todayStart = remember(items) {
+        java.time.LocalDate.now()
+            .atStartOfDay(java.time.ZoneId.systemDefault())
+            .toInstant()
+            .toEpochMilli()
+    }
+    // التجميع يحفظ ترتيب السجل نفسه (الأحدث أوّلاً) لأن groupBy يبقي الإدخال.
+    val sections = remember(items, stamps, todayStart) {
+        items.groupBy { historyBucket(stamps[it.id] ?: 0L, todayStart) }.toList()
+    }
     LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
-        items(items, key = { "${it.id}-$revision" }) { lesson ->
-            AudioItem(vm, lesson, items, playback)
+        sections.forEach { (label, lessons) ->
+            item(key = "history-header-$label") {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 2.dp),
+                )
+            }
+            items(lessons, key = { "${it.id}-$revision" }) { lesson ->
+                val dismissState = rememberSwipeToDismissBoxState(
+                    confirmValueChange = { value ->
+                        if (value != SwipeToDismissBoxValue.Settled) {
+                            vm.content.hideFromHistory(lesson.id)
+                            hiddenTick += 1
+                            true
+                        } else {
+                            false
+                        }
+                    },
+                )
+                SwipeToDismissBox(
+                    state = dismissState,
+                    backgroundContent = {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.error)
+                                .padding(horizontal = 20.dp),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            Icon(Icons.Filled.Close, contentDescription = "إزالة من السجل", tint = Color.White)
+                        }
+                    },
+                ) {
+                    Column(Modifier.background(MaterialTheme.colorScheme.background)) {
+                        AudioItem(vm, lesson, items, playback)
+                        val savedMs = positions[lesson.id] ?: 0L
+                        when {
+                            lesson.id in completed -> HistoryBadge(
+                                icon = Icons.Filled.DoneAll,
+                                text = "أتممته ✓",
+                                tint = GreenBrand,
+                            )
+
+                            savedMs > 3_000L -> HistoryBadge(
+                                icon = Icons.Filled.History,
+                                text = "توقّفت عند ${formatDuration(savedMs)}",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
-/// تفاصيل قائمة تشغيل — نمط PlaylistDetailScreen الأصلي.
+@Composable
+private fun HistoryBadge(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, tint: Color) {
+    Row(
+        modifier = Modifier.padding(start = 22.dp, end = 22.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
+        Spacer(Modifier.size(4.dp))
+        Text(text, style = MaterialTheme.typography.labelSmall, color = tint)
+    }
+}
+
+/// تفاصيل قائمة تشغيل — نمط PlaylistDetailScreen الأصلي، مع صفّ التشغيل
+/// (تشغيل الكل/عشوائي/فرز) وإعادة ترتيب يدويّة بالأسهم.
 @Composable
 fun PlaylistDetailScreen(vm: AppViewModel, playlistId: String) {
     val revision by vm.store.revision.collectAsState()
     val content by vm.content.state.collectAsState()
     val playlist = remember(revision) { vm.store.playlists().firstOrNull { it.id == playlistId } }
-    val lessons = remember(revision, content.lessons) {
-        playlist?.lessonIds.orEmpty().mapNotNull(content.lessonById::get)
+    // الترتيب اليدوي محفوظ في المستودع ولا يرفع `revision`، فيحرّكه عدّاد خاص.
+    var orderTick by remember { mutableIntStateOf(0) }
+    // 0 = ترتيبي (يدوي)، 1 = الأحدث، 2 = الأقدم.
+    var sortMode by rememberSaveable(playlistId) { mutableIntStateOf(0) }
+    val stored = remember(revision, content.lessons, orderTick) {
+        vm.content.orderedPlaylist(playlistId, playlist?.lessonIds.orEmpty().mapNotNull(content.lessonById::get))
+    }
+    val lessons = remember(stored, sortMode) {
+        when (sortMode) {
+            1 -> stored.sortedByDescending(com.ali.menbaradkshk.data.Lesson::createdAtMs)
+            2 -> stored.sortedBy(com.ali.menbaradkshk.data.Lesson::createdAtMs)
+            else -> stored
+        }
     }
     // المدد تُقرأ مرّة واحدة لا مرّة لكل صفّ (كل قراءة تحليل JSON كامل).
     val durations = remember(revision) { vm.store.durations() }
@@ -262,7 +372,48 @@ fun PlaylistDetailScreen(vm: AppViewModel, playlistId: String) {
         return
     }
     LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
-        items(lessons, key = { "${it.id}-$revision" }) { lesson ->
+        item(key = "playlist-actions") {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AssistChip(
+                    onClick = { vm.openPlayer(lessons.first(), lessons) },
+                    leadingIcon = {
+                        Icon(Icons.Filled.PlayCircleFilled, null, tint = Teal, modifier = Modifier.size(20.dp))
+                    },
+                    label = { Text("تشغيل الكل") },
+                )
+                AssistChip(
+                    onClick = {
+                        val shuffled = lessons.shuffled()
+                        vm.openPlayer(shuffled.first(), shuffled)
+                    },
+                    leadingIcon = {
+                        Icon(Icons.Filled.Shuffle, null, tint = BlueBrand, modifier = Modifier.size(20.dp))
+                    },
+                    label = { Text("عشوائي") },
+                )
+                Spacer(Modifier.weight(1f))
+                AssistChip(
+                    onClick = { sortMode = (sortMode + 1) % 3 },
+                    leadingIcon = {
+                        Icon(Icons.Filled.SwapVert, null, tint = OrangeBrand, modifier = Modifier.size(20.dp))
+                    },
+                    label = {
+                        Text(
+                            when (sortMode) {
+                                1 -> "الأحدث"
+                                2 -> "الأقدم"
+                                else -> "ترتيبي"
+                            },
+                        )
+                    },
+                )
+            }
+        }
+        itemsIndexed(lessons, key = { _, lesson -> "${lesson.id}-$revision" }) { index, lesson ->
             val duration = lesson.durationMs.takeIf { it > 0L } ?: (durations[lesson.id] ?: 0L)
             Card(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp)) {
                 ListItem(
@@ -278,12 +429,55 @@ fun PlaylistDetailScreen(vm: AppViewModel, playlistId: String) {
                     headlineContent = { Text(lesson.displayTitle, maxLines = 2, overflow = TextOverflow.Ellipsis) },
                     supportingContent = duration.takeIf { it > 0L }?.let { { Text(formatDuration(it)) } },
                     trailingContent = {
-                        IconButton(onClick = { vm.store.removeFromPlaylist(playlist.id, lesson.id) }) {
-                            Icon(
-                                Icons.Filled.RemoveCircleOutline,
-                                contentDescription = "إزالة من القائمة",
-                                tint = MaterialTheme.colorScheme.error,
-                            )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // الأسهم مع الترتيب اليدوي وحده كي لا يتضارب مع الفرز.
+                            if (sortMode == 0) {
+                                IconButton(
+                                    onClick = {
+                                        vm.content.movePlaylistItem(
+                                            playlistId,
+                                            lessons.map { it.id },
+                                            index,
+                                            index - 1,
+                                        )
+                                        orderTick += 1
+                                    },
+                                    enabled = index > 0,
+                                    modifier = Modifier.size(34.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Filled.KeyboardArrowUp,
+                                        contentDescription = "تحريك للأعلى",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                IconButton(
+                                    onClick = {
+                                        vm.content.movePlaylistItem(
+                                            playlistId,
+                                            lessons.map { it.id },
+                                            index,
+                                            index + 1,
+                                        )
+                                        orderTick += 1
+                                    },
+                                    enabled = index < lessons.lastIndex,
+                                    modifier = Modifier.size(34.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Filled.KeyboardArrowDown,
+                                        contentDescription = "تحريك للأسفل",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            IconButton(onClick = { vm.store.removeFromPlaylist(playlist.id, lesson.id) }) {
+                                Icon(
+                                    Icons.Filled.RemoveCircleOutline,
+                                    contentDescription = "إزالة من القائمة",
+                                    tint = MaterialTheme.colorScheme.error,
+                                )
+                            }
                         }
                     },
                 )

@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /// وظيفة «نقل بيانات بمبادرة المستخدم» (User-Initiated Data Transfer) —
@@ -45,6 +46,9 @@ class LessonDownloadJobService : JobService() {
                     }
                 }
             }.getOrDefault(DownloadRunResult.NEEDS_RETRY)
+            // الوظيفة أُلغيت من onStopJob: النظام تولّى إعادة الجدولة بنفسه،
+            // وإعلان الانتهاء بعدها يخصّ وظيفة لم تعد قائمة.
+            if (!isActive) return@launch
             jobFinished(params, result == DownloadRunResult.NEEDS_RETRY)
         }
         return true

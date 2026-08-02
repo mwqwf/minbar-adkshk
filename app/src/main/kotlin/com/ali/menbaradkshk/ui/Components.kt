@@ -59,13 +59,16 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import com.ali.menbaradkshk.data.Lesson
 import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.formatDuration
 import com.ali.menbaradkshk.util.lessonShareText
 import kotlinx.coroutines.launch
 
-private val FavoriteRed = Color(0xFFD84343)
+/// أحمر المفضّلة على السطح الفاتح: النسبة السابقة (0xFFD84343) كانت 4.25
+/// وهي دون حدّ التباين، فرُفعت إلى 6.07 بلا تغيير في هوية اللون.
+private val FavoriteRed = Color(0xFFB32F2F)
 
 /// صف درس كامل بنمط الأصل: زر تشغيل دائري ملوّن، عنوان، متحدث، مدّة،
 /// وأزرار المفضّلة/التنزيل(بنسبة)/المشاركة، وشريط تقدّم محفوظ أسفل البطاقة.
@@ -639,13 +642,65 @@ private fun shareLesson(
         state.categoryById[lesson.categoryId]?.name,
         state.subcategoryById[lesson.subcategoryId]?.name,
     )
-    context.startActivity(
-        Intent.createChooser(
-            Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                putExtra(Intent.EXTRA_TEXT, text)
-            },
-            "مشاركة الدرس",
-        ),
-    )
+    shareLessonPayload(context, vm, lesson, text)
 }
+
+/**
+ * مشاركة الدرس بسلوك الأصل حرفياً: **محمّل ⇒ نشارك الملف الصوتي نفسه**،
+ * وغير محمّل ⇒ نشارك النصّ والرابط. مصدر الحقيقة للتحميل هو نفسه الذي
+ * يستعمله المشغّل (`store.localAudioPath`)، ووجود الملف على القرص يُتحقَّق
+ * منه فعلياً قبل المشاركة.
+ *
+ * كل خطوة قد تفشل (مسار خارج `file_paths`، ملف مُزال، مستقبِل معطوب)
+ * مُغلَّفة بـ`runCatching` مع سقوط إلى مشاركة النصّ — زرّ المشاركة لا ينهار.
+ */
+fun shareLessonPayload(
+    context: android.content.Context,
+    vm: AppViewModel,
+    lesson: Lesson,
+    text: String,
+) {
+    fun textIntent() = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+
+    val fileIntent = runCatching {
+        val path = vm.store.localAudioPath(lesson.id) ?: return@runCatching null
+        val file = java.io.File(path)
+        if (!file.isFile || file.length() <= 0L) return@runCatching null
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file,
+        )
+        Intent(Intent.ACTION_SEND).apply {
+            type = audioMimeOf(file.name)
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_TEXT, text)
+            putExtra(Intent.EXTRA_SUBJECT, lesson.displayTitle)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    }.getOrNull()
+
+    val chooser = Intent.createChooser(fileIntent ?: textIntent(), "مشاركة الدرس")
+    runCatching { context.startActivity(chooser) }.onFailure {
+        runCatching {
+            context.startActivity(Intent.createChooser(textIntent(), "مشاركة الدرس"))
+        }
+    }
+}
+
+/// نوع MIME من امتداد الملف — بعض التطبيقات المستقبِلة ترفض "audio/*".
+private fun audioMimeOf(name: String): String =
+    when (name.substringAfterLast('.', "").lowercase()) {
+        "mp3" -> "audio/mpeg"
+        "m4a", "m4b", "mp4", "aac" -> "audio/mp4"
+        "ogg", "oga", "opus" -> "audio/ogg"
+        "wav" -> "audio/wav"
+        "flac" -> "audio/flac"
+        "amr" -> "audio/amr"
+        "3gp", "3gpp" -> "audio/3gpp"
+        "mkv" -> "audio/x-matroska"
+        else -> "audio/*"
+    }

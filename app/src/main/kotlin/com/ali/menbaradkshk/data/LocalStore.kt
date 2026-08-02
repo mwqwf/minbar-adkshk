@@ -303,6 +303,14 @@ class LocalStore private constructor(context: Context) {
     fun skipSeconds(): Int = long(KEY_SKIP, 15L).toInt()
     fun setSkipSeconds(value: Int) = write { putLong(KEY_SKIP, value.toLong()) }
 
+    /// موعد انتهاء مؤقّت النوم (0 = لا مؤقّت). يُحفظ هنا لا في نطاق الواجهة
+    /// وحده: سحب التطبيق من التطبيقات الحديثة كان يقتل المؤقّت بينما يستمرّ
+    /// التشغيل عبر الخدمة، فيبقى الصوت شغّالاً طوال الليل. الخدمة تقرأ هذه
+    /// القيمة وتوقف التشغيل في موعده، والواجهة تستعيد المؤقّت عند إعادة الفتح.
+    fun sleepEndsAtMs(): Long = long(KEY_SLEEP_ENDS_AT)
+    fun setSleepEndsAtMs(value: Long) = write { putLong(KEY_SLEEP_ENDS_AT, value) }
+    fun clearSleepTimer() = write { putLong(KEY_SLEEP_ENDS_AT, 0L) }
+
     // المظهر الافتراضي: اتّباع النظام (طلب المستخدم 2026-07-23).
     fun themeMode(): String = string(KEY_THEME, "system")
     fun setThemeMode(value: String) = write { putString(KEY_THEME, value) }
@@ -369,18 +377,40 @@ class LocalStore private constructor(context: Context) {
 
     fun downloadQueue(): List<String> = stringList("download_queue")
 
-    /// [wifiOnly] يُحفظ مع الطابور ليطبّقه الناقل الفعلي (دفعات التحميل التلقائي).
+    /// معرّفات عناصر الطابور المقيَّدة بـ«واي فاي فقط».
+    ///
+    /// القيد صار **لكل عنصر** لا حالة عامّة واحدة: العلم المشترك القديم كان
+    /// يُكتب بلا شرط عند كل إضافة، فضغطة تحميل يدويّة واحدة (بالافتراضي
+    /// `wifiOnly=false`) تمحو قيد الدفعة التلقائية فتنزل عشرات الدروس على
+    /// بيانات الجوّال خلافاً لإعداد المستخدم الصريح.
+    ///
+    /// ترحيل آمن للقيمة القديمة: إن لم تُكتب هذه القائمة بعد وكان العلم العام
+    /// مرفوعاً، فكل ما في الطابور مقيَّد — وهو سلوك النسخة السابقة حرفيّاً.
+    fun downloadQueueWifiOnlyIds(): Set<String> {
+        if (raw(KEY_QUEUE_WIFI_IDS) == null) {
+            return if (downloadQueueWifiOnly()) downloadQueue().toSet() else emptySet()
+        }
+        return stringList(KEY_QUEUE_WIFI_IDS).toSet()
+    }
+
+    /// [wifiOnly] يُحفظ لكل معرّف مُضاف في هذه الدفعة وحدها، فلا تُخفَّض قيود
+    /// دفعات سابقة أبداً (دفعات التحميل التلقائي).
     fun addToDownloadQueue(ids: List<String>, label: String, wifiOnly: Boolean = false) {
         synchronized(queueLock) {
             val current = downloadQueue().toMutableList()
             val added = ids.filter { it !in current }
             if (added.isEmpty()) return
+            // يُقرأ قبل كتابة الطابور الجديد كي يبقى ترحيل العلم القديم صحيحاً.
+            val restricted = downloadQueueWifiOnlyIds().toMutableSet()
+            if (wifiOnly) restricted += added
             current += added
             write {
                 putString("download_queue", JSONArray(current).toString())
                 putString("download_queue_label", label)
                 putLong("download_queue_total", (downloadQueueTotal() + added.size).toLong())
-                putBoolean("download_queue_wifi_only", wifiOnly)
+                putString(KEY_QUEUE_WIFI_IDS, JSONArray(restricted.toList()).toString())
+                // العلم العام يبقى للتوافق فقط ولا يُخفَّض: «هل في الطابور مقيَّد؟».
+                putBoolean("download_queue_wifi_only", restricted.isNotEmpty())
             }
         }
     }
@@ -389,8 +419,11 @@ class LocalStore private constructor(context: Context) {
         synchronized(queueLock) {
             val current = downloadQueue().toMutableList()
             if (!current.remove(id)) return
+            val restricted = downloadQueueWifiOnlyIds() - id
             write {
                 putString("download_queue", JSONArray(current).toString())
+                putString(KEY_QUEUE_WIFI_IDS, JSONArray(restricted.toList()).toString())
+                putBoolean("download_queue_wifi_only", restricted.isNotEmpty())
                 if (current.isEmpty()) putLong("download_queue_total", 0L)
             }
         }
@@ -407,6 +440,7 @@ class LocalStore private constructor(context: Context) {
     private fun clearQueueLocked() = write {
         remove("download_queue")
         remove("download_queue_wifi_only")
+        remove(KEY_QUEUE_WIFI_IDS)
         putLong("download_queue_total", 0L)
     }
 
@@ -658,6 +692,9 @@ class LocalStore private constructor(context: Context) {
         const val KEY_LAST_LISTEN_DATE = "pers_last_listen_date"
         const val KEY_SPEED = "pref_speed"
         const val KEY_SKIP = "pref_skip_sec"
+        const val KEY_SLEEP_ENDS_AT = "pref_sleep_ends_at"
+        /// قيد «واي فاي فقط» لكل عنصر في طابور التحميل (يحلّ محلّ العلم العام).
+        const val KEY_QUEUE_WIFI_IDS = "download_queue_wifi_ids"
         const val KEY_THEME = "theme_mode"
         const val KEY_FONT_SCALE = "font_scale"
         const val KEY_AUTO_DOWNLOAD = "auto_dl_enabled"

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Cancel
@@ -51,6 +52,7 @@ import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircleFilled
+import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.PublishedWithChanges
 import androidx.compose.material.icons.filled.Replay30
 import androidx.compose.material.icons.filled.Share
@@ -58,6 +60,7 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Today
 import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.AlertDialog
@@ -277,6 +280,9 @@ fun CarScreen(vm: AppViewModel, playback: PlaybackUiState) {
 // «حصادك» — ملخّص استماع شخصي (wrapped_screen.dart).
 // ----------------------------------------------------------------------------
 
+/// عدد اللحظات المعروضة في «حصادك» قبل السطر الملخِّص للباقي.
+private const val MOMENTS_PREVIEW = 20
+
 private fun fmtSeconds(seconds: Long): String {
     val h = seconds / 3600
     val m = (seconds % 3600) / 60
@@ -290,6 +296,8 @@ fun StatsScreen(vm: AppViewModel) {
     val content by vm.content.state.collectAsState()
     val total = remember(revision) { vm.store.totalSeconds() }
     val week = remember(revision) { vm.store.weekSeconds() }
+    val today = remember(revision) { vm.store.todaySeconds() }
+    val moments = remember(revision) { vm.store.allBookmarks() }
     val completed = remember(revision) { vm.store.completedIds().size }
     val streak = remember(revision) { vm.store.streakDays() }
     val played = remember(revision) { vm.store.playCounts().size }
@@ -369,6 +377,106 @@ fun StatsScreen(vm: AppViewModel) {
                 }
             }
         }
+        // بطاقة «اليوم»: ما استمعتَه اليوم وتقدّمه نحو حصّة يوميّة = الهدف ÷ ٧.
+        Spacer(Modifier.height(12.dp))
+        val todayMinutes = (today / 60).toInt()
+        val dailyGoal = if (goalMin > 0) (goalMin / 7).coerceAtLeast(1) else 0
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Today, null, tint = Teal)
+                    Spacer(Modifier.width(8.dp))
+                    Text("اليوم: ${fmtSeconds(today)}", fontWeight = FontWeight.Bold)
+                }
+                if (dailyGoal > 0) {
+                    val todayRatio = (todayMinutes.toFloat() / dailyGoal).coerceIn(0f, 1f)
+                    Spacer(Modifier.height(10.dp))
+                    ClassicLinearProgress(
+                        progress = todayRatio,
+                        modifier = Modifier.fillMaxWidth().height(10.dp),
+                        color = if (todayRatio >= 1f) GreenBrand else Teal,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        if (todayRatio >= 1f) {
+                            "أتممت حصّة اليوم 🎉 ($todayMinutes/$dailyGoal د)"
+                        } else {
+                            "$todayMinutes من $dailyGoal دقيقة اليوم"
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "حدّد هدفاً أسبوعياً من الإعدادات ليظهر تقدّمك اليومي هنا.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        // «لحظاتك المحفوظة»: كانت اللحظات مدفونة داخل كل درس على حدة —
+        // هنا تُجمَع كلها، والنقر يفتح الدرس من موضع اللحظة تماماً.
+        if (moments.isNotEmpty()) {
+            Spacer(Modifier.height(18.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Bookmark, null, tint = Gold)
+                Spacer(Modifier.width(8.dp))
+                Text("لحظاتك المحفوظة", style = MaterialTheme.typography.titleMedium)
+            }
+            Spacer(Modifier.height(6.dp))
+            moments.take(MOMENTS_PREVIEW).forEach { moment ->
+                val lesson = content.lessonById[moment.lessonId]
+                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    ListItem(
+                        modifier = Modifier.clickable {
+                            if (lesson == null) {
+                                vm.showMessage("الدرس لم يعد متاحاً — حدّث المحتوى.")
+                            } else {
+                                vm.playback.play(
+                                    lesson,
+                                    listOf(lesson) + vm.content.similarTo(lesson),
+                                    moment.positionMs,
+                                    restart = true,
+                                )
+                                vm.open(Route.Lesson(lesson.id))
+                            }
+                        },
+                        leadingContent = {
+                            Icon(Icons.Filled.PlayCircleOutline, null, tint = Teal)
+                        },
+                        headlineContent = {
+                            Text(
+                                lesson?.displayTitle ?: "درس لم يعد متاحاً",
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        supportingContent = {
+                            Text(
+                                formatDuration(moment.positionMs) +
+                                    moment.note.takeIf(String::isNotBlank)
+                                        ?.let { " — $it" }.orEmpty(),
+                            )
+                        },
+                    )
+                }
+            }
+            if (moments.size > MOMENTS_PREVIEW) {
+                Text(
+                    "و${moments.size - MOMENTS_PREVIEW} لحظة أخرى محفوظة داخل الدروس.",
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
         Spacer(Modifier.height(20.dp))
         FilledTonalButton(
             onClick = {
@@ -473,10 +581,16 @@ fun NotificationsScreen(vm: AppViewModel) {
     val all by vm.notifications.collectAsState()
     val content by vm.content.state.collectAsState()
     val items = remember(all, revision) { visibleNotifications(vm, all) }
+    // ختم «آخر ما رآه» قبل تصفير الشارة — يميّز الجديد بصرياً داخل الشاشة.
+    val seenBefore by vm.notificationsSeenBefore.collectAsState()
 
     fun openTarget(n: NotificationItem) {
         when (n.type) {
             "submission", "transcript" -> vm.open(Route.MySubmissions)
+            // الكتب أُزيلت من التطبيق عمداً — نوضّح ذلك بدل فتح شاشة خاطئة.
+            "book" -> vm.showMessage("الكتب لم تعد ضمن التطبيق — المحتوى صوتيّ فقط.")
+            // إشعار عام يدويّ بلا هدف: لا وجهة له أصلاً (صفّه غير قابل للنقر).
+            "manual" -> Unit
             "lesson" -> {
                 val lesson = content.lessonById[n.refId]
                 if (lesson != null) {
@@ -555,9 +669,17 @@ fun NotificationsScreen(vm: AppViewModel) {
                     }
                 },
             ) {
+                // الإشعار اليدوي العام بلا وجهة — لا يُعرض كصفّ قابل للنقر
+                // كي لا ينتهي كل ضغط برسالة «العنصر غير متاح».
+                val hasTarget = n.type != "manual"
+                val isNew = n.createdAtMs > seenBefore
                 Column(Modifier.background(MaterialTheme.colorScheme.background)) {
                     ListItem(
-                        modifier = Modifier.clickable { openTarget(n) },
+                        modifier = if (hasTarget) {
+                            Modifier.clickable { openTarget(n) }
+                        } else {
+                            Modifier
+                        },
                         leadingContent = {
                             Box(
                                 modifier = Modifier.size(40.dp).background(Teal, CircleShape),
@@ -567,7 +689,20 @@ fun NotificationsScreen(vm: AppViewModel) {
                             }
                         },
                         headlineContent = {
-                            Text(n.title.ifBlank { "إشعار" }, fontWeight = FontWeight.SemiBold)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (isNew) {
+                                    Box(
+                                        Modifier
+                                            .size(8.dp)
+                                            .background(OrangeBrand, CircleShape),
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                }
+                                Text(
+                                    n.title.ifBlank { "إشعار" },
+                                    fontWeight = if (isNew) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                )
+                            }
                         },
                         supportingContent = n.body.takeIf(String::isNotBlank)?.let { { Text(it) } },
                         trailingContent = {

@@ -18,14 +18,21 @@ import kotlinx.coroutines.launch
 /// مصدر الإشعارات المشترك — منقول من NotificationsFeed الأصلي:
 /// مجموعة notifications العامة + user_notifications الخاصة +
 /// قرارات «مساهماتي» المحسومة كإشعارات اصطناعية. الإخفاء المحلي يتم في الواجهة.
-class NotificationsRepository(private val submissions: SubmissionRepository) {
+///
+/// [hasContributedBefore] مؤشّر محلّي رخيص: من لم يساهم قطّ لا يُفتح له مستمع
+/// «مساهماتي» أصلاً (مستمع كامل يسقط عن أغلبية المستخدمين). القيمة الافتراضية
+/// تُبقي السلوك القديم كما هو لمن لا يمرّر المؤشّر.
+class NotificationsRepository(
+    private val submissions: SubmissionRepository,
+    private val hasContributedBefore: () -> Boolean = { true },
+) {
     private val db = FirebaseFirestore.getInstance()
 
     private companion object {
         const val TAG = "NotificationsRepo"
     }
 
-    fun stream(limit: Long = 50): Flow<List<NotificationItem>> = callbackFlow {
+    fun stream(limit: Long = 30): Flow<List<NotificationItem>> = callbackFlow {
         var publicItems = listOf<NotificationItem>()
         var privateItems = listOf<NotificationItem>()
         var submissionItems = listOf<NotificationItem>()
@@ -72,6 +79,11 @@ class NotificationsRepository(private val submissions: SubmissionRepository) {
                         .map { fromDocument("private:${it.id}", it) }
                     emit()
                 }
+            // من لم يرسل مساهمة قطّ لا قرارات له أصلاً ⇒ لا مستمع ولا قراءة.
+            if (!hasContributedBefore()) {
+                emit()
+                return@AuthStateListener
+            }
             submissionsJob = scope.launch {
                 runCatching {
                     submissions.mine().collect { list ->

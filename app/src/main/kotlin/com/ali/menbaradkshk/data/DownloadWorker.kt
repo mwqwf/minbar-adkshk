@@ -33,6 +33,9 @@ class LessonDownloadWorker(
 
 object DownloadScheduler {
     private const val WORK_NAME = "lesson_downloads"
+    /// اسم فريد مستقلّ للعناصر المؤجَّلة بقيد «واي فاي فقط»: لو استُعمل الاسم
+    /// نفسه لأسقطته سياسة KEEP ما دام عمل التحميل العادي جارياً.
+    private const val WIFI_WORK_NAME = "lesson_downloads_wifi"
     private const val JOB_ID = 4210
 
     /// يشغّل معالجة الطابور بالمسار المناسب لنسخة النظام:
@@ -40,12 +43,32 @@ object DownloadScheduler {
     /// وما دونه → عمل خلفية عادي. يسقط تلقائياً إلى WorkManager إن تعذّرت
     /// جدولة وظيفة UIDT (مثلاً حين يُستدعى والتطبيق في الخلفية).
     fun enqueue(context: Context) {
-        // علم «واي فاي فقط» محفوظ مع الطابور نفسه ليطبَّق على الناقل الفعلي.
-        val wifiOnly = LocalStore.get(context).downloadQueueWifiOnly()
+        val store = LocalStore.get(context)
+        val queue = store.downloadQueue()
+        val restricted = store.downloadQueueWifiOnlyIds()
+        // القيد صار لكل عنصر: نطلب شبكة غير محدودة فقط إن كان **كل** ما في
+        // الطابور مقيَّداً، وإلا نعمل على أي شبكة ويتخطّى المعالج المقيَّد
+        // ويجدول له عملاً بقيد «غير محدودة» في نهاية الجولة.
+        val wifiOnly = queue.isNotEmpty() && queue.all { it in restricted }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             if (scheduleUserInitiated(context, wifiOnly)) return
         }
         enqueueBackgroundWork(context, wifiOnly)
+    }
+
+    /// عمل مؤجَّل للعناصر المقيَّدة بالواي فاي — يستأنفها فور توفّر شبكة غير
+    /// محدودة، بلا أن يمسّ عمل التحميل الجاري.
+    fun enqueueUnmetered(context: Context) {
+        val request = OneTimeWorkRequestBuilder<LessonDownloadWorker>()
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.UNMETERED)
+                    .build(),
+            )
+            .setBackoffCriteria(BackoffPolicy.LINEAR, 10, TimeUnit.SECONDS)
+            .build()
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork(WIFI_WORK_NAME, ExistingWorkPolicy.KEEP, request)
     }
 
     @androidx.annotation.RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)

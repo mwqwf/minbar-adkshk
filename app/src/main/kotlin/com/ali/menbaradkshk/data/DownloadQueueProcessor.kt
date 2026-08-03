@@ -59,6 +59,12 @@ class DownloadQueueProcessor(private val context: Context) {
             downloads.queueState.value = null
             return DownloadRunResult.FINISHED
         }
+        // ⏸ موقوف بطلب المستخدم: ننسحب بنجاح بلا إعادة جدولة — الطابور
+        // والملفات الجزئية باقية، ولا يوقظنا إلا زرّ «استئناف».
+        if (downloads.paused.value) {
+            publishPaused()
+            return DownloadRunResult.FINISHED
+        }
         notify("جارٍ تجهيز التحميل…", onProgressNotification)
 
         var failures = 0
@@ -66,10 +72,20 @@ class DownloadQueueProcessor(private val context: Context) {
         // ونتجاوزها في هذه الجولة، ثم نجدول لها عملاً بقيد شبكة غير محدودة.
         val deferred = mutableSetOf<String>()
         while (true) {
+            if (downloads.paused.value) {
+                publishPaused()
+                return DownloadRunResult.FINISHED
+            }
             queue = store.downloadQueue()
             val id = queue.firstOrNull { it !in deferred } ?: break
             val lesson = content.state.value.lessonById[id]
             if (lesson == null || lesson.audioUrl.isBlank() || downloads.isDownloaded(id)) {
+                store.removeFromDownloadQueue(id)
+                continue
+            }
+            // أُلغي قبل أن يبدأ دوره: يخرج بلا محاولة ولا رسالة فشل.
+            if (downloads.isCancelRequested(id)) {
+                downloads.clearCancel(id)
                 store.removeFromDownloadQueue(id)
                 continue
             }
@@ -124,6 +140,13 @@ class DownloadQueueProcessor(private val context: Context) {
                     }
                 }
                 store.removeFromDownloadQueue(id)
+            } catch (paused: DownloadPausedException) {
+                // الدرس يبقى في رأس الطابور وملفّه الجزئي محفوظ.
+                publishPaused(lesson.displayTitle)
+                return DownloadRunResult.FINISHED
+            } catch (cancelled: DownloadCancelledException) {
+                downloads.clearCancel(id)
+                store.removeFromDownloadQueue(id)
             } catch (retryable: RetryableDownloadException) {
                 // انقطاع اتصال: يبقى الدرس في الطابور ويُستأنف الملف الجزئي لاحقاً.
                 downloads.queueState.value = DownloadQueueState(
@@ -163,6 +186,25 @@ class DownloadQueueProcessor(private val context: Context) {
             else "اكتمل التحميل مع تعذّر $failures درساً.",
         )
         return DownloadRunResult.FINISHED
+    }
+
+    /// حالة «موقوف مؤقّتاً» للواجهة والإشعار: تُبقي العنوان والنسبة ظاهرين
+    /// فيعرف المستخدم من أين سيُستأنف، ويُزال الإشعار المُلازم لأنّ شيئاً
+    /// لا يجري الآن — إشعار تقدّم متجمّد يوحي بعطل.
+    private fun publishPaused(title: String = "") {
+        val previous = downloads.queueState.value
+        val queued = store.downloadQueue()
+        downloads.queueState.value = DownloadQueueState(
+            label = store.downloadQueueLabel(),
+            done = (store.downloadQueueTotal() - queued.size).coerceAtLeast(0),
+            total = store.downloadQueueTotal().coerceAtLeast(1),
+            currentTitle = title.ifBlank { previous?.currentTitle.orEmpty() },
+            paused = true,
+            filePercent = previous?.filePercent ?: -1,
+            fileDownloadedBytes = previous?.fileDownloadedBytes ?: 0L,
+            fileTotalBytes = previous?.fileTotalBytes ?: 0L,
+        )
+        runCatching { NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID) }
     }
 
     /// هل الشبكة الحالية محدودة (بيانات الجوّال)؟ غياب الشبكة يُعامَل كغير

@@ -586,11 +586,21 @@ fun DownloadsScreen(vm: AppViewModel) {
             item {
                 Card(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp)) {
                     Column(Modifier.padding(14.dp)) {
-                        Text(
-                            if (state.waitingForNetwork) "بانتظار عودة الاتصال لاستئناف «${state.label}»…"
-                            else "جارٍ تحميل «${state.label}» — ${state.done}/${state.total}",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                when {
+                                    state.paused ->
+                                        "التحميل موقوف مؤقّتاً — «${state.label}» يُستأنف من حيث توقّف"
+                                    state.waitingForNetwork ->
+                                        "بانتظار عودة الاتصال لاستئناف «${state.label}»…"
+                                    else ->
+                                        "جارٍ تحميل «${state.label}» — ${state.done}/${state.total}"
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f),
+                            )
+                            DownloadQueueControls(vm)
+                        }
                         if (state.currentTitle.isNotBlank() && !state.waitingForNetwork) {
                             Text(
                                 state.currentTitle,

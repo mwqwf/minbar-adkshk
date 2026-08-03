@@ -30,6 +30,8 @@ data class DownloadQueueState(
     val total: Int,
     val currentTitle: String = "",
     val waitingForNetwork: Boolean = false,
+    /// أوقفه المستخدم — لا يُستأنف إلا بضغطة «استئناف».
+    val paused: Boolean = false,
     /// نسبة الملفّ الجاري (0..100)، و‑1 حين لا يُعلن الخادم حجماً.
     /// بدونها كان الشريط مبنيّاً على `done/total` وحدها، فيبقى عند الصفر
     /// طوال تحميل درس واحد ويبدو كأنّه متجمّد.
@@ -49,6 +51,12 @@ data class DownloadQueueState(
 /// خطأ شبكة قابل لإعادة المحاولة (يستأنف WorkManager تلقائياً عند عودة الاتصال).
 class RetryableDownloadException(cause: Throwable) : Exception(cause)
 
+/// أوقف المستخدم التحميل مؤقّتاً — الملف الجزئي **يبقى** فيُستأنف من موضعه.
+class DownloadPausedException : Exception("أُوقف التحميل مؤقّتاً.")
+
+/// ألغى المستخدم تحميل هذا الدرس — الملف الجزئي يُحذف ويخرج من الطابور.
+class DownloadCancelledException(val lessonId: String) : Exception("أُلغي التحميل.")
+
 class DownloadRepository private constructor(context: Context) {
     private val appContext = context.applicationContext
     private val store = LocalStore.get(context)
@@ -66,6 +74,33 @@ class DownloadRepository private constructor(context: Context) {
     private fun lockFor(lessonId: String): Mutex = synchronized(lessonLocks) {
         lessonLocks.getOrPut(lessonId) { Mutex() }
     }
+
+    // ---- تحكّم المستخدم في النقل الجاري ----
+    //
+    /// إلغاءات مطلوبة لدروس بعينها. الفحص داخل حلقة القراءة لا خارجها:
+    /// حذف المعرّف من الطابور وحده لا يوقف نقلاً بدأ فعلاً، فيظلّ يستهلك
+    /// البيانات إلى آخر بايت ثم يُكتب الملف كأنّ الإلغاء لم يقع.
+    private val cancelRequests = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    /// هل الطابور موقوف مؤقّتاً؟ (مرآة في الذاكرة لعلم [LocalStore] كي
+    /// تُقرأ في حلقة النقل بلا لمس القرص مع كل حزمة بايتات.)
+    private val _paused = MutableStateFlow(store.downloadQueuePaused())
+    val paused: StateFlow<Boolean> = _paused.asStateFlow()
+
+    fun setPaused(value: Boolean) {
+        _paused.value = value
+        store.setDownloadQueuePaused(value)
+    }
+
+    fun requestCancel(lessonId: String) {
+        cancelRequests += lessonId
+    }
+
+    fun clearCancel(lessonId: String) {
+        cancelRequests -= lessonId
+    }
+
+    fun isCancelRequested(lessonId: String): Boolean = cancelRequests.contains(lessonId)
 
     fun localPath(lessonId: String): String? = store.localAudioPath(lessonId)
     fun isDownloaded(lessonId: String): Boolean = localPath(lessonId) != null
@@ -135,6 +170,13 @@ class DownloadRepository private constructor(context: Context) {
                         // `withContext` إلغاءً يُلتقط كفشل دائم فيُمحى الطابور.
                         // الرمي هنا يُغلق التيّارات (use) والاتصال (finally) فوراً.
                         ensureActive()
+                        // تحكّم المستخدم يُفحص مع كل حزمة: الإيقاف والإلغاء
+                        // يجب أن يوقفا استهلاك البيانات **فوراً** لا عند
+                        // نهاية الملف. الرمي هنا يغلق التيّارات والاتصال.
+                        if (_paused.value) throw DownloadPausedException()
+                        if (cancelRequests.contains(lesson.id)) {
+                            throw DownloadCancelledException(lesson.id)
+                        }
                         val count = input.read(buffer)
                         if (count < 0) break
                         output.write(buffer, 0, count)
@@ -155,6 +197,14 @@ class DownloadRepository private constructor(context: Context) {
         } catch (cancelled: CancellationException) {
             // إلغاء (onStopJob/إغلاق العملية) ليس فشلاً: الملف الجزئي يبقى
             // للاستئناف، والإلغاء يُعاد رميه كما هو كي لا يُحذف الدرس من الطابور.
+            throw cancelled
+        } catch (paused: DownloadPausedException) {
+            // ⏸ الملف الجزئي **يبقى**: الاستئناف يطلب المدى المتبقي بـRange
+            // فيُكمل من البايت نفسه بلا إعادة تنزيل ما نزل.
+            throw paused
+        } catch (cancelled: DownloadCancelledException) {
+            // ✕ إلغاء صريح: لا معنى لإبقاء نصف ملفّ لن يُستأنف.
+            partial.delete()
             throw cancelled
         } catch (failure: java.io.IOException) {
             // انقطاع شبكة: نُبقي الملف الجزئي للاستئناف لاحقاً ونعلن قابلية الإعادة.

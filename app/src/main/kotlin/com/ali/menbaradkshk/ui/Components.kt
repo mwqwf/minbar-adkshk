@@ -31,9 +31,12 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -412,9 +415,54 @@ fun DownloadButton(
 ) {
     val revision by vm.store.revision.collectAsState()
     val progressMap by vm.downloads.progress.collectAsState()
+    val paused by vm.downloadPaused.collectAsState()
     val downloaded = remember(revision, lesson.id) { vm.downloads.isDownloaded(lesson.id) }
     val queued = remember(revision, lesson.id) { lesson.id in vm.store.downloadQueue() }
     val active = progressMap[lesson.id]
+    // قائمة التحكّم: تفتح بضغطة على المؤشّر نفسه — مكان لا يحتاج المستخدم
+    // البحث عنه، وهو نفسه في كل شاشة يظهر فيها المؤشّر.
+    var menu by remember { mutableStateOf(false) }
+
+    /// قائمة «إيقاف/استئناف/إلغاء» — واحدة لكل حالات التحميل الجاري
+    /// والمنتظر، فلا يختلف السلوك بين شاشة وأخرى.
+    @Composable
+    fun ControlMenu() {
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            if (paused) {
+                DropdownMenuItem(
+                    text = { Text("استئناف التحميل") },
+                    leadingIcon = { Icon(Icons.Filled.PlayArrow, contentDescription = null) },
+                    onClick = {
+                        menu = false
+                        vm.resumeDownloads()
+                    },
+                )
+            } else {
+                DropdownMenuItem(
+                    text = { Text("إيقاف مؤقّت") },
+                    leadingIcon = { Icon(Icons.Filled.Pause, contentDescription = null) },
+                    onClick = {
+                        menu = false
+                        vm.pauseDownloads()
+                    },
+                )
+            }
+            DropdownMenuItem(
+                text = { Text("إلغاء التحميل", color = MaterialTheme.colorScheme.error) },
+                leadingIcon = {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                },
+                onClick = {
+                    menu = false
+                    vm.cancelDownload(lesson.id)
+                },
+            )
+        }
+    }
 
     when {
         downloaded -> Box(
@@ -428,7 +476,11 @@ fun DownloadButton(
                 modifier = Modifier.size(size * 0.55f),
             )
         }
-        active != null -> Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+        // جارٍ الآن — الضغط يفتح التحكّم (إيقاف/إلغاء) بدل ألّا يفعل شيئاً.
+        active != null -> Box(
+            modifier = Modifier.size(size).clickable { menu = true },
+            contentAlignment = Alignment.Center,
+        ) {
             val percent = active.percent.coerceAtLeast(0)
             CircularProgressIndicator(
                 progress = { percent / 100f },
@@ -442,17 +494,23 @@ fun DownloadButton(
                 style = MaterialTheme.typography.labelSmall,
                 color = OrangeBrand,
             )
+            ControlMenu()
         }
         queued -> Box(
-            modifier = Modifier.size(size).background(OrangeBrand.copy(alpha = 0.1f), CircleShape),
+            modifier = Modifier
+                .size(size)
+                .background(OrangeBrand.copy(alpha = 0.1f), CircleShape)
+                .clickable { menu = true },
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                Icons.Filled.HourglassTop,
-                contentDescription = "بانتظار التحميل",
+                // موقوف ⇒ سهم استئناف صريح، وإلّا ساعة الانتظار.
+                if (paused) Icons.Filled.PlayArrow else Icons.Filled.HourglassTop,
+                contentDescription = if (paused) "التحميل موقوف مؤقّتاً" else "بانتظار التحميل",
                 tint = OrangeBrand,
                 modifier = Modifier.size(size * 0.5f),
             )
+            ControlMenu()
         }
         else -> Box(
             modifier = Modifier
@@ -474,6 +532,61 @@ fun DownloadButton(
                 modifier = Modifier.size(size * 0.55f),
             )
         }
+    }
+}
+
+/// أزرار التحكّم في طابور التحميل: إيقاف مؤقّت/استئناف وإلغاء الكل.
+///
+/// مكوّن واحد مشترك بين كل شاشة تعرض تقدّم الطابور (الأقسام، القسم الفرعي،
+/// «تنزيلاتي») كي لا يختلف التحكّم من موضع لآخر. الإلغاء يمرّ بتأكيد: هو
+/// يحذف الملفات الجزئية بلا تراجع، بخلاف الإيقاف الذي يُبقي كلّ شيء.
+@Composable
+fun DownloadQueueControls(vm: AppViewModel) {
+    val paused by vm.downloadPaused.collectAsState()
+    var confirmCancelAll by remember { mutableStateOf(false) }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = { if (paused) vm.resumeDownloads() else vm.pauseDownloads() }) {
+            Icon(
+                if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                contentDescription = if (paused) "استئناف التحميل" else "إيقاف التحميل مؤقّتاً",
+                tint = Teal,
+            )
+        }
+        IconButton(onClick = { confirmCancelAll = true }) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "إلغاء كل التحميلات",
+                tint = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+
+    if (confirmCancelAll) {
+        AlertDialog(
+            onDismissRequest = { confirmCancelAll = false },
+            title = { Text("إلغاء التحميلات المتبقّية؟") },
+            text = {
+                Text(
+                    "سيتوقّف ما يجري الآن ويخرج ما بقي من الطابور، وتُحذف " +
+                        "الأجزاء المنزَّلة منها. الدروس المحمَّلة كاملةً لا تُمَسّ. " +
+                        "إن أردت التوقّف مؤقّتاً فقط فاستعمل زرّ الإيقاف.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmCancelAll = false
+                        vm.cancelAllDownloads()
+                    },
+                ) {
+                    Text("إلغاء الكل", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmCancelAll = false }) { Text("تراجع") }
+            },
+        )
     }
 }
 

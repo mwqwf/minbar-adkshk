@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.MicExternalOn
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.PauseCircleFilled
 import androidx.compose.material.icons.filled.NotificationsNone
 import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material.icons.filled.Radio
@@ -400,14 +401,26 @@ fun CategoryScreen(vm: AppViewModel, categoryId: String, state: ContentState) {
             ) {
                 if (active) {
                     Text("${bulk?.done}/${bulk?.total}", style = MaterialTheme.typography.bodyMedium)
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    // موقوف ⇒ لا دوّار: الدوّار المتحرّك بلا تقدّم يوحي بعمل جارٍ.
+                    if (bulk?.paused == true) {
+                        Icon(
+                            Icons.Filled.PauseCircleFilled,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    } else {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    }
                     Text(
                         bulk?.label.orEmpty(),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
                     )
+                    DownloadQueueControls(vm)
                 } else {
                     DownloadAllButton(
                         text = "تحميل القسم كاملاً (${categoryLessons.size} درساً)",
@@ -617,14 +630,25 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
                 val active = bulk != null
                 if (active) {
                     Text("${bulk?.done}/${bulk?.total}", style = MaterialTheme.typography.bodyMedium)
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    if (bulk?.paused == true) {
+                        Icon(
+                            Icons.Filled.PauseCircleFilled,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    } else {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    }
                     Text(
                         bulk?.label.orEmpty(),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
                     )
+                    DownloadQueueControls(vm)
                 } else {
                     DownloadAllButton(
                         text = if (downloadedCount > 0) "تنزيل الكل ($downloadedCount/${lessons.size} محمّل)"
@@ -632,8 +656,8 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
                         enabled = lessons.isNotEmpty(),
                         onClick = { vm.downloadLessons(sub?.name ?: "القسم", lessons) },
                     )
+                    Spacer(Modifier.weight(1f))
                 }
-                Spacer(Modifier.weight(1f))
                 IconButton(onClick = {
                     sub?.categoryId?.takeIf { it.isNotBlank() }?.let { vm.open(Route.Category(it)) }
                 }) {

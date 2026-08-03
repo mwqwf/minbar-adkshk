@@ -156,11 +156,48 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             showMessage("كل دروس هذا القسم محمّلة بالفعل.")
             return
         }
+        // طلب تحميل جديد يرفع الإيقاف: الضغط على «تحميل» وهو موقوف كان
+        // يُدرج الدرس في طابور لا يعمل، فيبدو الزرّ معطّلاً بلا سبب ظاهر.
+        pending.forEach { downloads.clearCancel(it.id) }
+        downloads.setPaused(false)
         store.addToDownloadQueue(pending.map { it.id }, label)
         com.ali.menbaradkshk.data.DownloadScheduler.enqueue(getApplication())
         showMessage(
             "أُضيف ${pending.size} درساً إلى التحميل — يستمر في الخلفية حتى مع إغلاق التطبيق.",
         )
+    }
+
+    /// ⏸ هل التحميل موقوف بطلب المستخدم؟ (يُقرأ في كل مؤشّر تحميل.)
+    val downloadPaused: StateFlow<Boolean> = downloads.paused
+
+    /// إيقاف مؤقّت: يوقف النقل الجاري فوراً ويُبقي كلّ شيء — الطابور والملف
+    /// الجزئي — فالاستئناف يُكمل من البايت نفسه لا من الصفر.
+    fun pauseDownloads() {
+        downloads.setPaused(true)
+        showMessage("أُوقف التحميل مؤقّتاً — يُستأنف من حيث توقّف.")
+    }
+
+    fun resumeDownloads() {
+        downloads.setPaused(false)
+        com.ali.menbaradkshk.data.DownloadScheduler.enqueue(getApplication())
+    }
+
+    /// إلغاء درس واحد: يوقف نقله إن كان جارياً، ويحذف ملفه الجزئي،
+    /// ويخرجه من الطابور. لا يمسّ بقيّة الطابور.
+    fun cancelDownload(lessonId: String) {
+        downloads.requestCancel(lessonId)
+        store.removeFromDownloadQueue(lessonId)
+        store.clearDownloadQueueIfEmpty()
+    }
+
+    /// إلغاء الطابور كلّه — لا يمسّ ما اكتمل تحميله من قبل.
+    fun cancelAllDownloads() {
+        store.downloadQueue().forEach { downloads.requestCancel(it) }
+        store.clearDownloadQueue()
+        downloads.setPaused(false)
+        // لا عامل يعمل الآن إن كان الطابور موقوفاً، فلا أحد يمسح الحالة.
+        downloads.queueState.value = null
+        showMessage("أُلغي تحميل ما تبقّى في الطابور.")
     }
 
     /// تذكير التحديث — قراءة وثيقة إعداد واحدة بحدّ أدنى ست ساعات، وأي فشل

@@ -438,10 +438,24 @@ class LocalStore private constructor(context: Context) {
     }
 
     private fun clearQueueLocked() = write {
+        // الإيقاف حالة طابورٍ لا حالة تطبيق: طابور فارغ يعني بداية نظيفة،
+        // وإلّا بقي علم الإيقاف مرفوعاً فلا يبدأ التحميل التالي أبداً.
+        remove("download_queue_paused")
         remove("download_queue")
         remove("download_queue_wifi_only")
         remove(KEY_QUEUE_WIFI_IDS)
         putLong("download_queue_total", 0L)
+    }
+
+    /// ⏸ إيقاف مؤقّت لطابور التحميل — **لا إلغاء**: الملفات الجزئية وترتيب
+    /// الطابور يبقيان، والاستئناف يُكمل من البايت الذي وقف عنده بـRange.
+    /// محفوظ على القرص كي يصمد لإغلاق التطبيق: بلا ذلك كان WorkManager
+    /// يوقظ العامل بعد دقائق فيستأنف تحميلاً أوقفه المستخدم عمداً — وغالباً
+    /// أوقفه لأنّه على بيانات الجوّال.
+    fun downloadQueuePaused(): Boolean = bool("download_queue_paused")
+
+    fun setDownloadQueuePaused(paused: Boolean) = write {
+        putBoolean("download_queue_paused", paused)
     }
 
     fun downloadQueueLabel(): String = string("download_queue_label")

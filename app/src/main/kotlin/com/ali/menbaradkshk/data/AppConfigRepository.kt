@@ -88,11 +88,15 @@ class AppConfigRepository private constructor(context: Context) {
     private suspend fun refreshIfStale() {
         val now = System.currentTimeMillis()
         if (now - prefs.getLong(KEY_CHECKED, 0L) < CHECK_INTERVAL_MS) return
-        val doc = runCatching {
-            db.collection("app_config").document("android").get(Source.CACHE).await()
-                .takeIf { it.exists() }
-                ?: db.collection("app_config").document("android").get().await()
-        }.getOrNull() ?: return
+        val reference = db.collection("app_config").document("android")
+        // ⚠️ قراءة الكاش تُرمى استثناءً حين لا تكون الوثيقة مخزَّنة أصلاً (لا
+        // تعود «غير موجودة»). حين كانت المحاولتان داخل runCatching واحد كان
+        // ذلك الاستثناء يبتلع مسار الخادم كلَّه: على تثبيت جديد لا وثيقة في
+        // الكاش أبداً، فلا تُقرأ من الخادم أبداً، ولا يعمل تذكير التحديث قطّ.
+        val cached = runCatching { reference.get(Source.CACHE).await() }
+            .getOrNull()
+            ?.takeIf { it.exists() }
+        val doc = cached ?: runCatching { reference.get().await() }.getOrNull() ?: return
         if (!doc.exists()) {
             // لا وثيقة إعداد ⇒ لا تذكير. نُثبّت الختم كي لا نسأل كل مرّة.
             prefs.edit().putLong(KEY_CHECKED, now).apply()

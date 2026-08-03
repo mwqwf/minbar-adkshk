@@ -625,6 +625,10 @@ class LocalStore private constructor(context: Context) {
     }
 
     fun clearPersonalData() {
+        // ملفات الصوت تُحذف **قبل** محو الفهرس: محو `KEY_DOWNLOADS` وحده كان
+        // يُفقد المسارات فتبقى الدروس المنزَّلة (مئات الميغابايتات) في
+        // `filesDir/lessons` إلى الأبد بلا أي طريق لحذفها من التطبيق.
+        runCatching { downloads().values.forEach { File(it).delete() } }
         val editor = preferences.edit()
         PERSONAL_KEYS.forEach { editor.remove(it) }
         editor.apply()

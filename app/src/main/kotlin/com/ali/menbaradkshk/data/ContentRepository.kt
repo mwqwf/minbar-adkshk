@@ -33,9 +33,15 @@ data class ContentState(
     val offline: Boolean = false,
     val error: String? = null,
 ) {
-    val lessonById: Map<String, Lesson> get() = lessons.associateBy(Lesson::id)
-    val categoryById: Map<String, Category> get() = categories.associateBy(Category::id)
-    val subcategoryById: Map<String, Subcategory> get() = subcategories.associateBy(Subcategory::id)
+    // فهارس مبنيّة مرّة واحدة لكل حالة لا عند كل قراءة: كانت `get()` تُعيد
+    // بناء الخريطة كاملة في كل استدعاء، وهي تُقرأ داخل قوائم الواجهة لكل عنصر
+    // على حدة (اسم القسم لكل بطاقة) — أي مرور كامل على مئات الدروس لكل صفّ في
+    // كل إعادة تركيب. الحالة غير قابلة للتغيير فالبناء الكسول آمن.
+    val lessonById: Map<String, Lesson> by lazy { lessons.associateBy(Lesson::id) }
+    val categoryById: Map<String, Category> by lazy { categories.associateBy(Category::id) }
+    val subcategoryById: Map<String, Subcategory> by lazy {
+        subcategories.associateBy(Subcategory::id)
+    }
 }
 
 class ContentRepository private constructor(context: Context) {
@@ -173,6 +179,10 @@ class ContentRepository private constructor(context: Context) {
                 syncing = false,
             )
         }.onFailure { failure ->
+            // ❗ runCatching يلتقط الإلغاء أيضاً: مغادرة التطبيق أثناء المزامنة
+            // كانت تُسجَّل «فشلاً» في المستودع المفرد الباقي بعد الشاشة، فتبقى
+            // راية offline ورسالة «نسخة محفوظة» ظاهرتين عند إعادة الفتح بلا سبب.
+            if (failure is kotlinx.coroutines.CancellationException) throw failure
             val cached = _state.value
             _state.value = cached.copy(
                 loading = false,

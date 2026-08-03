@@ -80,7 +80,11 @@ class AutoDownloadWorker(
         val store = LocalStore.get(applicationContext)
         if (!store.autoDownloadEnabled()) return Result.success()
         val content = ContentRepository.get(applicationContext)
-        runCatching { content.refresh(false) }
+        // فشل المزامنة لا يمنع تحميل ما في الكاش، أمّا إيقاف العمل من
+        // WorkManager فيجب أن يُنهيه فوراً لا أن يمضي في جدولة تنزيلات.
+        runCatching { content.refresh(false) }.exceptionOrNull()?.let { failure ->
+            if (failure is kotlinx.coroutines.CancellationException) throw failure
+        }
         val downloads = DownloadRepository.get(applicationContext)
         // الهدف كما في الأصل: 'recent' = أحدث الدروس، 'main' = الخلاصة المقترحة.
         val target = store.autoDownloadTarget() ?: "recent"

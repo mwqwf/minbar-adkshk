@@ -2,7 +2,8 @@ import java.util.Properties
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
+    // ⛔ لا تُعِد `org.jetbrains.kotlin.android`: دعم Kotlin مدمج في AGP 9
+    // فأصبح الملحق يرفض التطبيق ويوقف البناء.
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
@@ -54,8 +55,11 @@ android {
         // الدروس المكتملة فيبقى صفراً طوال تحميل درس واحد، والإشعار بلا شريط
         // إطلاقاً)، ومشاركة الصوتية باسم الدرس وامتداد قياسيّ (كان يُرسل
         // `<معرّف>.ogx` فيعامله واتساب مستنداً لا صوتاً).
-        versionCode = 12
-        versionName = "1.4.1"
+        // 13 / 1.5.0: دردشة الإدارة بتصميم واتساب، ووضع داكن كامل للوحة،
+        // وتحذير تحديث بملء الشاشة، وتحميل تدريجي يُنهي بطء أوّل تشغيل،
+        // وإزالة الواجهات المتوقّفة التي يرصدها فحص Play من جذرها.
+        versionCode = 13
+        versionName = "1.5.0"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

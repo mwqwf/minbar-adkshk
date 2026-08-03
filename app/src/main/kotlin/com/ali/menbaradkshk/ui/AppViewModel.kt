@@ -187,22 +187,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val status = runCatching { appConfig.status() }
                 .getOrDefault(AppConfigRepository.Status.None)
-            // التذكير اللطيف لا يعود بعد صرفه، إلا حين تصدر نسخة أحدث منه.
-            _updateStatus.value =
-                if (status is AppConfigRepository.Status.Optional &&
-                    appConfig.isDismissed(status.latest)
-                ) {
-                    AppConfigRepository.Status.None
-                } else {
-                    status
-                }
+            // قرار العرض كلّه في `shouldPrompt` (الصرف + خانق ٢٤ ساعة)،
+            // فنكتفي هنا بنشر الحالة كما هي.
+            _updateStatus.value = status
         }
     }
 
-    fun dismissUpdateReminder() {
-        val status = _updateStatus.value
+    /// هل تُعرض شاشة التذكير الآن؟ (خانق ٢٤ ساعة للاختياريّة، وكل تشغيل
+    /// حين يهبط الإصدار دون الحدّ المدعوم.)
+    fun shouldPromptUpdate(status: AppConfigRepository.Status): Boolean =
+        appConfig.shouldPrompt(status)
+
+    /// «لاحقاً»: يُسجَّل العرض كي لا يتكرّر قبل ٢٤ ساعة، ويُصرَف نهائياً
+    /// للنسخة الاختياريّة بعينها فلا يعود إلا حين تصدر نسخة أحدث منها.
+    fun noteUpdatePromptShown(status: AppConfigRepository.Status) {
+        appConfig.markPrompted()
         if (status is AppConfigRepository.Status.Optional) appConfig.dismiss(status.latest)
         _updateStatus.value = AppConfigRepository.Status.None
+    }
+
+    fun openStoreFor(status: AppConfigRepository.Status) {
+        val url = when (status) {
+            is AppConfigRepository.Status.Required -> status.storeUrl
+            is AppConfigRepository.Status.Optional -> status.storeUrl
+            else -> ""
+        }
+        appConfig.markPrompted()
+        openStore(url)
     }
 
     /// يفتح صفحة التطبيق في المتجر (تطبيق Play إن وُجد، وإلا المتصفّح).

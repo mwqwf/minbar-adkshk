@@ -99,26 +99,48 @@ class ContentRepository private constructor(context: Context) {
         _state.value = _state.value.copy(syncing = true, error = null)
         runCatching {
             coroutineScope {
-                val categories = async {
+                val categoriesJob = async {
                     db.collection("categories").get().await().documents.map { document ->
                         Category.fromMap(document.id, document.data.orEmpty())
                     }
                 }
-                val subcategories = async {
+                val subcategoriesJob = async {
                     db.collection("subcategories").get().await().documents.map { document ->
                         Subcategory.fromMap(document.id, document.data.orEmpty())
                     }
                 }
-                val lessons = async {
-                    db.collection("lessons").get().await().documents.map { document ->
-                        Lesson.fromMap(document.id, document.data.orEmpty())
+                val newest = async { newestUpdatedMs() }
+
+                val categories = categoriesJob.await()
+                val subcategories = subcategoriesJob.await()
+                // 🚀 أوّل تثبيت: الأقسام وثائق قليلة تصل في جزء من الثانية،
+                // بينما الدروس مئات الوثائق قد تستغرق عشرات الثواني على شبكة
+                // ضعيفة. كنّا ننتظرها كلّها قبل رسم أي شيء فتبقى الشاشة
+                // فارغة. الآن تُرسم المكتبة فور وصول الأقسام، وتُملأ الدروس
+                // تباعاً — المستخدم يرى تقدّماً مستمرّاً لا انتظاراً صامتاً.
+                if (!hasCache) {
+                    _state.value = _state.value.copy(
+                        categories = categories,
+                        subcategories = subcategories,
+                        loading = false,
+                        syncing = true,
+                    )
+                }
+
+                // الدروس على صفحات: كل صفحة تُرسم فور وصولها بدل دفعة واحدة.
+                val lessons = fetchLessonsPaged { page ->
+                    if (!hasCache) {
+                        _state.value = _state.value.copy(
+                            lessons = mergeDurations(page.filter(Lesson::isPublished)),
+                            loading = false,
+                            syncing = true,
+                        )
                     }
                 }
-                val newest = async { newestUpdatedMs() }
                 Snapshot(
-                    categories = categories.await(),
-                    subcategories = subcategories.await(),
-                    lessons = lessons.await(),
+                    categories = categories,
+                    subcategories = subcategories,
+                    lessons = lessons,
                     maxUpdatedMs = newest.await(),
                 )
             }
@@ -188,6 +210,34 @@ class ContentRepository private constructor(context: Context) {
         val lessons: Int,
         val maxUpdatedMs: Long,
     )
+
+    /**
+     * يجلب الدروس على صفحات مرتَّبة بمعرّف الوثيقة، ويُبلّغ [onPage] بكل ما
+     * تجمّع بعد كل صفحة.
+     *
+     * الترتيب بـ`__name__` مقصود: لا يحتاج فهرساً ولا يتأثّر بغياب حقل
+     * `createdAt` عن الوثائق القديمة المغلَّفة، والترقيم به مستقرّ فلا تتكرّر
+     * وثيقة ولا تسقط أخرى بين صفحتين.
+     */
+    private suspend fun fetchLessonsPaged(onPage: (List<Lesson>) -> Unit): List<Lesson> {
+        val all = mutableListOf<Lesson>()
+        var last: com.google.firebase.firestore.DocumentSnapshot? = null
+        while (true) {
+            var query = db.collection("lessons")
+                .orderBy(com.google.firebase.firestore.FieldPath.documentId())
+                .limit(LESSONS_PAGE_SIZE)
+            last?.let { query = query.startAfter(it) }
+            val snapshot = query.get().await()
+            if (snapshot.isEmpty) break
+            all += snapshot.documents.map { document ->
+                Lesson.fromMap(document.id, document.data.orEmpty())
+            }
+            onPage(all.toList())
+            if (snapshot.size() < LESSONS_PAGE_SIZE) break
+            last = snapshot.documents.last()
+        }
+        return all
+    }
 
     private suspend fun probe(): ProbeMarks? = runCatching {
         coroutineScope {
@@ -558,6 +608,10 @@ class ContentRepository private constructor(context: Context) {
         /// حدّ أدنى بين مسبارين — يبتلع عودات ON_RESUME المتلاحقة.
         private const val PROBE_INTERVAL_MS = 60 * 1_000L
         private const val PREFS = "content_repo_v1"
+        /// حجم صفحة الدروس. 300 وثيقة تصل في زمن معقول حتى على شبكة ضعيفة،
+        /// فيرى المستخدم محتوى يتراكم بدل شاشة فارغة حتى اكتمال كل الدروس.
+        private const val LESSONS_PAGE_SIZE = 300L
+
         private const val KEY_MARK_CATEGORIES = "mark_categories"
         private const val KEY_MARK_SUBCATEGORIES = "mark_subcategories"
         private const val KEY_MARK_LESSONS = "mark_lessons"

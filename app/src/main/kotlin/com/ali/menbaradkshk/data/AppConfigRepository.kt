@@ -58,8 +58,28 @@ class AppConfigRepository private constructor(context: Context) {
         }
     }
 
-    /** هل صُرف تذكير هذه النسخة تحديداً؟ (نسخة أحدث تُعيد إظهاره.) */
-    fun isDismissed(latest: Int): Boolean = prefs.getInt(KEY_DISMISSED, 0) >= latest
+    /**
+     * هل نعرض شاشة التذكير الآن؟
+     *
+     * التوازن المقصود: التذكير يغطّي الشاشة كي **يُرى فعلاً** (أغلب الناس لا
+     * ينظرون إلى الإشعارات)، لكنّه لا يتكرّر أكثر من مرّة كل ٢٤ ساعة للنسخة
+     * الاختياريّة، ولا يعود بعد صرفه لتلك النسخة بعينها. أمّا حين يهبط
+     * الإصدار دون الحدّ المدعوم فيظهر كل تشغيل — لأنّ الرسالة عندئذ ليست
+     * «تتوفّر نسخة أحدث» بل «دعم نسختك يوشك أن يتوقّف».
+     */
+    fun shouldPrompt(status: Status): Boolean = when (status) {
+        is Status.None -> false
+        is Status.Required -> true
+        is Status.Optional -> {
+            val dismissed = prefs.getInt(KEY_DISMISSED, 0) >= status.latest
+            val since = System.currentTimeMillis() - prefs.getLong(KEY_PROMPTED, 0L)
+            !dismissed && since >= PROMPT_INTERVAL_MS
+        }
+    }
+
+    fun markPrompted() {
+        prefs.edit().putLong(KEY_PROMPTED, System.currentTimeMillis()).apply()
+    }
 
     fun dismiss(latest: Int) {
         prefs.edit().putInt(KEY_DISMISSED, latest).apply()
@@ -103,6 +123,9 @@ class AppConfigRepository private constructor(context: Context) {
         private const val KEY_STORE = "store_url"
         private const val KEY_CHECKED = "checked_at_ms"
         private const val KEY_DISMISSED = "dismissed_for"
+        private const val KEY_PROMPTED = "prompted_at_ms"
+        /// لا تتكرّر شاشة التذكير الاختياريّة قبل يوم كامل.
+        private const val PROMPT_INTERVAL_MS = 24 * 60 * 60 * 1000L
         private const val CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L
 
         @Volatile

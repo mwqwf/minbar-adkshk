@@ -7,9 +7,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
+import androidx.core.view.WindowCompat
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.CompositionLocalProvider
@@ -38,7 +37,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // ⛔ لا نستدعي `enableEdgeToEdge()`: نسختها في androidx.activity
+        // تستدعي داخلياً `Window.setStatusBarColor` و`setNavigationBarColor`
+        // وتضبط `LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES` — وهي الواجهات
+        // الثلاث المتوقّفة في أندرويد 15 التي يرصدها فحص Play (تظهر في تقريره
+        // مبهَمةً باسم androidx لا باسم كودنا). البديل أدناه غير متوقّف كلّياً:
+        // على targetSdk 35+ العرض حتى الحافة مفروض من النظام أصلاً، فيكفي أن
+        // نُخبر النافذة بألّا تُقلّم المحتوى، ثم نضبط تباين أيقونات الشريطين.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         lifecycle.addObserver(
             LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) viewModel.refresh(true)
@@ -64,17 +70,11 @@ class MainActivity : ComponentActivity() {
             // navigationBarColor المتوقّفتين في أندرويد 15.
             val dark = isDarkTheme(themeMode)
             LaunchedEffect(dark) {
-                enableEdgeToEdge(
-                    statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-                    navigationBarStyle = if (dark) {
-                        SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
-                    } else {
-                        SystemBarStyle.light(
-                            android.graphics.Color.TRANSPARENT,
-                            android.graphics.Color.TRANSPARENT,
-                        )
-                    },
-                )
+                val bars = WindowCompat.getInsetsController(window, window.decorView)
+                // الشريط العلوي داكن في السمتين ⇒ أيقوناته فاتحة دائماً.
+                bars.isAppearanceLightStatusBars = false
+                // شريط التنقّل يتبع سطح التطبيق: أيقونات داكنة على سطح فاتح.
+                bars.isAppearanceLightNavigationBars = !dark
             }
             MinbarTheme(
                 themeMode = themeMode,

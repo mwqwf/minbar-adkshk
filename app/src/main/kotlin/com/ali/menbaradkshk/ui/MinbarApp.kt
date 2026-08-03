@@ -5,12 +5,15 @@ package com.ali.menbaradkshk.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -41,6 +44,7 @@ import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -72,6 +76,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ali.menbaradkshk.data.AppConfigRepository
 import com.google.firebase.auth.FirebaseAuth
@@ -124,32 +130,22 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
     val updateStatus by vm.updateStatus.collectAsState()
     val snackbar = remember { SnackbarHostState() }
 
-    // 🔔 تذكير التحديث. لا يحجب شيئاً أبداً — الدروس المنزَّلة تبقى قابلة
-    // للاستماع مهما قدُم الإصدار. «لاحقاً» تُخفيه لهذه الجلسة، والتذكير
-    // اللطيف لا يعود بعد صرفه إلا حين تصدر نسخة أحدث منه.
-    var updateSnoozed by rememberSaveable { mutableStateOf(false) }
-    (updateStatus as? AppConfigRepository.Status.Required)?.let { required ->
-        if (!updateSnoozed) {
-            AlertDialog(
-                onDismissRequest = { updateSnoozed = true },
-                icon = { Icon(Icons.Filled.SystemUpdate, contentDescription = null) },
-                title = { Text("حدِّث منبر ادكصهك") },
-                text = {
-                    Text(
-                        required.message.ifBlank {
-                            "نسختك من التطبيق قديمة، وبعض المزايا قد لا تعمل كما ينبغي. " +
-                                "التحديث سريع ويحفظ تنزيلاتك وقوائمك كما هي."
-                        },
-                    )
-                },
-                confirmButton = {
-                    TextButton(onClick = { vm.openStore(required.storeUrl) }) { Text("تحديث الآن") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { updateSnoozed = true }) { Text("لاحقاً") }
-                },
-            )
-        }
+    // 🔔 تذكير التحديث — **شاشة كاملة** لا شريطاً ولا إشعاراً: أغلب
+    // المستخدمين لا ينظرون إلى الإشعارات ولا إلى شريط صغير، فتبقى نسخ قديمة
+    // تعمل بمزايا ناقصة. وهي مع ذلك متزنة: لا تحجب التطبيق («لاحقاً» متاح
+    // دائماً)، ولا تتكرّر للنسخة الاختياريّة أكثر من مرّة كل ٢٤ ساعة.
+    var updateDeferred by rememberSaveable { mutableStateOf(false) }
+    val pendingUpdate = updateStatus.takeIf { it !is AppConfigRepository.Status.None }
+    if (pendingUpdate != null && !updateDeferred && vm.shouldPromptUpdate(pendingUpdate)) {
+        UpdateScreen(
+            status = pendingUpdate,
+            onUpdate = { vm.openStoreFor(pendingUpdate) },
+            onLater = {
+                updateDeferred = true
+                vm.noteUpdatePromptShown(pendingUpdate)
+            },
+        )
+        return
     }
 
     val isRoot = rootTabs.any { it.route == route }
@@ -319,17 +315,6 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         // المفتوح فيمسح ملفات المستخدم وعنوانه بصمت.
         val screenStateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
         Column(Modifier.padding(padding)) {
-        // تذكير لطيف بنسخة أحدث — على الرئيسية وحدها كي لا يزاحم بقيّة
-        // الشاشات، ويدفع المحتوى لأسفل بدل أن يغطّيه.
-        (updateStatus as? AppConfigRepository.Status.Optional)
-            ?.takeIf { route == Route.Home }
-            ?.let { optional ->
-                UpdateBanner(
-                    message = optional.message,
-                    onUpdate = { vm.openStore(optional.storeUrl) },
-                    onDismiss = { vm.dismissUpdateReminder() },
-                )
-            }
         Box(Modifier.weight(1f)) {
             screenStateHolder.SaveableStateProvider(routeStateKey(route)) {
                 when (val current = route) {
@@ -371,41 +356,80 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
     }
 }
 
-/// شريط «تتوفّر نسخة أحدث» — تذكير لا بوّابة: يُصرَف نهائياً لهذه النسخة،
-/// ولا يمنع الاستماع ولا يظهر إلا على الرئيسية.
+/**
+ * شاشة «حدِّث التطبيق» بملء الشاشة.
+ *
+ * **لماذا ملء الشاشة؟** الشريط الصغير والإشعار كلاهما يُتجاهَل عملياً.
+ * **ولماذا متزنة؟** الحجب الكامل يحوّل تطبيق استماع إلى رهينة تحديث؛ والدروس
+ * المنزَّلة يجب أن تبقى قابلة للاستماع بلا إنترنت ومهما قدُم الإصدار — فزرّ
+ * المتابعة موجود دائماً.
+ */
 @Composable
-private fun UpdateBanner(
-    message: String,
+private fun UpdateScreen(
+    status: AppConfigRepository.Status,
     onUpdate: () -> Unit,
-    onDismiss: () -> Unit,
+    onLater: () -> Unit,
 ) {
-    Surface(
-        color = MaterialTheme.colorScheme.secondaryContainer,
-        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    val required = status is AppConfigRepository.Status.Required
+    val custom = when (status) {
+        is AppConfigRepository.Status.Required -> status.message
+        is AppConfigRepository.Status.Optional -> status.message
+        else -> ""
+    }
+    Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 28.dp, vertical = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
         ) {
             Icon(
                 Icons.Filled.SystemUpdate,
                 contentDescription = null,
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.size(72.dp),
+                tint = MaterialTheme.colorScheme.primary,
             )
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.height(22.dp))
             Text(
-                message.ifBlank { "تتوفّر نسخة أحدث من منبر ادكصهك." },
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.weight(1f),
+                if (required) "دعم هذا الإصدار يوشك أن يتوقّف" else "تتوفّر نسخة أحدث",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onBackground,
             )
-            TextButton(onClick = onUpdate) { Text("تحديث") }
-            IconButton(onClick = onDismiss) {
-                Icon(
-                    Icons.Filled.Close,
-                    contentDescription = "إخفاء التذكير",
-                    modifier = Modifier.size(18.dp),
-                )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                custom.ifBlank {
+                    if (required) {
+                        "نسختك من منبر ادكصهك قديمة وسيتوقّف دعمها قريباً. " +
+                            "حدِّثها لتبقى المزايا كلّها تعمل كما ينبغي."
+                    } else {
+                        "حدِّث منبر ادكصهك لئلّا تفقد ميزات مهمّة وإصلاحات جديدة."
+                    }
+                },
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "تنزيلاتك وقوائمك ومواضع استماعك تبقى كما هي.",
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(30.dp))
+            Button(
+                onClick = onUpdate,
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                Text("تحديث الآن", style = MaterialTheme.typography.titleMedium)
+            }
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = onLater, modifier = Modifier.fillMaxWidth()) {
+                Text(if (required) "متابعة الآن" else "لاحقاً")
             }
         }
     }

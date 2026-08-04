@@ -38,6 +38,14 @@ object DownloadScheduler {
     private const val WIFI_WORK_NAME = "lesson_downloads_wifi"
     private const val JOB_ID = 4210
 
+    /// ⛔ **لا تُعِد `ExistingWorkPolicy.KEEP`.** كان طلب تحميل جديد يُسقَط
+    /// بصمت متى كان للاسم الفريد عملٌ قائم — وهو قائم في حالتين شائعتين:
+    /// عامل يوشك على الانتهاء، أو محاولةٌ مؤجَّلة بمهلة تراجعيّة بعد انقطاع
+    /// أو إلغاء. النتيجة بالضبط ما رآه المستخدم: رسالة «أُضيف إلى التحميل»
+    /// ثم لا شيء يحدث إلى أن يُعاد تشغيل التطبيق (فيُوقظ الطابور من
+    /// `MinbarApplication`). `APPEND_OR_REPLACE` يضمن جولة جديدة بعد
+    /// الحالي دائماً، وتشغيلٌ زائد على طابور فارغ رخيص (يخرج فوراً).
+    ///
     /// يشغّل معالجة الطابور بالمسار المناسب لنسخة النظام:
     /// أندرويد 14+ → وظيفة نقل بيانات بمبادرة المستخدم (بلا خدمة أمامية)،
     /// وما دونه → عمل خلفية عادي. يسقط تلقائياً إلى WorkManager إن تعذّرت
@@ -56,6 +64,17 @@ object DownloadScheduler {
         enqueueBackgroundWork(context, wifiOnly)
     }
 
+    /// يوقف كلّ ما هو مجدوَل — يُنادى عند إلغاء الطابور كلّه وحده: بلاه تبقى
+    /// محاولة مؤجَّلة تستيقظ بعد دقائق فتُظهر إشعار تقدّم لطابور أُلغي.
+    fun cancelScheduled(context: Context) {
+        val manager = WorkManager.getInstance(context)
+        manager.cancelUniqueWork(WORK_NAME)
+        manager.cancelUniqueWork(WIFI_WORK_NAME)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            runCatching { context.getSystemService(JobScheduler::class.java)?.cancel(JOB_ID) }
+        }
+    }
+
     /// عمل مؤجَّل للعناصر المقيَّدة بالواي فاي — يستأنفها فور توفّر شبكة غير
     /// محدودة، بلا أن يمسّ عمل التحميل الجاري.
     fun enqueueUnmetered(context: Context) {
@@ -68,7 +87,7 @@ object DownloadScheduler {
             .setBackoffCriteria(BackoffPolicy.LINEAR, 10, TimeUnit.SECONDS)
             .build()
         WorkManager.getInstance(context)
-            .enqueueUniqueWork(WIFI_WORK_NAME, ExistingWorkPolicy.KEEP, request)
+            .enqueueUniqueWork(WIFI_WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
     }
 
     @androidx.annotation.RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
@@ -109,6 +128,6 @@ object DownloadScheduler {
             .setBackoffCriteria(BackoffPolicy.LINEAR, 10, TimeUnit.SECONDS)
             .build()
         WorkManager.getInstance(context)
-            .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.KEEP, request)
+            .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
     }
 }

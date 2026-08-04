@@ -85,6 +85,29 @@ class AppConfigRepository private constructor(context: Context) {
         prefs.edit().putInt(KEY_DISMISSED, latest).apply()
     }
 
+    /// هل يُرسَل إشعار التحديث اليوميّ؟ مرّة كل ٢٤ ساعة على الأكثر، ويسكت
+    /// تماماً لنسخة صرف المستخدم شاشتَها (صرفُها إجابة صريحة: «ليس الآن»).
+    fun shouldNotify(latest: Int): Boolean {
+        if (prefs.getInt(KEY_DISMISSED, 0) >= latest) return false
+        val since = System.currentTimeMillis() - prefs.getLong(KEY_NOTIFIED, 0L)
+        return since >= PROMPT_INTERVAL_MS
+    }
+
+    fun markNotified(latest: Int) {
+        prefs.edit()
+            .putLong(KEY_NOTIFIED, System.currentTimeMillis())
+            .putInt(KEY_NOTIFIED_FOR, latest)
+            .apply()
+    }
+
+    /// فحص فوريّ يتجاوز خانق الست ساعات — للفحص الدوريّ اليوميّ وللعودة
+    /// إلى التطبيق بعد غياب: التذكير الذي يتأخّر ست ساعات عن الإصدار
+    /// الجديد يفوّت أوّل يوم كامل من عمره.
+    suspend fun statusForcingRefresh(): Status {
+        prefs.edit().putLong(KEY_CHECKED, 0L).apply()
+        return status()
+    }
+
     private suspend fun refreshIfStale() {
         val now = System.currentTimeMillis()
         if (now - prefs.getLong(KEY_CHECKED, 0L) < CHECK_INTERVAL_MS) return
@@ -128,6 +151,8 @@ class AppConfigRepository private constructor(context: Context) {
         private const val KEY_CHECKED = "checked_at_ms"
         private const val KEY_DISMISSED = "dismissed_for"
         private const val KEY_PROMPTED = "prompted_at_ms"
+        private const val KEY_NOTIFIED = "notified_at_ms"
+        private const val KEY_NOTIFIED_FOR = "notified_for"
         /// لا تتكرّر شاشة التذكير الاختياريّة قبل يوم كامل.
         private const val PROMPT_INTERVAL_MS = 24 * 60 * 60 * 1000L
         private const val CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L

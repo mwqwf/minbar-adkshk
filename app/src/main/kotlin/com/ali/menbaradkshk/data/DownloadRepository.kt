@@ -100,6 +100,13 @@ class DownloadRepository private constructor(context: Context) {
         cancelRequests -= lessonId
     }
 
+    /// ⚠️ يُمسح **كل** علم إلغاء عند إلغاء الطابور كلّه. العلم لا معنى له
+    /// بعد خروج الدرس من الطابور، وبقاؤه كان يعني أنّ تحميلاً لاحقاً لدرس
+    /// أُلغي مرّة (يدويّاً أو من التحميل التلقائي) يُسقَط بصمت.
+    fun clearAllCancels() {
+        cancelRequests.clear()
+    }
+
     fun isCancelRequested(lessonId: String): Boolean = cancelRequests.contains(lessonId)
 
     fun localPath(lessonId: String): String? = store.localAudioPath(lessonId)
@@ -215,6 +222,9 @@ class DownloadRepository private constructor(context: Context) {
         } finally {
             connection?.disconnect()
             _progress.value = _progress.value - lesson.id
+            // العلم أدّى غرضه (أوقف النقل) فيُمسح هنا لا في مكان بعيد:
+            // بقاؤه يجعل أيّ محاولة تحميل تالية لهذا الدرس تُلغى بصمت.
+            cancelRequests -= lesson.id
         }
     }
 

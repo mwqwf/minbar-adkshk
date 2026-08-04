@@ -301,7 +301,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         subtitle = "${favorites.size} درساً",
                         onClick = {
                             if (favorites.isEmpty()) vm.showMessage("لا توجد دروس في المفضّلة بعد.")
-                            else vm.downloadLessons("المفضّلة", favorites)
+                            else vm.requestBulkDownload("المفضّلة", favorites)
                         },
                     )
                 }
@@ -312,7 +312,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         subtitle = "${continueList.size} درساً لم تكمله",
                         onClick = {
                             if (continueList.isEmpty()) vm.showMessage("لا توجد دروس غير مكتملة.")
-                            else vm.downloadLessons("تابع الاستماع", continueList)
+                            else vm.requestBulkDownload("تابع الاستماع", continueList)
                         },
                     )
                 }
@@ -546,7 +546,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         ListItem(
                             modifier = Modifier.clickable {
                                 sectionSheet = false
-                                vm.downloadLessons(category.name, categoryLessons)
+                                vm.requestBulkDownload(category.name, categoryLessons)
                             },
                             leadingContent = {
                                 Icon(iconForCategory(category.id), null, tint = colorForCategory(category.id))
@@ -563,7 +563,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         ListItem(
                             modifier = Modifier.padding(start = 24.dp).clickable {
                                 sectionSheet = false
-                                vm.downloadLessons(sub.name, subLessons)
+                                vm.requestBulkDownload(sub.name, subLessons)
                             },
                             headlineContent = { Text(sub.name) },
                             supportingContent = { Text("${subLessons.size} درساً") },

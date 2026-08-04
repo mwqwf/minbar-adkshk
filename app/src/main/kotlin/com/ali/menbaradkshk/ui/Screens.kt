@@ -427,7 +427,7 @@ fun CategoryScreen(vm: AppViewModel, categoryId: String, state: ContentState) {
                         enabled = categoryLessons.isNotEmpty(),
                         onClick = {
                             val name = state.categoryById[categoryId]?.name ?: "القسم"
-                            vm.downloadLessons(name, categoryLessons)
+                            vm.requestBulkDownload(name, categoryLessons)
                         },
                     )
                 }
@@ -654,7 +654,7 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
                         text = if (downloadedCount > 0) "تنزيل الكل ($downloadedCount/${lessons.size} محمّل)"
                         else "تنزيل كل دروس القسم",
                         enabled = lessons.isNotEmpty(),
-                        onClick = { vm.downloadLessons(sub?.name ?: "القسم", lessons) },
+                        onClick = { vm.requestBulkDownload(sub?.name ?: "القسم", lessons) },
                     )
                     Spacer(Modifier.weight(1f))
                 }

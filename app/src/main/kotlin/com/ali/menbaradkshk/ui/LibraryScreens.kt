@@ -699,7 +699,7 @@ fun DownloadsScreen(vm: AppViewModel) {
                         ListItem(
                             modifier = Modifier.clickable {
                                 sectionSheet = false
-                                vm.downloadLessons(category.name, categoryLessons)
+                                vm.requestBulkDownload(category.name, categoryLessons)
                             },
                             leadingContent = {
                                 Icon(iconForCategory(category.id), null, tint = colorForCategory(category.id))
@@ -719,7 +719,7 @@ fun DownloadsScreen(vm: AppViewModel) {
                                 .padding(start = 24.dp)
                                 .clickable {
                                     sectionSheet = false
-                                    vm.downloadLessons(sub.name, subLessons)
+                                    vm.requestBulkDownload(sub.name, subLessons)
                                 },
                             headlineContent = { Text(sub.name) },
                             supportingContent = { Text("${subLessons.size} درساً") },

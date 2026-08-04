@@ -161,10 +161,55 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         pending.forEach { downloads.clearCancel(it.id) }
         downloads.setPaused(false)
         store.addToDownloadQueue(pending.map { it.id }, label)
+        // حالة ظاهرة **فوراً**: العامل قد يتأخّر ثوانيَ قبل أن يبدأ، وكانت
+        // الرسالة وحدها تَعِد بتحميل لا يُرى له أثر — فيظنّ المستخدم أنّ
+        // شيئاً لم يحدث. تُستبدل بحالة العامل الحقيقيّة فور انطلاقه.
+        val queuedNow = store.downloadQueue().size
+        val totalNow = store.downloadQueueTotal().coerceAtLeast(queuedNow)
+        downloads.queueState.value = com.ali.menbaradkshk.data.DownloadQueueState(
+            label = label,
+            // ما اكتمل = الإجمالي ناقص ما بقي، لا صفراً: إضافة دفعة إلى
+            // طابور نصفه منتهٍ كانت تُرجع الشريط إلى البداية بصرياً.
+            done = (totalNow - queuedNow).coerceAtLeast(0),
+            total = totalNow,
+            currentTitle = pending.first().displayTitle,
+        )
         com.ali.menbaradkshk.data.DownloadScheduler.enqueue(getApplication())
         showMessage(
             "أُضيف ${pending.size} درساً إلى التحميل — يستمر في الخلفية حتى مع إغلاق التطبيق.",
         )
+    }
+
+    /// طلب تحميل جماعيّ بانتظار تأكيد المستخدم.
+    data class PendingBulkDownload(
+        val label: String,
+        val lessons: List<com.ali.menbaradkshk.data.Lesson>,
+        val count: Int,
+    )
+
+    private val _pendingBulkDownload = MutableStateFlow<PendingBulkDownload?>(null)
+    val pendingBulkDownload: StateFlow<PendingBulkDownload?> = _pendingBulkDownload.asStateFlow()
+
+    /// المدخل الوحيد للتحميل الجماعي: يمرّ **دائماً** بتأكيد صريح — ضغطة
+    /// واحدة كانت تُنزّل عشرات الدروس على بيانات الجوّال بلا سؤال.
+    /// (تحميل درس مفرد يبقى مباشراً: التأكيد عليه ضجيج.)
+    fun requestBulkDownload(label: String, lessons: List<com.ali.menbaradkshk.data.Lesson>) {
+        val count = lessons.count { it.audioUrl.isNotBlank() && !downloads.isDownloaded(it.id) }
+        if (count == 0) {
+            showMessage("كل دروس هذا القسم محمّلة بالفعل.")
+            return
+        }
+        _pendingBulkDownload.value = PendingBulkDownload(label, lessons, count)
+    }
+
+    fun confirmBulkDownload() {
+        val pending = _pendingBulkDownload.value ?: return
+        _pendingBulkDownload.value = null
+        downloadLessons(pending.label, pending.lessons)
+    }
+
+    fun dismissBulkDownload() {
+        _pendingBulkDownload.value = null
     }
 
     /// ⏸ هل التحميل موقوف بطلب المستخدم؟ (يُقرأ في كل مؤشّر تحميل.)
@@ -188,6 +233,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         downloads.requestCancel(lessonId)
         store.removeFromDownloadQueue(lessonId)
         store.clearDownloadQueueIfEmpty()
+        // العلم مؤقّت بطبعه: يوقف النقل الجاري ثمّ يُمسح، وإلّا مُنع هذا
+        // الدرس من التحميل مرّة أخرى في هذه الجلسة كلّها.
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(2_000L)
+            downloads.clearCancel(lessonId)
+        }
     }
 
     /// إلغاء الطابور كلّه — لا يمسّ ما اكتمل تحميله من قبل.
@@ -197,6 +248,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         downloads.setPaused(false)
         // لا عامل يعمل الآن إن كان الطابور موقوفاً، فلا أحد يمسح الحالة.
         downloads.queueState.value = null
+        // العمل المجدوَل يُلغى معه: بلا ذلك تستيقظ محاولة مؤجَّلة بعد دقائق
+        // فتُظهر إشعار تقدّم لطابور لم يعد له وجود.
+        com.ali.menbaradkshk.data.DownloadScheduler.cancelScheduled(getApplication())
+        // ثمّ تُمسح الأعلام كلّها بعد مهلة قصيرة تكفي لتوقّف النقل الجاري:
+        // مهمّتها إيقافه وقد انتهت، وبقاؤها كان يُسقط أيّ تحميل لاحق لهذه
+        // الدروس بصمت — وهو ما جعل «التحميل بعد الإلغاء» لا يفعل شيئاً.
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(2_000L)
+            downloads.clearAllCancels()
+        }
         showMessage("أُلغي تحميل ما تبقّى في الطابور.")
     }
 

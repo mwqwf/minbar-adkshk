@@ -148,6 +148,18 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         return
     }
 
+    // تأكيد التحميل الجماعي — حوار واحد على مستوى التطبيق: كل الشاشات
+    // تمرّ بـ`requestBulkDownload`، فلا يبقى مدخل يُنزّل قسماً بلا سؤال.
+    val pendingBulk by vm.pendingBulkDownload.collectAsState()
+    pendingBulk?.let { request ->
+        ConfirmBulkDownloadDialog(
+            label = request.label,
+            count = request.count,
+            onConfirm = { vm.confirmBulkDownload() },
+            onDismiss = { vm.dismissBulkDownload() },
+        )
+    }
+
     val isRoot = rootTabs.any { it.route == route }
     val navigationBlocked = route == Route.ContributeTranscript &&
         transcriptContribution.submitting

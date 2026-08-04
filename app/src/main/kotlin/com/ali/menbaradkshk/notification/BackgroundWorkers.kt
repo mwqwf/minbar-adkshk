@@ -97,6 +97,9 @@ class AutoDownloadWorker(
             .filter { it.audioUrl.isNotBlank() && !downloads.isDownloaded(it.id) }
             .map { it.id }
         if (missing.isEmpty()) return Result.success()
+        // علم إلغاء قديم لدرس ألغاه المستخدم يدويّاً كان يُسقط إدراجه هنا
+        // بصمت — والتحميل التلقائي لا واجهة له تُظهر ما سقط.
+        missing.forEach { downloads.clearCancel(it) }
         // يمرّ عبر طابور التحميل الخلفي نفسه ليستفيد من الاستئناف عند
         // انقطاع الشبكة وإعادة المحاولة التلقائية وإشعار التقدّم.
         store.addToDownloadQueue(
@@ -113,15 +116,69 @@ class AutoDownloadWorker(
     }
 }
 
+/// 🔔 فحص التحديث اليوميّ — الطبقة التي كانت ناقصة.
+///
+/// شاشة التذكير لا تُرى إلا عند **فتح** التطبيق، ومن يفتحه نادراً يبقى على
+/// نسخة قديمة أسابيع بلا أن يعلم. هذا العامل يقرأ وثيقة الإعداد مرّة كل
+/// يوم ويُشعر صاحب النسخة الأقدم — الإشعار قابل للصرف كأيّ إشعار، ولا
+/// يتكرّر لنسخة صُرفت شاشتُها.
+class UpdateCheckWorker(
+    context: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result {
+        val config = com.ali.menbaradkshk.data.AppConfigRepository.get(applicationContext)
+        val status = runCatching { config.statusForcingRefresh() }.getOrNull() ?: return Result.success()
+        val (latest, message) = when (status) {
+            is com.ali.menbaradkshk.data.AppConfigRepository.Status.Required ->
+                status.latest to status.message
+            is com.ali.menbaradkshk.data.AppConfigRepository.Status.Optional ->
+                status.latest to status.message
+            else -> return Result.success()
+        }
+        // خانق يوميّ خاصّ بالإشعار: لا يُزعج أكثر من مرّة في اليوم لنسخة
+        // واحدة، ولا يُرسَل إن كان المستخدم قد صرف شاشة هذه النسخة أصلاً.
+        if (!config.shouldNotify(latest)) return Result.success()
+        config.markNotified(latest)
+        NotificationPublisher.show(
+            applicationContext,
+            id = 950,
+            title = "تتوفّر نسخة أحدث من منبر ادكصهك",
+            body = message.ifBlank { "حدِّث التطبيق لتصلك المزايا والإصلاحات الجديدة." },
+            destination = com.ali.menbaradkshk.data.AppConfigRepository.PLAY_URL,
+            channel = NotificationChannels.CONTENT,
+        )
+        return Result.success()
+    }
+}
+
 object BackgroundScheduler {
     private const val CONTINUE_WORK = "continue_reminder"
     private const val WARD_WORK = "daily_ward"
     private const val AUTO_DOWNLOAD_WORK = "auto_download"
+    private const val UPDATE_CHECK_WORK = "update_check"
 
     fun scheduleAll(context: Context) {
         scheduleContinue(context)
         scheduleWard(context)
         scheduleAutoDownload(context)
+        scheduleUpdateCheck(context)
+    }
+
+    /// غير مشروط بإعدادات الإشعارات الاختيارية: تذكير التحديث ليس محتوى
+    /// ترويجياً بل شرط بقاء التطبيق سليماً. (وإذن الإشعارات نفسه يبقى
+    /// حاكماً: بلا إذن لا يُعرض شيء.)
+    fun scheduleUpdateCheck(context: Context) {
+        val request = PeriodicWorkRequestBuilder<UpdateCheckWorker>(24, TimeUnit.HOURS)
+            .setConstraints(
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
+            )
+            .build()
+        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+            UPDATE_CHECK_WORK,
+            ExistingPeriodicWorkPolicy.UPDATE,
+            request,
+        )
     }
 
     fun scheduleContinue(context: Context) {

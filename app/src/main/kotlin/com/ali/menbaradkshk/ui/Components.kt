@@ -590,6 +590,43 @@ fun DownloadQueueControls(vm: AppViewModel) {
     }
 }
 
+/// حوار تأكيد التحميل الجماعي — **إلزاميّ قبل أيّ تحميل قسم كامل**.
+///
+/// ضغطة واحدة كانت تُنزّل عشرات الدروس (مئات الميغابايتات) على بيانات
+/// الجوّال بلا سؤال، وهي ضغطة سهلة الوقوع بالخطأ. الحوار يذكر العدد
+/// **الفعليّ** المتبقّي (لا عدد دروس القسم) وتقديراً للحجم.
+@Composable
+fun ConfirmBulkDownloadDialog(
+    label: String,
+    count: Int,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("تحميل «$label»؟") },
+        text = {
+            Text(
+                buildString {
+                    append("سيبدأ تحميل $count ")
+                    append(if (count == 1) "درساً" else "درساً")
+                    append(" للاستماع دون إنترنت")
+                    // تقدير محافظ (≈8 ميغابايت للدرس) — الغرض تنبيه لا دقّة.
+                    append("، بحجم تقريبيّ ${count * 8} ميغابايت.\n")
+                    append("يستمر التحميل في الخلفية، ويمكنك إيقافه أو إلغاؤه ")
+                    append("في أيّ لحظة. إن كنت على بيانات الجوّال فانتبه للاستهلاك.")
+                },
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("تحميل") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("تراجع") }
+        },
+    )
+}
+
 /// كبسولة «تنزيل الكل» المتدرّجة (تركواز → أخضر) — الزر البارز للتحميل الجماعي.
 @Composable
 fun DownloadAllButton(

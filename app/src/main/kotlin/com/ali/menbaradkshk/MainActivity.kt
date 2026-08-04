@@ -47,7 +47,14 @@ class MainActivity : ComponentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         lifecycle.addObserver(
             LifecycleEventObserver { _, event ->
-                if (event == Lifecycle.Event.ON_RESUME) viewModel.refresh(true)
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    viewModel.refresh(true)
+                    // فحص التحديث مع كل عودة إلى التطبيق لا مرّة واحدة عند
+                    // إنشاء الـViewModel: التطبيق قد يبقى في الذاكرة أياماً،
+                    // فكان صاحبه لا يرى تذكيراً أبداً بعد أوّل تشغيل.
+                    // (القراءة الشبكيّة نفسها تبقى محكومة بخانق الست ساعات.)
+                    viewModel.checkForUpdate()
+                }
             },
         )
         // إعادة إنشاء النشاط (تدوير الشاشة) تعيد النيّة نفسها — لا تُلتقط مرّتين.

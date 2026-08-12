@@ -169,6 +169,12 @@ class DownloadRepository private constructor(context: Context) {
                 partial.delete()
                 throw RetryableDownloadException(java.io.IOException("HTTP 416"))
             }
+            // أعطال الخادم/الازدحام المؤقّتة قابلة للإعادة تلقائياً — معاملتها
+            // كفشل دائم كانت تُسقط الدرس من الطابور بلا أي محاولة ثانية
+            // (شكوى مستخدمين فعلية). الملف الجزئي يبقى للاستئناف.
+            if (code in intArrayOf(408, 425, 429, 500, 502, 503, 504)) {
+                throw RetryableDownloadException(java.io.IOException("HTTP $code"))
+            }
             require(code in 200..299) { "تعذّر تنزيل الملف ($code)." }
             if (resuming) {
                 // تحقُّق من إزاحة الاستئناف: خادم يُعيد 206 بمدى لا يبدأ من

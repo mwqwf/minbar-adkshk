@@ -2,8 +2,6 @@
 
 package com.ali.menbaradkshk.ui
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -19,6 +17,8 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BrightnessMedium
 import androidx.compose.material.icons.filled.Check
@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.DownloadForOffline
 import androidx.compose.material.icons.filled.FactCheck
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.FolderShared
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.HistoryToggleOff
 import androidx.compose.material.icons.filled.Info
@@ -35,17 +36,13 @@ import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
-import androidx.compose.material.icons.filled.OpenInNew
-import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -78,10 +75,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
-/// «الإعدادات» — درج جانبي حقيقي (بنمط تويتر/تلجرام): يُسحب من الجانب أو
-/// يُفتح بزرّه المخصّص في الشريط العلوي. المحتوى نفسه لم يتغيّر: نفس البنود
-/// والحوارات والمنتقيات الفرعية حرفياً، وإنما تغيّر الوعاء من ورقة سفلية
-/// إلى ModalDrawerSheet داخل ModalNavigationDrawer في MinbarApp.
+/// «الإعدادات» — درج جانبي حقيقي (بنمط تويتر/تلجرام) يُسحب من الجانب أو
+/// يُفتح بزرّه المخصّص. البنود المتشابهة مجمَّعة في مواضيع قليلة، وكل موضوع
+/// يفتح ورقة فرعية تضم بنوده كاملة — نفس الوظائف حرفياً بأزرار أقل.
 @Composable
 fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     val scope = rememberCoroutineScope()
@@ -113,8 +109,9 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     val favorites = remember(revision, content.lessons) { vm.content.favorites() }
     val continueList = remember(revision, content.lessons) { vm.content.continueListening() }
 
-    var themeDialog by remember { mutableStateOf(false) }
-    var fontDialog by remember { mutableStateOf(false) }
+    // الموضوع المفتوح حالياً في ورقة فرعية: downloads / notifications / data.
+    var group by remember { mutableStateOf<String?>(null) }
+    var appearanceDialog by remember { mutableStateOf(false) }
     var wardTimeDialog by remember { mutableStateOf(false) }
     var goalSheet by remember { mutableStateOf(false) }
     var deleteDialog by remember { mutableStateOf(false) }
@@ -163,6 +160,12 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
         return "%d:%02d %s".format(Locale.ROOT, hour12, wardMinute, period)
     }
 
+    val themeLabel = when (themeMode) {
+        "light" -> "فاتح"
+        "dark" -> "داكن"
+        else -> "النظام"
+    }
+
     ModalDrawerSheet(
         modifier = Modifier.fillMaxWidth(0.86f),
         windowInsets = WindowInsets.statusBars,
@@ -187,47 +190,79 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                 }
             }
             Spacer(Modifier.height(8.dp))
-                LazyColumn(
-                    modifier = Modifier.weight(1f).fillMaxWidth()
-                        .navigationBarsPadding(),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                        start = 8.dp,
-                        end = 8.dp,
-                        bottom = 32.dp,
-                    ),
-                ) {
-                item(key = "theme") {
-                    SettingsTile(
-                        icon = Icons.Filled.BrightnessMedium,
-                        title = "المظهر",
-                        trailing = {
-                            Text(
-                                when (themeMode) {
-                                    "light" -> "فاتح"
-                                    "dark" -> "داكن"
-                                    else -> "النظام"
-                                },
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        },
-                        onClick = { themeDialog = true },
-                    )
-                }
-                item(key = "fontsize") {
-                    SettingsTile(
-                        icon = Icons.Filled.TextFields,
-                        title = "حجم النص",
-                        trailing = {
-                            Text(
-                                "${(fontScale * 100).toInt()}%",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        },
-                        onClick = { fontDialog = true },
-                    )
-                }
+            // المستوى الأول: موضوعات قليلة مجمَّعة — التفاصيل في أوراق فرعية.
+            Column(
+                Modifier.weight(1f).fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .navigationBarsPadding()
+                    .padding(start = 8.dp, end = 8.dp, bottom = 32.dp),
+            ) {
+                SettingsTile(
+                    icon = Icons.Filled.BrightnessMedium,
+                    title = "المظهر وحجم النص",
+                    subtitle = "$themeLabel — ${(fontScale * 100).toInt()}%",
+                    onClick = { appearanceDialog = true },
+                )
+                SettingsTile(
+                    icon = Icons.Filled.DownloadForOffline,
+                    title = "التنزيلات",
+                    subtitle = "$downloadsCount درساً — ${formatStorage(downloadsBytes)}" +
+                        if (autoDownload) " · التلقائي مفعَّل" else "",
+                    onClick = { group = "downloads" },
+                )
+                SettingsTile(
+                    icon = if (notifOn) Icons.Filled.NotificationsActive else Icons.Filled.NotificationsOff,
+                    title = "الإشعارات والوِرد اليومي",
+                    subtitle = buildString {
+                        append(if (notifOn) "الإشعارات تعمل" else "الإشعارات موقوفة")
+                        if (wardEnabled) append(" · الوِرد في ${wardTimeLabel()}")
+                    },
+                    onClick = { group = "notifications" },
+                )
+                SettingsTile(
+                    icon = Icons.Filled.FolderShared,
+                    title = "بياناتي",
+                    subtitle = "الهدف الأسبوعي، النسخ الاحتياطي والاستعادة، الحذف",
+                    onClick = { group = "data" },
+                )
+                SettingsTile(
+                    icon = Icons.Filled.FactCheck,
+                    title = "مساهماتي",
+                    subtitle = "تابع قرار المشرفين وسبب النتيجة",
+                    onClick = {
+                        vm.closeSettings()
+                        vm.open(Route.MySubmissions)
+                    },
+                )
+                SettingsTile(
+                    icon = Icons.Filled.Info,
+                    title = "حول التطبيق",
+                    subtitle = "التعريف، الوقف الخيري، نسخة الويب، المصدر المفتوح، الخصوصية",
+                    onClick = {
+                        vm.closeSettings()
+                        vm.open(Route.About)
+                    },
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "منبر ادكصهك — دروس صوتية",
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
 
-                item(key = "dl-header") { SectionHeader("التنزيلات") }
+    // ---- ورقة «التنزيلات» ----
+    if (group == "downloads") {
+        ModalBottomSheet(onDismissRequest = { group = null }) {
+            LazyColumn(
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    start = 8.dp, end = 8.dp, bottom = 32.dp,
+                ),
+            ) {
+                item(key = "title") { GroupTitle("التنزيلات") }
                 item(key = "autodl") {
                     SettingsTile(
                         icon = Icons.Filled.DownloadForOffline,
@@ -306,13 +341,25 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                         title = "إدارة التنزيلات",
                         subtitle = "$downloadsCount درساً — ${formatStorage(downloadsBytes)}",
                         onClick = {
+                            group = null
                             vm.closeSettings()
                             vm.openRoot(Route.Downloads)
                         },
                     )
                 }
+            }
+        }
+    }
 
-                item(key = "notif-header") { SectionHeader("الإشعارات") }
+    // ---- ورقة «الإشعارات والوِرد» ----
+    if (group == "notifications") {
+        ModalBottomSheet(onDismissRequest = { group = null }) {
+            LazyColumn(
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    start = 8.dp, end = 8.dp, bottom = 32.dp,
+                ),
+            ) {
+                item(key = "title") { GroupTitle("الإشعارات والوِرد اليومي") }
                 item(key = "notif") {
                     SettingsTile(
                         icon = if (notifOn) Icons.Filled.NotificationsActive else Icons.Filled.NotificationsOff,
@@ -369,8 +416,19 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                         )
                     }
                 }
+            }
+        }
+    }
 
-                item(key = "other-header") { SectionHeader("أخرى") }
+    // ---- ورقة «بياناتي» ----
+    if (group == "data") {
+        ModalBottomSheet(onDismissRequest = { group = null }) {
+            LazyColumn(
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    start = 8.dp, end = 8.dp, bottom = 32.dp,
+                ),
+            ) {
+                item(key = "title") { GroupTitle("بياناتي") }
                 item(key = "goal") {
                     SettingsTile(
                         icon = Icons.Filled.Flag,
@@ -395,43 +453,6 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                         onClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                     )
                 }
-                item(key = "privacy") {
-                    SettingsTile(
-                        icon = Icons.Filled.PrivacyTip,
-                        title = "سياسة الخصوصية",
-                        subtitle = "تفتح مباشرة في موقع منبر",
-                        trailing = { Icon(Icons.Filled.OpenInNew, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-                        onClick = {
-                            runCatching {
-                                context.startActivity(
-                                    Intent(Intent.ACTION_VIEW, Uri.parse("https://minbar-adkassahk.vercel.app/privacy")),
-                                )
-                            }.onFailure { vm.showMessage("تعذّر فتح سياسة الخصوصية.") }
-                        },
-                    )
-                }
-                item(key = "submissions") {
-                    SettingsTile(
-                        icon = Icons.Filled.FactCheck,
-                        title = "مساهماتي",
-                        subtitle = "تابع قرار المشرفين وسبب النتيجة",
-                        onClick = {
-                            vm.closeSettings()
-                            vm.open(Route.MySubmissions)
-                        },
-                    )
-                }
-                item(key = "about") {
-                    SettingsTile(
-                        icon = Icons.Filled.Info,
-                        title = "حول التطبيق",
-                        subtitle = "تعريف بمنبر ادكصهك ومصدره المفتوح ونسخة الويب",
-                        onClick = {
-                            vm.closeSettings()
-                            vm.open(Route.About)
-                        },
-                    )
-                }
                 item(key = "delete") {
                     SettingsTile(
                         icon = Icons.Filled.DeleteForever,
@@ -441,61 +462,37 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                         onClick = { deleteDialog = true },
                     )
                 }
-                item(key = "footer") {
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        "منبر ادكصهك — دروس صوتية",
-                        modifier = Modifier.fillMaxWidth(),
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                }
+            }
         }
     }
 
-    // ---- منتقي المظهر ----
-    if (themeDialog) {
+    // ---- المظهر وحجم النص (حوار واحد مدمج) ----
+    if (appearanceDialog) {
+        var value by remember { mutableFloatStateOf(fontScale.coerceIn(0.8f, 1.4f)) }
         AlertDialog(
-            onDismissRequest = { themeDialog = false },
-            title = { Text("المظهر") },
+            onDismissRequest = { appearanceDialog = false },
+            title = { Text("المظهر وحجم النص") },
             text = {
                 Column {
-                    listOf("light" to "فاتح", "dark" to "داكن", "system" to "اتّباع النظام").forEach { (value, label) ->
+                    listOf("light" to "فاتح", "dark" to "داكن", "system" to "اتّباع النظام").forEach { (v, label) ->
                         Row(
-                            Modifier.fillMaxWidth().clickable {
-                                vm.store.setThemeMode(value)
-                                themeDialog = false
-                            }.padding(vertical = 4.dp),
+                            Modifier.fillMaxWidth().clickable { vm.store.setThemeMode(v) }
+                                .padding(vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             RadioButton(
-                                selected = themeMode == value,
-                                onClick = {
-                                    vm.store.setThemeMode(value)
-                                    themeDialog = false
-                                },
+                                selected = themeMode == v,
+                                onClick = { vm.store.setThemeMode(v) },
                             )
                             Text(label)
                         }
                     }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { themeDialog = false }) { Text("إغلاق") }
-            },
-        )
-    }
-
-    // ---- حجم النص ----
-    if (fontDialog) {
-        var value by remember { mutableFloatStateOf(fontScale.coerceIn(0.8f, 1.4f)) }
-        AlertDialog(
-            onDismissRequest = { fontDialog = false },
-            title = { Text("حجم النص") },
-            text = {
-                Column {
-                    Text("${(value * 100).toInt()}%", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "حجم النص: ${(value * 100).toInt()}%",
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center,
+                    )
                     Slider(
                         value = value,
                         onValueChange = { value = it },
@@ -507,11 +504,11 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
             confirmButton = {
                 TextButton(onClick = {
                     vm.store.setFontScale(value)
-                    fontDialog = false
+                    appearanceDialog = false
                 }) { Text("حفظ") }
             },
             dismissButton = {
-                TextButton(onClick = { fontDialog = false }) { Text("إلغاء") }
+                TextButton(onClick = { appearanceDialog = false }) { Text("إغلاق") }
             },
         )
     }
@@ -653,17 +650,16 @@ private fun formatStorage(bytes: Long): String = when {
     else -> "$bytes B"
 }
 
+/// عنوان الورقة الفرعية للموضوع المجمَّع.
 @Composable
-private fun SectionHeader(title: String) {
-    Column {
-        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        Text(
-            title,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            style = MaterialTheme.typography.titleMedium,
-            color = Teal,
-        )
-    }
+private fun GroupTitle(title: String) {
+    Text(
+        title,
+        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+        textAlign = TextAlign.Center,
+        style = MaterialTheme.typography.titleMedium,
+        color = Teal,
+    )
 }
 
 /// بند إعدادات بنمط SettingsTile في نبراس: أيقونة + عنوان (+وصف) + عنصر جانبي.

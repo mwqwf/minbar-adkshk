@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.OndemandVideo
+import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -101,6 +102,25 @@ fun AboutScreen(vm: AppViewModel) {
                 textAlign = TextAlign.Start,
             )
         }
+        Spacer(Modifier.height(10.dp))
+
+        // بيان الوقف: المشروع خيري لا ربحي — نص ثابت ظاهر لكل مستخدم.
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f),
+            ),
+        ) {
+            Text(
+                "🕌 هذا المشروع خيريٌّ ووقفٌ لله تعالى: لا نتربّح منه ولن نتربّح، " +
+                    "ولا نسمح لأحد بالتربّح منه. وهو مفتوح لكل من يريد خدمة تراث " +
+                    "هذه القبيلة العلمي وما يهمّها.",
+                modifier = Modifier.padding(16.dp),
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Start,
+            )
+        }
         Spacer(Modifier.height(14.dp))
 
         Column(
@@ -163,6 +183,15 @@ fun AboutScreen(vm: AppViewModel) {
                             "بتوقيت اللحظة، و«شارك درسًا» لرفع التسجيلات النادرة.",
                     )
                 },
+            )
+            ListItem(
+                modifier = Modifier.clickable { openUrl("$WEB_APP_URL/privacy") },
+                colors = ListItemDefaults.colors(
+                    containerColor = androidx.compose.ui.graphics.Color.Transparent,
+                ),
+                leadingContent = { Icon(Icons.Filled.PrivacyTip, null, tint = Teal) },
+                headlineContent = { Text("سياسة الخصوصية") },
+                supportingContent = { Text("تفتح مباشرة في موقع منبر.") },
             )
         }
 

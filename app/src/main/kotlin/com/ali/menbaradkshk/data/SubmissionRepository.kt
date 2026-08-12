@@ -55,7 +55,9 @@ class SubmissionRepository private constructor(context: Context) {
         val size = appContext.contentResolver.openAssetFileDescriptor(draft.audioUri, "r")
             ?.use { it.length }
             ?: -1L
-        require(size in 0..MAX_FILE_BYTES) { "حجم الملف يتجاوز 100 ميجابايت." }
+        // فصل السببين: حجم مجهول (وصول مُنتزَع/ملف حُذف) ليس «تجاوز الحدّ».
+        require(size >= 0) { "تعذّر قراءة الملف المحدّد — أعد اختياره." }
+        require(size <= MAX_FILE_BYTES) { "حجم الملف يتجاوز 100 ميجابايت." }
         // افحص كل صور النص قبل رفع الصوت؛ كان اكتشاف صورة كبيرة/غير صالحة
         // يحدث بعد رفع ملف صوتي قد يبلغ 100MB، فيُحذف ثم يعاد رفعه عند المحاولة.
         val validatedTranscriptImages = draft.transcript.images
@@ -138,7 +140,12 @@ class SubmissionRepository private constructor(context: Context) {
             callableStarted = true
             val result = runCatching {
                 functions.getHttpsCallable("createSubmission").call(payload).await()
-            }.getOrElse {
+            }.getOrElse { first ->
+                // إعادة المحاولة للأعطال العابرة فقط (انقطاع/مهلة/عطل لحظي):
+                // الرفض القاطع (حدّ يومي، فاصل أدنى، تحقّق) كان يُستدعى مرّتين
+                // بلا جدوى ويؤخّر وصول رسالة الرفض للمستخدم.
+                if (!isTransient(first)) throw first
+                kotlinx.coroutines.delay(1_500)
                 functions.getHttpsCallable("createSubmission").call(payload).await()
             }
             val returned = (result.data as? Map<*, *>)?.get("id")?.toString().orEmpty()
@@ -168,6 +175,21 @@ class SubmissionRepository private constructor(context: Context) {
                 }
             }
             throw failure
+        }
+    }
+
+    /// هل الفشل عابر (شبكة/مهلة/عطل خادم لحظي) فيستحقّ محاولة ثانية؟
+    private fun isTransient(failure: Throwable): Boolean {
+        val functionsFailure = failure as? com.google.firebase.functions.FirebaseFunctionsException
+            ?: failure.cause as? com.google.firebase.functions.FirebaseFunctionsException
+        return when (functionsFailure?.code) {
+            com.google.firebase.functions.FirebaseFunctionsException.Code.UNAVAILABLE,
+            com.google.firebase.functions.FirebaseFunctionsException.Code.DEADLINE_EXCEEDED,
+            com.google.firebase.functions.FirebaseFunctionsException.Code.INTERNAL,
+            -> true
+            // ليس خطأ دوالّ أصلاً: عابر فقط إن كان انقطاع إدخال/إخراج.
+            null -> generateSequence(failure) { it.cause }.take(5).any { it is java.io.IOException }
+            else -> false
         }
     }
 

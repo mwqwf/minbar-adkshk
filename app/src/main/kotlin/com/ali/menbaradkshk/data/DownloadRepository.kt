@@ -153,6 +153,9 @@ class DownloadRepository private constructor(context: Context) {
                 readTimeout = 45_000
                 instanceFollowRedirects = true
                 setRequestProperty("User-Agent", "MinbarAdkassahk/${com.ali.menbaradkshk.BuildConfig.VERSION_NAME}")
+                // بلا ضغط وسيط: gzip شفّاف يجعل Content-Length وحساب Range
+                // غير مطابقَين للبايتات المكتوبة فيفسد الاستئناف والنِّسب.
+                setRequestProperty("Accept-Encoding", "identity")
                 if (resumeFrom > 0L) setRequestProperty("Range", "bytes=$resumeFrom-")
                 connect()
             }
@@ -160,7 +163,28 @@ class DownloadRepository private constructor(context: Context) {
             // 206 = الخادم قبل الاستئناف؛ 200 مع طلب مدى = لا يدعمه فنبدأ من الصفر.
             val resuming = resumeFrom > 0L && code == 206
             if (resumeFrom > 0L && code == 200) partial.delete()
+            // 416: الملف الجزئي تجاوز حجم الملف على الخادم (استُبدل الملف
+            // غالباً) — نحذفه ونعيد المحاولة من الصفر بدل فشل دائم يُسقط الدرس.
+            if (resumeFrom > 0L && code == 416) {
+                partial.delete()
+                throw RetryableDownloadException(java.io.IOException("HTTP 416"))
+            }
             require(code in 200..299) { "تعذّر تنزيل الملف ($code)." }
+            if (resuming) {
+                // تحقُّق من إزاحة الاستئناف: خادم يُعيد 206 بمدى لا يبدأ من
+                // موضعنا كان سيُلحق بايتات بإزاحة خاطئة فيتلف الملف بصمت.
+                val start = connection.getHeaderField("Content-Range")
+                    ?.substringAfter("bytes ", "")
+                    ?.substringBefore('-')
+                    ?.trim()
+                    ?.toLongOrNull()
+                if (start != null && start != resumeFrom) {
+                    partial.delete()
+                    throw RetryableDownloadException(
+                        java.io.IOException("مدى الاستئناف غير متطابق ($start ≠ $resumeFrom)"),
+                    )
+                }
+            }
             val remaining = connection.getHeaderField("Content-Length")
                 ?.toLongOrNull()
                 ?.coerceAtLeast(0L)
@@ -198,7 +222,12 @@ class DownloadRepository private constructor(context: Context) {
             }
             check(partial.length() > 0L) { "ملف الصوت فارغ." }
             if (target.exists()) target.delete()
-            check(partial.renameTo(target)) { "تعذّر تثبيت ملف التنزيل." }
+            if (!partial.renameTo(target)) {
+                // بعض الأنظمة ترفض rename رغم أنّ الوجهة في المجلد نفسه —
+                // النسخ ثم الحذف خطة بديلة تُنقذ تنزيلاً اكتمل فعلاً.
+                partial.copyTo(target, overwrite = true)
+                partial.delete()
+            }
             store.setDownload(lesson.id, target.absolutePath)
             target.absolutePath
         } catch (cancelled: CancellationException) {

@@ -793,11 +793,13 @@ fun SearchScreen(vm: AppViewModel, initial: String, playback: PlaybackUiState) {
                     words.all { hay.contains(it) }
                 }
             }
-            val lesRes = remember(words, content.lessons, categories, subcategories) {
+            // فهرس مطبَّع يُبنى مرّة لكل تغيّر محتوى لا مع كل ضغطة مفتاح:
+            // كان normalizeArabic يمرّ على كل الدروس عند كل حرف يُكتب.
+            val lessonIndex = remember(content.lessons, categories, subcategories) {
                 val categoryNames = categories.associate { it.id to it.name }
                 val subcategoryNames = subcategories.associate { it.id to it.name }
-                content.lessons.filter { lesson ->
-                    val hay = normalizeArabic(
+                content.lessons.map { lesson ->
+                    lesson to normalizeArabic(
                         buildString {
                             append(lesson.displayTitle)
                             append(' ')
@@ -808,8 +810,14 @@ fun SearchScreen(vm: AppViewModel, initial: String, playback: PlaybackUiState) {
                             append(subcategoryNames[lesson.subcategoryId].orEmpty())
                         },
                     )
-                    words.all { hay.contains(it) }
-                }.take(80)
+                }
+            }
+            val lesRes = remember(words, lessonIndex) {
+                lessonIndex.asSequence()
+                    .filter { (_, hay) -> words.all { word -> hay.contains(word) } }
+                    .map { it.first }
+                    .take(80)
+                    .toList()
             }
 
             if (catRes.isEmpty() && subRes.isEmpty() && lesRes.isEmpty()) {

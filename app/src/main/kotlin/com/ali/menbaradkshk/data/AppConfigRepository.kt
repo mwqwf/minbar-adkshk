@@ -89,6 +89,8 @@ class AppConfigRepository private constructor(context: Context) {
     /// تماماً لنسخة صرف المستخدم شاشتَها (صرفُها إجابة صريحة: «ليس الآن»).
     fun shouldNotify(latest: Int): Boolean {
         if (prefs.getInt(KEY_DISMISSED, 0) >= latest) return false
+        // إصدار أحدث ممّا أُشعِر به آخر مرّة ⇒ أشعِر فوراً بلا انتظار الخانق.
+        if (prefs.getInt(KEY_NOTIFIED_FOR, 0) < latest) return true
         val since = System.currentTimeMillis() - prefs.getLong(KEY_NOTIFIED, 0L)
         return since >= PROMPT_INTERVAL_MS
     }
@@ -112,14 +114,14 @@ class AppConfigRepository private constructor(context: Context) {
         val now = System.currentTimeMillis()
         if (now - prefs.getLong(KEY_CHECKED, 0L) < CHECK_INTERVAL_MS) return
         val reference = db.collection("app_config").document("android")
-        // ⚠️ قراءة الكاش تُرمى استثناءً حين لا تكون الوثيقة مخزَّنة أصلاً (لا
-        // تعود «غير موجودة»). حين كانت المحاولتان داخل runCatching واحد كان
-        // ذلك الاستثناء يبتلع مسار الخادم كلَّه: على تثبيت جديد لا وثيقة في
-        // الكاش أبداً، فلا تُقرأ من الخادم أبداً، ولا يعمل تذكير التحديث قطّ.
-        val cached = runCatching { reference.get(Source.CACHE).await() }
-            .getOrNull()
-            ?.takeIf { it.exists() }
-        val doc = cached ?: runCatching { reference.get().await() }.getOrNull() ?: return
+        // ⚠️ الخادم أوّلاً دائماً: تقديم الكاش كان يجمّد القيم على أوّل قراءة
+        // إلى الأبد (الوثيقة تصير مخزَّنة فلا يُسأل الخادم بعدها قطّ، فلا يصل
+        // تذكير أيّ إصدار لاحق). الكاش هنا خطّة بديلة عند فشل الشبكة فقط.
+        val doc = runCatching { reference.get(Source.SERVER).await() }.getOrNull()
+            ?: runCatching { reference.get(Source.CACHE).await() }
+                .getOrNull()
+                ?.takeIf { it.exists() }
+            ?: return
         if (!doc.exists()) {
             // لا وثيقة إعداد ⇒ لا تذكير. نُثبّت الختم كي لا نسأل كل مرّة.
             prefs.edit().putLong(KEY_CHECKED, now).apply()

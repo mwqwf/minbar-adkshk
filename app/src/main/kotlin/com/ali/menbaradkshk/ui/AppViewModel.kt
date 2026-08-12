@@ -648,8 +648,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } catch (failure: Throwable) {
                 _transcriptContribution.value = TranscriptContributionState(
                     lessonId = draft.lessonId,
-                    error = failure.message
-                        ?: "تعذّر الإرسال. تأكد من الاتصال وحاول مجدداً.",
+                    error = when {
+                        // رسائل التحقّق المحلية عربية مكتوبة عندنا — تمرّ كما هي.
+                        failure is IllegalArgumentException || failure is IllegalStateException ->
+                            failure.message ?: "تعذّر الإرسال. تأكد من الاتصال وحاول مجدداً."
+                        else -> submissionFailureMessage(failure)
+                            ?: "تعذّر الإرسال. تأكد من الاتصال وحاول مجدداً."
+                    },
                 )
             }
         }
@@ -790,7 +795,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         failure is IllegalArgumentException || failure is IllegalStateException ->
                             failure.message
                                 ?: "تعذّر إرسال المساهمة. تحقق من اتصالك وحاول مجدداً."
-                        else -> "تعذّر إرسال المساهمة. تحقق من اتصالك وحاول مجدداً."
+                        else -> submissionFailureMessage(failure)
+                            ?: "تعذّر إرسال المساهمة. تحقق من اتصالك وحاول مجدداً."
                     },
                 )
             } finally {
@@ -798,6 +804,34 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     ?: mergedTemp?.delete()
             }
         }
+    }
+
+    /**
+     * رسالة أدقّ لفشل الإرسال بدل «تحقق من اتصالك» العامة:
+     * رفضٌ قاطع من دوالّ الخادم يحمل نصّه العربي المكتوب هناك فيُعرض كما هو،
+     * وانقطاع الشبكة يُسمّى باسمه مع طمأنة أنّ الملف ما زال على الجهاز.
+     */
+    private fun submissionFailureMessage(failure: Throwable): String? {
+        val functionsFailure =
+            failure as? com.google.firebase.functions.FirebaseFunctionsException
+                ?: failure.cause as? com.google.firebase.functions.FirebaseFunctionsException
+        if (functionsFailure != null) {
+            val transient = when (functionsFailure.code) {
+                com.google.firebase.functions.FirebaseFunctionsException.Code.UNAVAILABLE,
+                com.google.firebase.functions.FirebaseFunctionsException.Code.DEADLINE_EXCEEDED,
+                com.google.firebase.functions.FirebaseFunctionsException.Code.INTERNAL,
+                -> true
+                else -> false
+            }
+            if (!transient) return functionsFailure.message?.takeIf(String::isNotBlank)
+        }
+        val network = generateSequence(failure) { it.cause }.take(5).any {
+            it is java.io.IOException || it is com.google.firebase.FirebaseNetworkException
+        }
+        if (network || functionsFailure != null) {
+            return "انقطع الاتصال أثناء الإرسال — ملفك ما زال على جهازك، أعد المحاولة عند عودة الشبكة."
+        }
+        return null
     }
 
     fun clearContributionState() {

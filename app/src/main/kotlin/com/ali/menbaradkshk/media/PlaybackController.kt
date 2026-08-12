@@ -124,7 +124,12 @@ class PlaybackController(context: Context) {
         scope.launch {
             while (isActive) {
                 delay(500L)
-                controller?.let(::publish)
+                // نبض الموضع لازم أثناء التشغيل/التخزين المؤقّت فقط؛ بقيّة
+                // التغيّرات تصل عبر onEvents — فلا داعي لإيقاظ الواجهة كل نصف
+                // ثانية والمشغّل متوقّف.
+                controller
+                    ?.takeIf { it.isPlaying || it.playbackState == Player.STATE_BUFFERING }
+                    ?.let(::publish)
             }
         }
         restoreSleepTimer()

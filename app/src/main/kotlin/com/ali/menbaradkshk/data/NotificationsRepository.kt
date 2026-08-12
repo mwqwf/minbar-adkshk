@@ -74,7 +74,9 @@ class NotificationsRepository(
                 .collection("items")
                 .orderBy("createdAtMs", Query.Direction.DESCENDING)
                 .limit(limit)
-                .addSnapshotListener { snapshot, _ ->
+                .addSnapshotListener { snapshot, error ->
+                    // كما في المستمع العام: الخطأ الدائم يُسجَّل لا يُبتلع.
+                    if (error != null) Log.w(TAG, "تعذّرت قراءة إشعارات المستخدم", error)
                     privateItems = snapshot?.documents.orEmpty()
                         .map { fromDocument("private:${it.id}", it) }
                     emit()

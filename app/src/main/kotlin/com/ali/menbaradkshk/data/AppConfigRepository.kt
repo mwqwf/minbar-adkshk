@@ -121,7 +121,14 @@ class AppConfigRepository private constructor(context: Context) {
             ?: runCatching { reference.get(Source.CACHE).await() }
                 .getOrNull()
                 ?.takeIf { it.exists() }
-            ?: return
+            ?: run {
+                // ختم قصير عند فشل الشبكة: بلاه كان كل ON_RESUME يعيد طرق
+                // الخادم فوراً في حالات الانقطاع أو 5xx.
+                prefs.edit()
+                    .putLong(KEY_CHECKED, now - CHECK_INTERVAL_MS + FAILURE_RETRY_MS)
+                    .apply()
+                return
+            }
         if (!doc.exists()) {
             // لا وثيقة إعداد ⇒ لا تذكير. نُثبّت الختم كي لا نسأل كل مرّة.
             prefs.edit().putLong(KEY_CHECKED, now).apply()
@@ -158,6 +165,9 @@ class AppConfigRepository private constructor(context: Context) {
         /// لا تتكرّر شاشة التذكير الاختياريّة قبل يوم كامل.
         private const val PROMPT_INTERVAL_MS = 24 * 60 * 60 * 1000L
         private const val CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L
+
+        /// مهلة إعادة المحاولة بعد فشل شبكة في جلب وثيقة التحديث.
+        private const val FAILURE_RETRY_MS = 15 * 60 * 1000L
 
         @Volatile
         private var instance: AppConfigRepository? = null

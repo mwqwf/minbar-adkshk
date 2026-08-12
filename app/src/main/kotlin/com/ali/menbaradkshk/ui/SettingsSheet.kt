@@ -4,16 +4,18 @@ package com.ali.menbaradkshk.ui
 
 import android.content.Intent
 import android.net.Uri
-import androidx.compose.foundation.LocalOverscrollFactory
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -28,6 +30,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.HistoryToggleOff
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.NotificationsActive
@@ -48,16 +51,15 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -68,24 +70,20 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
-/// «الإعدادات» — ورقة منسدلة بنمط نبراس (ContentOptionsSheet) حرفياً:
-/// ارتفاع ثابت محسوب صراحةً (92% من الشاشة) + LazyColumn بـweight(1f)
-/// ومفاتيح بنود ثابتة وnavigationBarsPadding — البنية التي لا تتذبذب مع
-/// التمرير العنيف. الخيارات المعقدة تُفتح في حوارات ومنتقيات فرعية.
+/// «الإعدادات» — درج جانبي حقيقي (بنمط تويتر/تلجرام): يُسحب من الجانب أو
+/// يُفتح بزرّه المخصّص في الشريط العلوي. المحتوى نفسه لم يتغيّر: نفس البنود
+/// والحوارات والمنتقيات الفرعية حرفياً، وإنما تغيّر الوعاء من ورقة سفلية
+/// إلى ModalDrawerSheet داخل ModalNavigationDrawer في MinbarApp.
 @Composable
-fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
+fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
     val revision by vm.store.revision.collectAsState()
@@ -165,18 +163,14 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
         return "%d:%02d %s".format(Locale.ROOT, hour12, wardMinute, period)
     }
 
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    // بنية نبراس (ContentOptionsSheet): ارتفاع الورقة ثابت محسوب صراحةً من
-    // ارتفاع الشاشة، لا fillMaxHeight بنسبة. النسبة تُقرأ من قيود الورقة
-    // *المتغيّرة أثناء حركتها*، فكانت تمريرة سريعة جداً تُدخل القياس والحركة
-    // في حلقة تغذية راجعة (تذبذب رسم لا يتوقّف). الارتفاع الثابت يفصلهما،
-    // وweight(1f) على القائمة يمنحها قيوداً مقيَّدة مستقرّة داخل العمود.
-    val sheetHeight = (LocalConfiguration.current.screenHeightDp * 0.92f).dp
-    ModalBottomSheet(onDismissRequest = vm::closeSettings, sheetState = sheetState) {
-        Column(Modifier.height(sheetHeight).fillMaxWidth()) {
+    ModalDrawerSheet(
+        modifier = Modifier.fillMaxWidth(0.86f),
+        windowInsets = WindowInsets.statusBars,
+    ) {
+        Column(Modifier.fillMaxSize()) {
             Text(
                 "الإعدادات",
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.titleLarge,
             )
@@ -193,27 +187,9 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                 }
             }
             Spacer(Modifier.height(8.dp))
-            // مصدرا طاقة التذبذب عند التمريرة العنيفة، ويُغلقان معاً:
-            // (1) سرعة الـfling المتبقّية بعد بلوغ القائمة حدّها كانت تُسلَّم
-            //     إلى نابض استقرار الورقة فيهتزّ عند مرساه بلا توقّف — نبتلع
-            //     الهابط منها فقط؛ السحب البطيء (onPostScroll) يمرّ كما هو،
-            //     فيبقى الإغلاق بالسحب من المقبض أو من رأس القائمة يعمل.
-            // (2) نابض تمدّد الحواف (overscroll) نفسه قد يعلق في اهتزاز
-            //     دون-بكسلي يحرق الإطارات بلا حركة مرئية — نعطّله داخل
-            //     الورقة (لا أثر وظيفي؛ مجرد لمعة الحافّة).
-            val flingGuard = remember {
-                object : NestedScrollConnection {
-                    override suspend fun onPostFling(
-                        consumed: Velocity,
-                        available: Velocity,
-                    ): Velocity = if (available.y > 0f) available else Velocity.Zero
-                }
-            }
-            CompositionLocalProvider(LocalOverscrollFactory provides null) {
                 LazyColumn(
                     modifier = Modifier.weight(1f).fillMaxWidth()
-                        .navigationBarsPadding()
-                        .nestedScroll(flingGuard),
+                        .navigationBarsPadding(),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(
                         start = 8.dp,
                         end = 8.dp,
@@ -445,6 +421,17 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         },
                     )
                 }
+                item(key = "about") {
+                    SettingsTile(
+                        icon = Icons.Filled.Info,
+                        title = "حول التطبيق",
+                        subtitle = "تعريف بمنبر ادكصهك ومصدره المفتوح ونسخة الويب",
+                        onClick = {
+                            vm.closeSettings()
+                            vm.open(Route.About)
+                        },
+                    )
+                }
                 item(key = "delete") {
                     SettingsTile(
                         icon = Icons.Filled.DeleteForever,
@@ -464,7 +451,6 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                     )
                 }
                 }
-            }
         }
     }
 
@@ -539,9 +525,16 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.titleMedium,
             )
+            // تجميع واحد مُتذكَّر بدل ترشيح كل الدروس لكل قسم في كل recomposition.
+            val lessonsByCategory = remember(content.lessons) {
+                content.lessons.groupBy { it.categoryId }
+            }
+            val lessonsBySubcategory = remember(content.lessons) {
+                content.lessons.groupBy { it.subcategoryId }
+            }
             LazyColumn(contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 32.dp)) {
                 content.categories.forEach { category ->
-                    val categoryLessons = content.lessons.filter { it.categoryId == category.id }
+                    val categoryLessons = lessonsByCategory[category.id].orEmpty()
                     item(key = "cat-${category.id}") {
                         ListItem(
                             modifier = Modifier.clickable {
@@ -559,7 +552,7 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
                         content.subcategories.filter { it.categoryId == category.id },
                         key = { "sub-${it.id}" },
                     ) { sub ->
-                        val subLessons = content.lessons.filter { it.subcategoryId == sub.id }
+                        val subLessons = lessonsBySubcategory[sub.id].orEmpty()
                         ListItem(
                             modifier = Modifier.padding(start = 24.dp).clickable {
                                 sectionSheet = false
@@ -651,10 +644,12 @@ fun SettingsSheet(vm: AppViewModel, requestNotifications: () -> Unit) {
     }
 }
 
+// Locale.ROOT صراحةً: صيغة الجهاز العربية كانت تخلط أرقاماً هندية وفاصلاً
+// عشرياً «٫» مع «GB» اللاتينية في سطر RTL واحد.
 private fun formatStorage(bytes: Long): String = when {
-    bytes >= 1_073_741_824L -> "%.1f GB".format(bytes / 1_073_741_824.0)
-    bytes >= 1_048_576L -> "%.0f MB".format(bytes / 1_048_576.0)
-    bytes >= 1_024L -> "%.0f KB".format(bytes / 1_024.0)
+    bytes >= 1_073_741_824L -> "%.1f GB".format(Locale.ROOT, bytes / 1_073_741_824.0)
+    bytes >= 1_048_576L -> "%.0f MB".format(Locale.ROOT, bytes / 1_048_576.0)
+    bytes >= 1_024L -> "%.0f KB".format(Locale.ROOT, bytes / 1_024.0)
     else -> "$bytes B"
 }
 

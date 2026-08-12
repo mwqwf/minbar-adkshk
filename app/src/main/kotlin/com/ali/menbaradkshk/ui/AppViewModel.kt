@@ -53,6 +53,7 @@ sealed interface Route {
     data object ContributeTranscript : Route
     data object MySubmissions : Route
     data object Notifications : Route
+    data object About : Route
 }
 
 /// صورة/نص وصلا من تطبيق خارجي عبر «المشاركة» لميزة «ساهم بالنص».
@@ -93,6 +94,14 @@ data class TranscriptContributionState(
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     val store = LocalStore.get(application)
+
+    /// طابع أول تثبيت — تُقصر عليه الإشعارات: لا يُعرض ما سبق وجود التطبيق.
+    val installedAtMs: Long by lazy {
+        runCatching {
+            application.packageManager
+                .getPackageInfo(application.packageName, 0).firstInstallTime
+        }.getOrDefault(0L)
+    }
     val content = ContentRepository.get(application)
     val downloads = DownloadRepository.get(application)
     val submissions = SubmissionRepository.get(application)
@@ -166,14 +175,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // شيئاً لم يحدث. تُستبدل بحالة العامل الحقيقيّة فور انطلاقه.
         val queuedNow = store.downloadQueue().size
         val totalNow = store.downloadQueueTotal().coerceAtLeast(queuedNow)
-        downloads.queueState.value = com.ali.menbaradkshk.data.DownloadQueueState(
-            label = label,
-            // ما اكتمل = الإجمالي ناقص ما بقي، لا صفراً: إضافة دفعة إلى
-            // طابور نصفه منتهٍ كانت تُرجع الشريط إلى البداية بصرياً.
-            done = (totalNow - queuedNow).coerceAtLeast(0),
-            total = totalNow,
-            currentTitle = pending.first().displayTitle,
-        )
+        // الحالة المتفائلة تُكتب فقط إن لم يكن العامل يعمل الآن: كتابتها فوق
+        // حالة تحميل جارٍ كانت تُبدّل العنوان والتسمية بدرس لن يُحمَّل بعدُ
+        // وتُرجع مؤشّر تقدّم الملف إلى الوراء حتى النبضة التالية.
+        if (downloads.queueState.value == null) {
+            downloads.queueState.value = com.ali.menbaradkshk.data.DownloadQueueState(
+                label = label,
+                // ما اكتمل = الإجمالي ناقص ما بقي، لا صفراً: إضافة دفعة إلى
+                // طابور نصفه منتهٍ كانت تُرجع الشريط إلى البداية بصرياً.
+                done = (totalNow - queuedNow).coerceAtLeast(0),
+                total = totalNow,
+                currentTitle = pending.first().displayTitle,
+            )
+        }
         com.ali.menbaradkshk.data.DownloadScheduler.enqueue(getApplication())
         showMessage(
             "أُضيف ${pending.size} درساً إلى التحميل — يستمر في الخلفية حتى مع إغلاق التطبيق.",
@@ -456,6 +470,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 } else if (store.notificationsEnabled()) {
                     FirebaseMessaging.getInstance().subscribeToTopic("sec_$id").await()
                 }
+            }.onFailure {
+                // فشل FCM كان صامتاً: الواجهة تُظهر «متابِعاً» بينما الاشتراك
+                // لم يتم قط فلا تصل إشعارات القسم أبداً. نعكس الحالة ونخبر.
+                store.toggleFollowSubcategory(id)
+                showMessage("تعذّر تحديث المتابعة — تحقّق من الاتصال وحاول مجدداً.")
             }
         }
     }
@@ -476,7 +495,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         FirebaseMessaging.getInstance().unsubscribeFromTopic("sec_$it").await()
                     }
                 }
-            }.onFailure { store.setNotificationsEnabled(!enabled) }
+            }.onFailure {
+                store.setNotificationsEnabled(!enabled)
+                showMessage("تعذّر تحديث الإشعارات — تحقّق من الاتصال وحاول مجدداً.")
+            }
         }
     }
 

@@ -32,7 +32,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.MicExternalOn
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.NotificationsNone
 import androidx.compose.material.icons.filled.Outbox
 import androidx.compose.material.icons.filled.Search
@@ -80,6 +80,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ali.menbaradkshk.data.AppConfigRepository
+import com.ali.menbaradkshk.data.ContentState
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.flow.catch
 
@@ -117,6 +118,7 @@ private fun routeStateKey(route: Route): String = when (route) {
     Route.ContributeTranscript -> "ContributeTranscript"
     Route.MySubmissions -> "MySubmissions"
     Route.Notifications -> "Notifications"
+    Route.About -> "About"
 }
 
 @Composable
@@ -197,11 +199,48 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         vm.showMessage("انتظر اكتمال إرسال المساهمة قبل الرجوع.")
     }
 
+    // 🗂️ الإعدادات — درج جانبي حقيقي (بنمط تويتر/تلجرام): يُفتح بزرّه في
+    // الشريط العلوي أو بالسحب من حافة الشاشة في التبويبات الجذرية.
+    // حالة الفتح تبقى في AppViewModel (openSettings/closeSettings كما كانت)،
+    // والمزامنة ثنائية الاتجاه: الحالة تحرّك الدرج، وسحب المستخدم يعيد الحالة.
+    val drawerState = androidx.compose.material3.rememberDrawerState(
+        androidx.compose.material3.DrawerValue.Closed,
+    )
+    // بلا حَارسَي isClosed/isOpen: أثناء الحركة كلاهما false، فكان «رجوع»
+    // في منتصف حركة الفتح يلغيها ولا يستدعي close() — درج عالق في المنتصف.
+    // الاستدعاء غير المشروط آمن (لا-عمل إن كان في وضعه المطلوب أصلاً).
+    LaunchedEffect(showSettings) {
+        if (showSettings) drawerState.open() else drawerState.close()
+    }
+    LaunchedEffect(drawerState) {
+        androidx.compose.runtime.snapshotFlow { drawerState.currentValue }
+            .collect { value ->
+                if (value == androidx.compose.material3.DrawerValue.Closed &&
+                    vm.showSettings.value
+                ) {
+                    vm.closeSettings()
+                } else if (value == androidx.compose.material3.DrawerValue.Open &&
+                    !vm.showSettings.value
+                ) {
+                    vm.openSettings()
+                }
+            }
+    }
+    BackHandler(enabled = showSettings) { vm.closeSettings() }
+
+    androidx.compose.material3.ModalNavigationDrawer(
+        drawerState = drawerState,
+        // السحب لفتح الدرج متاح في التبويبات الجذرية فقط (كتلجرام في شاشته
+        // الرئيسية)؛ داخل المشغّل والشاشات الفرعية تبقى الإيماءات لأصحابها،
+        // ويظلّ السحب للإغلاق متاحاً دائماً ما دام الدرج مفتوحاً.
+        gesturesEnabled = showSettings || (isRoot && !fullScreen),
+        drawerContent = { SettingsDrawerContent(vm, requestNotifications) },
+    ) {
     Scaffold(
         topBar = {
             if (!fullScreen) {
                 CenterAlignedTopAppBar(
-                    title = { Text(titleFor(route, vm)) },
+                    title = { Text(titleFor(route, vm, content)) },
                     colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                         containerColor = if (isDarkTheme(vm.store.themeMode())) AppBarBackgroundDark else AppBarBackgroundLight,
                         titleContentColor = AppBarForeground,
@@ -237,7 +276,7 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                                     Icon(Icons.Filled.Search, "بحث")
                                 }
                                 IconButton(onClick = vm::openSettings) {
-                                    Icon(Icons.Filled.MoreVert, "الإعدادات")
+                                    Icon(Icons.Filled.Menu, "الإعدادات")
                                 }
                             }
                             Route.Contribute -> {
@@ -357,14 +396,12 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                 Route.ContributeTranscript -> TranscriptContributeScreen(vm)
                 Route.MySubmissions -> MySubmissionsScreen(vm)
                 Route.Notifications -> NotificationsScreen(vm)
+                Route.About -> AboutScreen(vm)
                 }
             }
         }
         }
     }
-
-    if (showSettings) {
-        SettingsSheet(vm, requestNotifications)
     }
 }
 
@@ -530,14 +567,16 @@ private fun MySubmissionsButton(vm: AppViewModel) {
     }
 }
 
-private fun titleFor(route: Route, vm: AppViewModel): String = when (route) {
+// يأخذ `content` المُجمَّع من الواجهة (لا `state.value` مباشرة) كي يتفاعل
+// العنوان مع وصول البيانات/تغيّرها بدل التجمّد على أول قراءة.
+private fun titleFor(route: Route, vm: AppViewModel, content: ContentState): String = when (route) {
     Route.Home -> "منبر ادكصهك"
     Route.Library -> "المكتبة"
     Route.MyLists -> "قوائمي"
     Route.Downloads -> "تنزيلاتي"
     Route.Favorites -> "المفضّلة"
-    is Route.Category -> vm.content.state.value.categoryById[route.id]?.name ?: "الأقسام"
-    is Route.Subcategory -> vm.content.state.value.subcategoryById[route.id]?.name ?: "الدروس"
+    is Route.Category -> content.categoryById[route.id]?.name ?: "الأقسام"
+    is Route.Subcategory -> content.subcategoryById[route.id]?.name ?: "الدروس"
     is Route.Lesson -> "الآن يُشغَّل"
     is Route.Search -> "بحث"
     is Route.Playlist -> vm.store.playlists().firstOrNull { it.id == route.id }?.name ?: "قائمة التشغيل"
@@ -548,4 +587,5 @@ private fun titleFor(route: Route, vm: AppViewModel): String = when (route) {
     Route.ContributeTranscript -> "ساهم بالنص"
     Route.MySubmissions -> "مساهماتي"
     Route.Notifications -> "الإشعارات"
+    Route.About -> "حول التطبيق"
 }

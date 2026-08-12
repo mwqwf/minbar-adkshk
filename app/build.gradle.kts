@@ -58,8 +58,8 @@ android {
         // 13 / 1.5.0: دردشة الإدارة بتصميم واتساب، ووضع داكن كامل للوحة،
         // وتحذير تحديث بملء الشاشة، وتحميل تدريجي يُنهي بطء أوّل تشغيل،
         // وإزالة الواجهات المتوقّفة التي يرصدها فحص Play من جذرها.
-        versionCode = 16
-        versionName = "1.6.0"
+        versionCode = 17
+        versionName = "1.7.0"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

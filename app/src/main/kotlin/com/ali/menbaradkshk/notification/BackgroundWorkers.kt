@@ -33,10 +33,11 @@ class ContinueReminderWorker(
         val store = LocalStore.get(applicationContext)
         if (!store.notificationsEnabled() || !store.continueReminderEnabled()) return Result.success()
         val completed = store.completedIds().toSet()
-        val candidate = store.positions()
-            .filter { (id, position) -> position > 3_000L && id !in completed }
-            .maxByOrNull { it.value }
-            ?.key
+        // آخر درس استمع إليه ولم يكمله — لا صاحب أكبر موضع بالمللي ثانية:
+        // ذاك كان يقترح أطول درس متوقَّف فيه نفسه كل يوم إلى الأبد.
+        val positions = store.positions()
+        val candidate = store.recentPlayedIds()
+            .firstOrNull { it !in completed && (positions[it] ?: 0L) > 3_000L }
             ?: return Result.success()
         val lesson = ContentRepository.get(applicationContext).state.value.lessonById[candidate]
             ?: return Result.success()
@@ -268,7 +269,7 @@ private object NotificationPublisher {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val notification = NotificationCompat.Builder(context, channel)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_minbar)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))

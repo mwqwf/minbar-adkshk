@@ -34,7 +34,7 @@ class LessonDownloadJobService : JobService() {
             )
         }
         work = scope.launch {
-            val result = runCatching {
+            val result = try {
                 processor.run { notification ->
                     runCatching {
                         setNotification(
@@ -45,7 +45,14 @@ class LessonDownloadJobService : JobService() {
                         )
                     }
                 }
-            }.getOrDefault(DownloadRunResult.NEEDS_RETRY)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // كان runCatching يبتلع أي انهيار داخلي ويعيد الجدولة إلى الأبد
+                // بلا أي سجل — الآن يُسجَّل السبب على الأقل قبل إعادة المحاولة.
+                android.util.Log.e("LessonDownloadJob", "download run crashed", e)
+                DownloadRunResult.NEEDS_RETRY
+            }
             // الوظيفة أُلغيت من onStopJob: النظام تولّى إعادة الجدولة بنفسه،
             // وإعلان الانتهاء بعدها يخصّ وظيفة لم تعد قائمة.
             if (!isActive) return@launch

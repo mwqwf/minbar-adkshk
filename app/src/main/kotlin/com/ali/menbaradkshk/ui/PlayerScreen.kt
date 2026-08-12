@@ -134,7 +134,9 @@ fun PlayerScreen(
     // بدء التشغيل عند فتح درس من رابط «لحظة» أو حين لا يكون الدرس فعّالاً.
     // موضع «اللحظة» يُستهلك مرة واحدة ثم يُزال من المسار، كي لا يعيد الرجوع
     // أو التدوير التشغيل من الثانية المشارَكة.
-    var startConsumed by rememberSaveable(lesson.id) { mutableStateOf(false) }
+    // المفتاح يشمل startAtMs: رابط «لحظة» ثانٍ لنفس الدرس كان يُتجاهل بصمت
+    // لأن startConsumed المحفوظ بقي true من الرابط الأول.
+    var startConsumed by rememberSaveable(lesson.id, startAtMs) { mutableStateOf(false) }
     LaunchedEffect(lesson.id, startAtMs) {
         if (startAtMs != null) {
             if (!startConsumed) {

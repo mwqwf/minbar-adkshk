@@ -561,7 +561,12 @@ private const val NOTIFICATIONS_WINDOW_MS = 30L * 24 * 60 * 60 * 1_000
 /// كي لا يعدّ العدّاد ما لا يظهر فعلاً.
 fun visibleNotifications(vm: AppViewModel, all: List<NotificationItem>): List<NotificationItem> {
     val dismissed = vm.store.dismissedNotificationIds().toSet()
-    val cutoff = System.currentTimeMillis() - NOTIFICATIONS_WINDOW_MS
+    // لا إشعارات أقدم من تثبيت التطبيق: مستخدم جديد كان يجد سجلّ إشعارات
+    // شهر كامل سبق وجوده أصلاً — كلٌّ يبدأ من تاريخ تثبيته هو.
+    val cutoff = maxOf(
+        System.currentTimeMillis() - NOTIFICATIONS_WINDOW_MS,
+        vm.installedAtMs,
+    )
     return all.filterNot { it.id in dismissed }
         .filter { it.createdAtMs >= cutoff }
 }
@@ -571,7 +576,10 @@ fun visibleNotifications(vm: AppViewModel, all: List<NotificationItem>): List<No
 /// التمييز يبدو التطبيق وكأنه لا يستقبل الإشعارات أصلاً.
 fun dismissedRecentCount(vm: AppViewModel, all: List<NotificationItem>): Int {
     val dismissed = vm.store.dismissedNotificationIds().toSet()
-    val cutoff = System.currentTimeMillis() - NOTIFICATIONS_WINDOW_MS
+    val cutoff = maxOf(
+        System.currentTimeMillis() - NOTIFICATIONS_WINDOW_MS,
+        vm.installedAtMs,
+    )
     return all.count { it.id in dismissed && it.createdAtMs >= cutoff }
 }
 

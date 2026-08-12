@@ -51,13 +51,19 @@ class ContentRepository private constructor(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val db by lazy { FirebaseFirestore.getInstance() }
     private val functions by lazy { FirebaseFunctions.getInstance() }
+    // قراءة واحدة لكل مخزن: كل استدعاء يعيد تحليل JSON كامل من التفضيلات
+    // على خيط الإقلاع، وكان يتكرّر مرّتين للأقسام والدروس بلا داعٍ.
     private val _state = MutableStateFlow(
-        ContentState(
-            categories = store.categories(),
-            subcategories = store.subcategories(),
-            lessons = mergeDurations(store.lessons()).filter(Lesson::isPublished),
-            loading = store.categories().isEmpty() && store.lessons().isEmpty(),
-        ),
+        run {
+            val cachedCategories = store.categories()
+            val cachedLessons = store.lessons()
+            ContentState(
+                categories = cachedCategories,
+                subcategories = store.subcategories(),
+                lessons = mergeDurations(cachedLessons).filter(Lesson::isPublished),
+                loading = cachedCategories.isEmpty() && cachedLessons.isEmpty(),
+            )
+        },
     )
     val state: StateFlow<ContentState> = _state.asStateFlow()
 

@@ -690,6 +690,8 @@ fun ClassicLinearProgress(
 }
 
 /// بطاقة تلميح إرشادي تظهر مرة واحدة للمستخدم الجديد، مع زر إغلاق وإجراء اختياري.
+/// تختفي ذاتياً بعد مدة وجيزة من ظهورها حتى لو لم يغلقها المستخدم — التلميح
+/// إرشاد عابر لا عنصر واجهة دائم، ولن يظهر مرة أخرى بعد ذلك.
 @Composable
 fun HintCard(
     vm: AppViewModel,
@@ -698,10 +700,16 @@ fun HintCard(
     text: String,
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null,
+    autoHideMs: Long = 15_000L,
 ) {
     val revision by vm.store.revision.collectAsState()
     val seen = remember(revision) { vm.store.hintSeen(hintKey) }
     if (seen) return
+    // الاختفاء الذاتي: يُحتسب من أول ظهور فعلي للبطاقة على الشاشة.
+    androidx.compose.runtime.LaunchedEffect(hintKey) {
+        kotlinx.coroutines.delay(autoHideMs)
+        vm.store.markHintSeen(hintKey)
+    }
     Card(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
         shape = RoundedCornerShape(14.dp),

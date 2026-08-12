@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.OndemandVideo
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -136,6 +137,20 @@ fun AboutScreen(vm: AppViewModel) {
                 },
             )
             ListItem(
+                modifier = Modifier.clickable { openUrl(YOUTUBE_URL) },
+                colors = ListItemDefaults.colors(
+                    containerColor = androidx.compose.ui.graphics.Color.Transparent,
+                ),
+                leadingContent = { Icon(Icons.Filled.OndemandVideo, null, tint = Teal) },
+                headlineContent = { Text("قناتنا على يوتيوب") },
+                supportingContent = {
+                    Text(
+                        "ننشر فيها فيديوهات توضيحية عن الجديد في التطبيق " +
+                            "وكيفية استعمال مزاياه خطوة بخطوة.\nyoutube.com/@mtfail",
+                    )
+                },
+            )
+            ListItem(
                 colors = ListItemDefaults.colors(
                     containerColor = androidx.compose.ui.graphics.Color.Transparent,
                 ),
@@ -163,3 +178,4 @@ fun AboutScreen(vm: AppViewModel) {
 
 const val GITHUB_URL = "https://github.com/mwqwf"
 const val WEB_APP_URL = "https://minbar-adkassahk.vercel.app"
+const val YOUTUBE_URL = "https://youtube.com/@mtfail"

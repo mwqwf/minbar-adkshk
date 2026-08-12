@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.DownloadForOffline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.MicExternalOn
@@ -161,6 +162,30 @@ fun HomeScreen(
                     icon = Icons.Filled.MicExternalOn,
                     text = "لديك تسجيل مفيد؟ شاركه من زر «شارك درساً» وسيُنشر بعد موافقة المشرفين.",
                 )
+            }
+            // تلميح «حول» — تذكير خفيف لمرة واحدة، لا يظهر في الوهلة الأولى
+            // بل بعد مدة قصيرة من أول فتح للتطبيق، ثم يختفي ذاتياً كالبقية.
+            item {
+                var aboutHintReady by androidx.compose.runtime.saveable.rememberSaveable {
+                    androidx.compose.runtime.mutableStateOf(false)
+                }
+                androidx.compose.runtime.LaunchedEffect(Unit) {
+                    if (vm.store.hintSeen("about_intro")) return@LaunchedEffect
+                    val elapsed = System.currentTimeMillis() - vm.store.firstOpenMs()
+                    val waitMs = 3 * 60_000L - elapsed
+                    if (waitMs > 0) kotlinx.coroutines.delay(waitMs)
+                    aboutHintReady = true
+                }
+                if (aboutHintReady) {
+                    HintCard(
+                        vm = vm,
+                        hintKey = "about_intro",
+                        icon = Icons.Filled.Info,
+                        text = "اطّلع على «حول التطبيق» من الإعدادات لمعرفة المزيد عنا: نسخة الويب، قناتنا على يوتيوب، ومصدر التطبيق المفتوح.",
+                        actionLabel = "فتح «حول»",
+                        onAction = { vm.open(Route.About) },
+                    )
+                }
             }
 
             if (ward != null) {

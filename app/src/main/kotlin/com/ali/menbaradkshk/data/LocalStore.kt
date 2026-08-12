@@ -371,6 +371,16 @@ class LocalStore private constructor(context: Context) {
     fun hintSeen(key: String): Boolean = bool("hint_$key")
     fun markHintSeen(key: String) = write { putBoolean("hint_$key", true) }
 
+    /// لحظة أول فتح للتطبيق — تُسجَّل عند أول قراءة وتبقى ثابتة. تلميحات
+    /// «بعد مدة قصيرة من أول دخول» (كتلميح زر «حول») تُقاس عليها.
+    fun firstOpenMs(): Long {
+        val existing = preferences.getLong("first_open_ms", 0L)
+        if (existing > 0L) return existing
+        val now = System.currentTimeMillis()
+        write { putLong("first_open_ms", now) }
+        return now
+    }
+
     // ---- طابور التحميل الخلفي (يُعالَج عبر WorkManager ويصمد لإغلاق التطبيق) ----
     /// قفل يحمي دورة قراءة-تعديل-كتابة الطابور من التزامن بين الخيوط.
     private val queueLock = Any()

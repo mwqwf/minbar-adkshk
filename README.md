@@ -1,5 +1,8 @@
 # منبر ادكصهك — Android أصلي بـ Kotlin
 
+> **🎧 استمع الآن على الويب:** [minbar-adkassahk.vercel.app](https://minbar-adkassahk.vercel.app) — مئات الدروس الصوتية العلمية لمشايخ ادكصهك، تُشغَّل مباشرة من المتصفّح.
+> **📱 التطبيق على أندرويد:** [Google Play](https://play.google.com/store/apps/details?id=com.ali.menbaradkshk) · **▶️ قناتنا:** [يوتيوب](https://youtube.com/@mtfail)
+
 هذه نسخة Android أصلية موازية للتطبيق المنشور، مكتوبة بـ Kotlin وJetpack Compose.
 مشروع Flutter القديم لم يُعدّل، ليبقى مسار رجوع آمنًا حتى اجتياز اختبار الترقية.
 

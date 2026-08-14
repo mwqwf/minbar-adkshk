@@ -135,6 +135,24 @@
                     android:pathPrefix="/my-submissions"
                     android:scheme="https" />
             </intent-filter>
+
+            <!-- صفحات الأقسام على الموقع (‎/category/<id> و‎/section/<id>):
+                 `handleDeepLink` يعالجها أصلاً، لكنّ البيان لم يكن يعلنها —
+                 فكان رابط قسم من نتائج البحث يفتح المتصفّح لا التطبيق.
+                 ‎/privacy وبقيّة صفحات الموقع تبقى للمتصفّح عمداً. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="minbar-adkassahk.vercel.app"
+                    android:pathPrefix="/category"
+                    android:scheme="https" />
+                <data
+                    android:host="minbar-adkassahk.vercel.app"
+                    android:pathPrefix="/section"
+                    android:scheme="https" />
+            </intent-filter>
         </activity>
 
         <!-- شاشة قصّ الصور: تتطلّب سمة AppCompat (بلاها تنهار فور فتحها)،

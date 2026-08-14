@@ -439,7 +439,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
-        idFor("subcategory")?.let { id ->
+        // `subcategory` هو اسم المخطّط الخاص، و`section` هو مسار الموقع لنفس
+        // الشيء — الاسمان مترادفان هنا كي يفتح رابط الموقع القسمَ في التطبيق.
+        (idFor("subcategory") ?: idFor("section"))?.let { id ->
             viewModelScope.launch {
                 content.refresh(false)
                 open(Route.Subcategory(id))

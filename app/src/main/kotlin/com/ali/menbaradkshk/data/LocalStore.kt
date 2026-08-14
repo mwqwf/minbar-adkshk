@@ -367,6 +367,100 @@ class LocalStore private constructor(context: Context) {
     fun clearDismissedNotifications() =
         setStringList(KEY_DISMISSED_NOTIFICATIONS, emptyList())
 
+    // ---- الأذكار (محلّي بالكامل: لا شبكة ولا حساب) ----
+
+    /// عدّاد الذكر الحالي داخل قسم: مفتاحه «القسم:الفهرس» وقيمته ما تبقّى.
+    /// يُصفَّر تلقائياً بتغيّر اليوم كي لا يبدأ المستخدم من تقدّم الأمس.
+    private fun adhkarDayKey(): String {
+        val cal = java.util.Calendar.getInstance()
+        return "%04d-%02d-%02d".format(
+            cal.get(java.util.Calendar.YEAR),
+            cal.get(java.util.Calendar.MONTH) + 1,
+            cal.get(java.util.Calendar.DAY_OF_MONTH),
+        )
+    }
+
+    /// يُنادى قبل أي قراءة/كتابة لعدّادات اليوم: إن تغيّر اليوم مُسحت.
+    private fun ensureAdhkarDay() {
+        val today = adhkarDayKey()
+        if (string("adhkar_day", "") == today) return
+        write {
+            putString("adhkar_day", today)
+            putString("adhkar_counts", "{}")
+        }
+    }
+
+    /// كم مرّة تبقّت من الذكر رقم [index] في [section] (null = لم يُبدأ بعد).
+    fun adhkarDone(section: String, index: Int): Long? {
+        ensureAdhkarDay()
+        return intMap("adhkar_counts")["$section:$index"]
+    }
+
+    fun setAdhkarDone(section: String, index: Int, done: Long) {
+        ensureAdhkarDay()
+        val values = intMap("adhkar_counts").toMutableMap()
+        values["$section:$index"] = done
+        setIntMap("adhkar_counts", values)
+    }
+
+    /// عدد الأذكار المكتملة في قسم اليوم — لشريط التقدّم في قائمة الأقسام.
+    fun adhkarCompleted(section: String, totals: List<Int>): Int {
+        ensureAdhkarDay()
+        val values = intMap("adhkar_counts")
+        return totals.indices.count { i ->
+            (values["$section:$i"] ?: 0L) >= totals[i].toLong()
+        }
+    }
+
+    fun resetAdhkarSection(section: String, count: Int) {
+        ensureAdhkarDay()
+        val values = intMap("adhkar_counts").toMutableMap()
+        repeat(count) { values.remove("$section:$it") }
+        setIntMap("adhkar_counts", values)
+    }
+
+    /// سلسلة أيام المداومة على الأذكار (تُحدَّث عند إتمام أي قسم).
+    fun adhkarStreak(): Int = long("adhkar_streak").toInt()
+
+    fun noteAdhkarCompletion() {
+        val today = adhkarDayKey()
+        val last = string("adhkar_streak_day", "")
+        if (last == today) return
+        val yesterday = java.util.Calendar.getInstance().apply {
+            add(java.util.Calendar.DAY_OF_YEAR, -1)
+        }.let {
+            "%04d-%02d-%02d".format(
+                it.get(java.util.Calendar.YEAR),
+                it.get(java.util.Calendar.MONTH) + 1,
+                it.get(java.util.Calendar.DAY_OF_MONTH),
+            )
+        }
+        val next = if (last == yesterday) adhkarStreak() + 1 else 1
+        write {
+            putString("adhkar_streak_day", today)
+            putLong("adhkar_streak", next.toLong())
+        }
+    }
+
+    // تذكيرات الأذكار: مفتاح لكل نوع + ساعته ودقيقته.
+    /// **مفعَّلة افتراضياً**: التذكير هو جوهر فائدة الصفحة، ومن ينتظر أن
+    /// يكتشف المستخدم مفتاحاً ليُفعّله يخسر أغلب المستخدمين. والإيقاف متاح
+    /// بنقرة، وتغيير الوقت كذلك — والقيمة المخزَّنة تَغلِب الافتراض دائماً.
+    fun adhkarReminder(kind: String): Boolean = bool("adhkar_rem_$kind", default = true)
+    fun setAdhkarReminder(kind: String, value: Boolean) =
+        write { putBoolean("adhkar_rem_$kind", value) }
+
+    fun adhkarReminderHour(kind: String, default: Int): Int =
+        long("adhkar_rem_h_$kind", default.toLong()).toInt()
+
+    fun adhkarReminderMinute(kind: String, default: Int): Int =
+        long("adhkar_rem_m_$kind", default.toLong()).toInt()
+
+    fun setAdhkarReminderTime(kind: String, hour: Int, minute: Int) = write {
+        putLong("adhkar_rem_h_$kind", hour.toLong())
+        putLong("adhkar_rem_m_$kind", minute.toLong())
+    }
+
     // ---- تلميحات الإرشاد للمستخدم الجديد (تُعرض مرة واحدة) ----
     fun hintSeen(key: String): Boolean = bool("hint_$key")
     fun markHintSeen(key: String) = write { putBoolean("hint_$key", true) }

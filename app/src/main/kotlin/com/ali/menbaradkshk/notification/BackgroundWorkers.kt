@@ -53,6 +53,46 @@ class ContinueReminderWorker(
     }
 }
 
+/**
+ * تذكير الأذكار — محلّي بحت: لا شبكة، ولا قراءة من الخادم، ولا حتى حاجة إلى
+ * محتوى التطبيق. لذلك لا يخضع لمفتاح «إشعارات المحتوى» العام، بل لمفتاحه
+ * وحده: من أوقف إشعارات الدروس قد يبقى مريداً لتذكير أذكاره.
+ * (إذن الإشعارات نفسه يبقى حاكماً — بلا إذن لا يُعرض شيء.)
+ */
+class AdhkarReminderWorker(
+    context: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result {
+        val kind = inputData.getString(KEY_KIND) ?: return Result.success()
+        val store = LocalStore.get(applicationContext)
+        if (!store.adhkarReminder(kind)) return Result.success()
+
+        val (title, body, section) = when (kind) {
+            "morning" -> Triple("أذكار الصباح", "﴿فَسُبْحَانَ اللَّهِ حِينَ تُمْسُونَ وَحِينَ تُصْبِحُونَ﴾", "morning")
+            "evening" -> Triple("أذكار المساء", "لا تنسَ وردك من أذكار المساء.", "evening")
+            "sleep" -> Triple("أذكار النوم", "اختم يومك بأذكار النوم.", "sleep")
+            else -> Triple("أذكار الاستيقاظ", "الحمد لله الذي أحيانا بعد ما أماتنا.", "wake")
+        }
+        NotificationPublisher.show(
+            applicationContext,
+            id = ADHKAR_NOTIFICATION_IDS[kind] ?: 40,
+            title = title,
+            body = body,
+            destination = "minbar://adhkar/$section",
+            channel = NotificationChannels.CONTENT,
+        )
+        return Result.success()
+    }
+
+    companion object {
+        const val KEY_KIND = "kind"
+        val ADHKAR_NOTIFICATION_IDS = mapOf(
+            "morning" to 41, "evening" to 42, "sleep" to 43, "wake" to 44,
+        )
+    }
+}
+
 class WardWorker(
     context: Context,
     params: WorkerParameters,
@@ -164,6 +204,38 @@ object BackgroundScheduler {
         scheduleWard(context)
         scheduleAutoDownload(context)
         scheduleUpdateCheck(context)
+        scheduleAdhkar(context)
+    }
+
+    /// أربعة تذكيرات مستقلّة، لكلٍّ عملٌ دوريّ يوميّ واحد يُلغى فور إيقافه.
+    /// الافتراضات: الصباح ٦:٣٠، المساء ١٧:٣٠، النوم ٢٢:٠٠، الاستيقاظ ٥:٣٠.
+    fun scheduleAdhkar(context: Context) {
+        val manager = WorkManager.getInstance(context)
+        val store = LocalStore.get(context)
+        val defaults = mapOf(
+            "morning" to (6 to 30),
+            "evening" to (17 to 30),
+            "sleep" to (22 to 0),
+            "wake" to (5 to 30),
+        )
+        defaults.forEach { (kind, default) ->
+            val work = "adhkar_$kind"
+            if (!store.adhkarReminder(kind)) {
+                manager.cancelUniqueWork(work)
+                return@forEach
+            }
+            val hour = store.adhkarReminderHour(kind, default.first)
+            val minute = store.adhkarReminderMinute(kind, default.second)
+            val request = PeriodicWorkRequestBuilder<AdhkarReminderWorker>(24, TimeUnit.HOURS)
+                .setInitialDelay(delayUntil(hour, minute), TimeUnit.MILLISECONDS)
+                .setInputData(
+                    androidx.work.Data.Builder()
+                        .putString(AdhkarReminderWorker.KEY_KIND, kind)
+                        .build(),
+                )
+                .build()
+            manager.enqueueUniquePeriodicWork(work, ExistingPeriodicWorkPolicy.UPDATE, request)
+        }
     }
 
     /// غير مشروط بإعدادات الإشعارات الاختيارية: تذكير التحديث ليس محتوى

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -74,28 +75,39 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/// صفحة «قوائمي»: تجمع «السجل» و«قوائم التشغيل» بتبويبين — السجل هو
-/// الافتراضي الذي يظهر أولاً (طلب المستخدم 2026-07-23).
+/// صفحة «قوائمي»: تجمع «المفضّلة» و«السجل» و«قوائم التشغيل».
+///
+/// المفضّلة كانت تبويباً مستقلاً في الشريط السفلي، فضُمّت هنا لأنها من جنس
+/// هذه الصفحة (ما جمعه المستخدم بنفسه)، وأُفسح مكانها لـ«الأذكار». وهي أوّل
+/// تبويب كي يجدها من اعتادها فوراً؛ ولم تفقد شيئاً من وظائفها.
+/// [initialTab] يجعل فتح مسار «المفضّلة» القديم يهبط عليها مباشرةً.
 @Composable
-fun MyListsScreen(vm: AppViewModel, playback: PlaybackUiState) {
-    var tab by rememberSaveable { mutableIntStateOf(0) }
+fun MyListsScreen(vm: AppViewModel, playback: PlaybackUiState, initialTab: Int = 1) {
+    var tab by rememberSaveable(initialTab) { mutableIntStateOf(initialTab) }
     Column(Modifier.fillMaxSize()) {
         TabRow(selectedTabIndex = tab) {
             Tab(
                 selected = tab == 0,
                 onClick = { tab = 0 },
-                icon = { Icon(Icons.Filled.History, contentDescription = null) },
-                text = { Text("السجل") },
+                icon = { Icon(Icons.Filled.Favorite, contentDescription = null) },
+                text = { Text("المفضّلة") },
             )
             Tab(
                 selected = tab == 1,
                 onClick = { tab = 1 },
+                icon = { Icon(Icons.Filled.History, contentDescription = null) },
+                text = { Text("السجل") },
+            )
+            Tab(
+                selected = tab == 2,
+                onClick = { tab = 2 },
                 icon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null) },
                 text = { Text("قوائم التشغيل") },
             )
         }
         when (tab) {
-            0 -> HistoryTab(vm, playback)
+            0 -> FavoritesScreen(vm, playback)
+            1 -> HistoryTab(vm, playback)
             else -> PlaylistsTab(vm)
         }
     }

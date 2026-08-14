@@ -36,8 +36,13 @@ sealed interface Route {
     // تبويبات الشريط السفلي الخمسة.
     data object Home : Route
     data object Library : Route
+    data object Adhkar : Route
     data object MyLists : Route
     data object Downloads : Route
+
+    /// المفضّلة لم تعد تبويباً مستقلاً — صارت تبويباً داخل «قوائمي». يبقى
+    /// المسار قائماً لأن مداخل قديمة تشير إليه (الإعدادات، روابط، الشريط)،
+    /// وفتحه يفتح «قوائمي» على تبويب المفضّلة مباشرةً.
     data object Favorites : Route
 
     // شاشات تُفتح فوق التبويبات.
@@ -54,6 +59,8 @@ sealed interface Route {
     data object MySubmissions : Route
     data object Notifications : Route
     data object About : Route
+    data class AdhkarSection(val id: String) : Route
+    data object AdhkarReminders : Route
 }
 
 /// صورة/نص وصلا من تطبيق خارجي عبر «المشاركة» لميزة «ساهم بالنص».
@@ -349,6 +356,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _message.value = "تعذّر فتح المتجر."
     }
 
+    // ---- تذكيرات الأذكار (محلّية بحتة) ----
+
+    fun setAdhkarReminder(kind: String, enabled: Boolean) {
+        store.setAdhkarReminder(kind, enabled)
+        BackgroundScheduler.scheduleAdhkar(getApplication())
+    }
+
+    fun setAdhkarReminderTime(kind: String, hour: Int, minute: Int) {
+        store.setAdhkarReminderTime(kind, hour, minute)
+        BackgroundScheduler.scheduleAdhkar(getApplication())
+    }
+
     fun open(route: Route) {
         if (_route.value == route) return
         backStack += _route.value
@@ -412,6 +431,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val segments = uri.pathSegments.orEmpty()
         if (host == "my-submissions" || uri.path?.contains("my-submissions") == true) {
             open(Route.MySubmissions)
+            return
+        }
+        // وجهة تذكير الأذكار: `minbar://adhkar/<القسم>` تفتح القسم مباشرةً،
+        // و`minbar://adhkar` تفتح قائمة الأقسام.
+        if (host == "adhkar") {
+            val section = segments.firstOrNull()?.takeIf(String::isNotBlank)
+            open(if (section != null) Route.AdhkarSection(section) else Route.Adhkar)
             return
         }
         // وجهة إشعار التحميل (minbar://downloads) — كان يفتح الرئيسية.

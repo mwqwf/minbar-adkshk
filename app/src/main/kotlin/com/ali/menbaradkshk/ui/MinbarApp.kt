@@ -37,10 +37,11 @@ import androidx.compose.material.icons.filled.NotificationsNone
 import androidx.compose.material.icons.filled.Outbox
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LibraryMusic
+import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -91,12 +92,14 @@ private data class RootTab(
     val selectedIcon: ImageVector,
 )
 
+/// الشريط السفلي خمسة تبويبات: «المفضّلة» اندمجت في «قوائمي» (صارت تبويباً
+/// داخلها)، وحلّت مكانها «الأذكار» — فبقي العدد كما هو ولم يُفقد شيء.
 private val rootTabs = listOf(
     RootTab(Route.Home, "الرئيسية", Icons.Outlined.Home, Icons.Filled.Home),
     RootTab(Route.Library, "المكتبة", Icons.AutoMirrored.Outlined.LibraryBooks, Icons.AutoMirrored.Filled.LibraryBooks),
+    RootTab(Route.Adhkar, "الأذكار", Icons.Outlined.Star, Icons.Filled.Star),
     RootTab(Route.MyLists, "قوائمي", Icons.Outlined.LibraryMusic, Icons.Filled.LibraryMusic),
     RootTab(Route.Downloads, "تنزيلاتي", Icons.Outlined.Download, Icons.Filled.Download),
-    RootTab(Route.Favorites, "المفضّلة", Icons.Outlined.FavoriteBorder, Icons.Filled.Favorite),
 )
 
 /** مفتاح حالة يميّز محتوى المسار، ويتجاهل startAtMs المؤقت لنفس الدرس. */
@@ -104,6 +107,9 @@ private fun routeStateKey(route: Route): String = when (route) {
     Route.Home -> "Home"
     Route.Library -> "Library"
     Route.MyLists -> "MyLists"
+    Route.Adhkar -> "Adhkar"
+    is Route.AdhkarSection -> "AdhkarSection:${route.id}"
+    Route.AdhkarReminders -> "AdhkarReminders"
     Route.Downloads -> "Downloads"
     Route.Favorites -> "Favorites"
     is Route.Category -> "Category:${route.id}"
@@ -372,8 +378,11 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                 Route.Home -> HomeScreen(vm, content, playback)
                 Route.Library -> LibraryScreen(vm, content)
                 Route.MyLists -> MyListsScreen(vm, playback)
+                Route.Adhkar -> AdhkarScreen(vm)
+                is Route.AdhkarSection -> AdhkarSectionScreen(vm, current.id)
+                Route.AdhkarReminders -> AdhkarRemindersScreen(vm)
                 Route.Downloads -> DownloadsScreen(vm)
-                Route.Favorites -> FavoritesScreen(vm, playback)
+                Route.Favorites -> MyListsScreen(vm, playback, initialTab = 0)
                 is Route.Category -> CategoryScreen(vm, current.id, content)
                 is Route.Subcategory -> LessonsScreen(vm, current.id, playback)
                 is Route.Search -> SearchScreen(vm, current.initial, playback)
@@ -573,6 +582,9 @@ private fun titleFor(route: Route, vm: AppViewModel, content: ContentState): Str
     Route.Home -> "منبر ادكصهك"
     Route.Library -> "المكتبة"
     Route.MyLists -> "قوائمي"
+    Route.Adhkar -> "الأذكار"
+    is Route.AdhkarSection -> com.ali.menbaradkshk.data.Adhkar.titleFor(route.id)
+    Route.AdhkarReminders -> "تذكيرات الأذكار"
     Route.Downloads -> "تنزيلاتي"
     Route.Favorites -> "المفضّلة"
     is Route.Category -> content.categoryById[route.id]?.name ?: "الأقسام"

@@ -59,6 +59,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material.icons.filled.Undo
@@ -550,6 +551,7 @@ private fun notificationIcon(type: String): ImageVector = when (type) {
     "book" -> Icons.Filled.MenuBook
     "submission" -> Icons.Filled.HowToVote
     "transcript" -> Icons.Filled.MenuBook
+    "update" -> Icons.Filled.SystemUpdate
     else -> Icons.Filled.Campaign
 }
 
@@ -594,6 +596,9 @@ fun NotificationsScreen(vm: AppViewModel) {
 
     fun openTarget(n: NotificationItem) {
         when (n.type) {
+            // 🛒 «صدر إصدار جديد»: نقرة واحدة من هنا تفتح المتجر مباشرة،
+            // كما تفعل نقرة الإشعار نفسه. لا رابط يُعرض ولا خطوة وسيطة.
+            "update" -> vm.openStore("")
             "submission", "transcript" -> vm.open(Route.MySubmissions)
             // الكتب أُزيلت من التطبيق عمداً — نوضّح ذلك بدل فتح شاشة خاطئة.
             "book" -> vm.showMessage("الكتب لم تعد ضمن التطبيق — المحتوى صوتيّ فقط.")

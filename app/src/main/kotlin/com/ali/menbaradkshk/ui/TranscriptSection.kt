@@ -196,6 +196,10 @@ fun TranscriptSection(vm: AppViewModel, lesson: Lesson) {
                                 t.text,
                                 style = MaterialTheme.typography.bodyLarge,
                                 lineHeight = 30.sp,
+                                // التحديد اليدوي يبقى متاحاً لمن أراد جزءاً
+                                // بعينه، والضغطة المطوّلة تنسخ النصّ كلّه
+                                // بخطوة واحدة — وهي ما يريده أغلب الناس.
+                                modifier = Modifier.copyable(t.text),
                             )
                         }
                     }

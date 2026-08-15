@@ -92,7 +92,7 @@ class PlaybackService : MediaSessionService() {
                             val saved = store.position(trackedLessonId)
                             if (saved > 3_000L) seekTo(saved)
                         }
-                        if (trackedLessonId.isNotBlank()) {
+                        if (trackedLessonId.isNotBlank() && isLesson(trackedLessonId)) {
                             // السجل يقصد الفتح فعلاً فيبقى فوريّاً؛ أمّا عدّاد
                             // الاستماع والمشاهدة فيؤجَّلان إلى استماع فعليّ
                             // (انظر [countPlayIfListenedEnough]) — كانا يُحتسبان
@@ -112,6 +112,7 @@ class PlaybackService : MediaSessionService() {
                     ) {
                         val oldId = oldPosition.mediaItem?.mediaId.orEmpty()
                         if (oldId.isBlank() || oldId == newPosition.mediaItem?.mediaId) return
+                        if (!isLesson(oldId)) return
                         if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) {
                             store.markCompleted(oldId)
                         } else {
@@ -121,10 +122,12 @@ class PlaybackService : MediaSessionService() {
 
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         if (playbackState == Player.STATE_READY && duration > 0L) {
-                            store.setDuration(currentMediaItem?.mediaId.orEmpty(), duration)
+                            currentMediaItem?.mediaId?.takeIf(::isLesson)
+                                ?.let { store.setDuration(it, duration) }
                         }
                         if (playbackState == Player.STATE_ENDED) {
-                            currentMediaItem?.mediaId?.takeIf(String::isNotBlank)
+                            currentMediaItem?.mediaId
+                                ?.takeIf { it.isNotBlank() && isLesson(it) }
                                 ?.let(store::markCompleted)
                         }
                     }
@@ -147,7 +150,7 @@ class PlaybackService : MediaSessionService() {
                 if (player.isPlaying) {
                     val current = player.currentPosition.coerceAtLeast(0L)
                     val delta = (current - lastTrackedPositionMs).coerceIn(0L, TRACK_INTERVAL_MS * 2)
-                    if (delta > 0L) {
+                    if (delta > 0L && isLesson(player.currentMediaItem?.mediaId.orEmpty())) {
                         store.addListenSeconds(delta / 1_000L)
                         // سلسلة الاستماع تتقدّم بالاستماع الفعلي لا بإتمام الدرس فقط.
                         store.recordDailyListen()
@@ -183,7 +186,7 @@ class PlaybackService : MediaSessionService() {
     /// يحتسب الاستماع بعد [COUNT_AFTER_MS] من السماع الفعليّ لا بمجرّد الفتح.
     private fun countPlayIfListenedEnough() {
         val id = trackedLessonId
-        if (playCounted || id.isBlank() || listenedMs < COUNT_AFTER_MS) return
+        if (playCounted || id.isBlank() || !isLesson(id) || listenedMs < COUNT_AFTER_MS) return
         playCounted = true
         store.incrementPlayCount(id)
         scope.launch { ContentRepository.get(this@PlaybackService).incrementView(id) }
@@ -216,7 +219,7 @@ class PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession
 
     private fun persistPosition() {
-        val id = trackedLessonId.takeIf(String::isNotBlank) ?: return
+        val id = trackedLessonId.takeIf { it.isNotBlank() && isLesson(it) } ?: return
         val position = player.currentPosition.coerceAtLeast(0L)
         val duration = player.duration.takeIf { it > 0L } ?: 0L
         if (duration > 0L && position >= duration - 3_000L) {
@@ -242,6 +245,20 @@ class PlaybackService : MediaSessionService() {
     }
 
     companion object {
+        /**
+         * 🕌 بادئة معرّفات آيات المصحف في قائمة التشغيل.
+         *
+         * المصحف يتشارك المشغّل نفسه مع الدروس (فيربح التشغيل في الخلفية
+         * وإشعار التحكّم والسمّاعات بلا شيفرة جديدة)، لكنّه **يجب ألّا يدخل
+         * إحصاءات الدروس بحال**: لو دخل لامتلأت «تابع الاستماع» و«الأكثر
+         * استماعاً» و«حصادك» بآيات، ولأُرسِلت مشاهدات وهميّة لدروس غير
+         * موجودة. فكل كتابة إلى المخزن مشروطة بـ[isLesson].
+         */
+        const val QURAN_ID_PREFIX = "q:"
+
+        /** هل هذا المعرّف درساً حقيقياً (لا آية مصحف)؟ */
+        fun isLesson(mediaId: String): Boolean = !mediaId.startsWith(QURAN_ID_PREFIX)
+
         private const val TRACK_INTERVAL_MS = 5_000L
         /// دورة فحص مؤقّت النوم حين لا يكون قريباً؛ عند اقترابه ننام مدّته بالضبط.
         private const val SLEEP_POLL_MS = 15_000L

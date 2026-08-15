@@ -75,6 +75,16 @@
                 android:resource="@xml/widget_now_playing_info" />
         </receiver>
 
+        <!-- 🛒 وسيط صامت إلى المتجر: يفتح صفحة التطبيق في Play مباشرة بلا
+             واجهة ولا رابط ظاهر. `exported=false` — لا يستدعيه إلا إشعاراتنا. -->
+        <activity
+            android:name=".util.StoreRedirectActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

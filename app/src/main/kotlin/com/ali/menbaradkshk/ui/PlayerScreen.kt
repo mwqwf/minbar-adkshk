@@ -291,7 +291,11 @@ fun PlayerScreen(
             Spacer(Modifier.height(18.dp))
             Text(
                 current.displayTitle,
-                modifier = Modifier.fillMaxWidth(),
+                // ضغطة مطوّلة تنسخ عنوان الدرس — يستعمله الناس في المشاركة
+                // والبحث عن الدرس نفسه في مكان آخر.
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .copyable(current.displayTitle),
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.titleLarge,
             )

@@ -42,6 +42,10 @@ data class PlaybackUiState(
     val sleepEndsAtMs: Long? = null,
     val autoplay: Boolean = true,
     val error: String? = null,
+    /// موضع العنصر الحالي في قائمة التشغيل — عليه يقوم **تمييز الآية الجارية**
+    /// في المصحف: كل آية عنصرٌ مستقلّ، فالفهرس نفسه هو رقم الآية بلا حاجة
+    /// إلى أي ملفّ توقيتات.
+    val itemIndex: Int = 0,
 )
 
 /// «تشغيل تلقائي للتالي» — قيمة جلسة (تعود true عند إعادة تشغيل التطبيق) كما في الأصل.
@@ -194,6 +198,45 @@ class PlaybackController(context: Context) {
         player.play()
     }
 
+    /**
+     * 🕌 تشغيل تلاوة المصحف — قائمة آيات، كل آية ملفّ مستقلّ.
+     *
+     * **لماذا هذا التصميم بالذات؟** لأنّه يمنحنا المزامنة الدقيقة مجّاناً:
+     * حين تكون كل آية عنصراً في قائمة التشغيل، يصير `currentMediaItemIndex`
+     * هو رقم الآية الجاري تلاوتها بالضبط — فلا نحتاج ملفّات توقيتات ولا
+     * حسابات تقريبيّة، والانتقال إلى آية بعينها هو `seekTo(index)` لا أكثر.
+     * ونرث مع ذلك كلّ ما في الخدمة أصلاً: تشغيل في الخلفية، إشعار تحكّم،
+     * أزرار السمّاعة، ومؤقّت النوم.
+     *
+     * المعرّفات كلّها ببادئة [PlaybackService.QURAN_ID_PREFIX] فلا تختلط
+     * تلاوة المصحف بإحصاءات الدروس بحال.
+     */
+    fun playQuran(items: List<MediaItem>, startIndex: Int = 0) {
+        val player = controller
+        if (player == null) {
+            if (!released) pendingPlay = { playQuran(items, startIndex) }
+            return
+        }
+        if (items.isEmpty()) return
+        // المصحف ليس درساً: نُبطل ملاذ إعادة البناء كي لا يُعيد `replayLast`
+        // درساً قديماً مكان التلاوة بعد موت الخدمة.
+        lastLesson = null
+        lastQueue = emptyList()
+        _state.value = _state.value.copy(error = null)
+        player.setMediaItems(items, startIndex.coerceIn(0, items.lastIndex), 0L)
+        player.prepare()
+        player.play()
+    }
+
+    /** الانتقال إلى آية بعينها داخل التلاوة الجارية. */
+    fun seekToItem(index: Int) {
+        val player = controller ?: return
+        if (index !in 0 until player.mediaItemCount) return
+        prepareIfIdle(player)
+        player.seekTo(index, 0L)
+        player.play()
+    }
+
     fun toggle() {
         val player = controller
         if (player == null) {
@@ -337,6 +380,7 @@ class PlaybackController(context: Context) {
             hasNext = player.hasNextMediaItem(),
             hasPrevious = player.hasPreviousMediaItem(),
             autoplay = AutoplayState.enabled,
+            itemIndex = player.currentMediaItemIndex.coerceAtLeast(0),
         )
     }
 
@@ -352,6 +396,23 @@ class PlaybackController(context: Context) {
     }
 
     companion object {
+        /**
+         * 🕌 عنصر تلاوة — معرّفه ببادئة `q:` كي **لا** يدخل إحصاءات الدروس
+         * (انظر [PlaybackService.isLesson]).
+         */
+        fun quranItem(id: String, url: String, title: String, artist: String): MediaItem =
+            MediaItem.Builder()
+                .setMediaId(PlaybackService.QURAN_ID_PREFIX + id)
+                .setUri(Uri.parse(url))
+                .setMediaMetadata(
+                    MediaMetadata.Builder()
+                        .setTitle(title)
+                        .setArtist(artist)
+                        .setIsPlayable(true)
+                        .build(),
+                )
+                .build()
+
         /// بناء عنصر التشغيل من الدرس — يستعمله أيضاً استئناف الجلسة في `PlaybackService`.
         fun mediaItemFor(lesson: Lesson, localPath: String?): MediaItem {
             val uri = if (localPath != null) Uri.fromFile(File(localPath)) else Uri.parse(lesson.audioUrl)

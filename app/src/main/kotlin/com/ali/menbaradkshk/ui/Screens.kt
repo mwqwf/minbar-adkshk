@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadForOffline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
@@ -301,6 +302,11 @@ private fun QuickActions(vm: AppViewModel) {
         item { QuickChip(Icons.Filled.Radio, "إذاعة منبر", Teal) { vm.open(Route.Radio) } }
         item { QuickChip(Icons.Filled.DirectionsCar, "وضع القيادة", BlueBrand) { vm.open(Route.Car) } }
         item { QuickChip(Icons.Filled.Insights, "حصادك", OrangeBrand) { vm.open(Route.Stats) } }
+        // «تنزيلاتي» انتقلت من الشريط السفلي إلى هنا — **بجانب حصادك ووضع
+        // القيادة بطلب صريح**. شريحة عريضة باسمها وأيقونتها أظهر بكثير من
+        // أيقونة صغيرة في صفّ الأدوات، وهذا يهمّ: كثير من مستخدمي التطبيق
+        // لا يقرؤون العربية جيّداً، والأيقونة وحدها بلا اسم لا تُفهَم.
+        item { QuickChip(Icons.Filled.Download, "تنزيلاتي", GreenBrand) { vm.open(Route.Downloads) } }
     }
 }
 

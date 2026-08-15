@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.HistoryEdu
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.MicExternalOn
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.NotificationsNone
@@ -41,6 +42,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LibraryMusic
+import androidx.compose.material.icons.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
@@ -99,7 +101,10 @@ private val rootTabs = listOf(
     RootTab(Route.Library, "المكتبة", Icons.AutoMirrored.Outlined.LibraryBooks, Icons.AutoMirrored.Filled.LibraryBooks),
     RootTab(Route.Adhkar, "الأذكار", Icons.Outlined.Star, Icons.Filled.Star),
     RootTab(Route.MyLists, "قوائمي", Icons.Outlined.LibraryMusic, Icons.Filled.LibraryMusic),
-    RootTab(Route.Downloads, "تنزيلاتي", Icons.Outlined.Download, Icons.Filled.Download),
+    // «المصحف» حلّت محلّ «تنزيلاتي» في الشريط السفلي: المصحف يُفتح كل يوم
+    // فيستحقّ مكاناً دائماً، والتنزيلات تُزار عند الحاجة فانتقلت إلى
+    // الإجراءات السريعة في الرئيسية بلا فقدان أيّ وظيفة.
+    RootTab(Route.Quran, "المصحف", Icons.Outlined.MenuBook, Icons.Filled.MenuBook),
 )
 
 /** مفتاح حالة يميّز محتوى المسار، ويتجاهل startAtMs المؤقت لنفس الدرس. */
@@ -111,6 +116,8 @@ private fun routeStateKey(route: Route): String = when (route) {
     is Route.AdhkarSection -> "AdhkarSection:${route.id}"
     Route.AdhkarReminders -> "AdhkarReminders"
     Route.Downloads -> "Downloads"
+    Route.Quran -> "Quran"
+    is Route.QuranSurah -> "QuranSurah:${route.number}"
     Route.Favorites -> "Favorites"
     is Route.Category -> "Category:${route.id}"
     is Route.Subcategory -> "Subcategory:${route.id}"
@@ -154,6 +161,38 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
             },
         )
         return
+    }
+
+    // 📣 التذكير عند فتح درس — يعمل فوق الشاشة لا بدلاً منها، ويُقيَّم مرّة
+    // واحدة لكل درس يُفتَح (مفتاح الدرس)، فالتنقّل داخل المشغّل لا يعيده.
+    var nudgeShownFor by remember { mutableStateOf<String?>(null) }
+    var nudgeVisible by remember { mutableStateOf(false) }
+    val lessonRoute = route as? Route.Lesson
+    LaunchedEffect(lessonRoute?.id, updateStatus) {
+        val lessonId = lessonRoute?.id
+        if (lessonId == null) {
+            nudgeVisible = false
+            return@LaunchedEffect
+        }
+        if (nudgeShownFor == lessonId) return@LaunchedEffect
+        if (!vm.shouldNudgeOnLesson(updateStatus)) return@LaunchedEffect
+        nudgeShownFor = lessonId
+        vm.noteLessonNudgeShown()
+        nudgeVisible = true
+    }
+    if (nudgeVisible) {
+        LessonUpdateNudge(
+            status = updateStatus,
+            onUpdate = {
+                nudgeVisible = false
+                vm.openStore("")
+            },
+            onLater = { nudgeVisible = false },
+            onMute = {
+                nudgeVisible = false
+                vm.muteLessonNudge(updateStatus)
+            },
+        )
     }
 
     // تأكيد التحميل الجماعي — حوار واحد على مستوى التطبيق: كل الشاشات
@@ -278,6 +317,9 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                                 StreakChip(vm)
                                 NotificationBell(vm)
                                 MySubmissionsButton(vm)
+                                // «تنزيلاتي» ليست هنا: مكانها شريحةٌ باسمها في
+                                // الإجراءات السريعة بجانب حصادك (طلب صريح).
+                                // مدخلان لشاشة واحدة ازدحامٌ بلا فائدة.
                                 IconButton(onClick = { vm.open(Route.Search()) }) {
                                     Icon(Icons.Filled.Search, "بحث")
                                 }
@@ -382,6 +424,8 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                 is Route.AdhkarSection -> AdhkarSectionScreen(vm, current.id)
                 Route.AdhkarReminders -> AdhkarRemindersScreen(vm)
                 Route.Downloads -> DownloadsScreen(vm)
+                Route.Quran -> QuranIndexScreen(vm)
+                is Route.QuranSurah -> QuranSurahScreen(vm, current.number, current.ayah, playback)
                 Route.Favorites -> MyListsScreen(vm, playback, initialTab = 0)
                 is Route.Category -> CategoryScreen(vm, current.id, content)
                 is Route.Subcategory -> LessonsScreen(vm, current.id, playback)
@@ -493,6 +537,96 @@ private fun UpdateScreen(
     }
 }
 
+/**
+ * 📣 تذكير التحديث عند فتح درس — الطبقة التي تصل إلى **كل** مستخدم.
+ *
+ * الطبقات الأخرى تفترض قارئاً يتابع: الإشعار يُهمَل، وشاشة التذكير الكاملة
+ * لا تظهر إلا مرّة كل ٢٤ ساعة عند الإقلاع. لكن فتح درس هو الفعل الذي يقوم به
+ * كل مستخدم كل يوم، فهو المكان الوحيد المضمون.
+ *
+ * **البساطة مقصودة إلى أقصى حدّ**: أيقونة كبيرة، سطران قصيران، زرّ أخضر
+ * عريض واحد. أغلب المستخدمين لا يقرؤون العربية جيّداً ولا يعرفون التقنية —
+ * فكل كلمة زائدة أو خيار إضافي يعني تحديثاً لا يحدث. والزرّ يفتح المتجر
+ * مباشرة بلا رابط ولا خطوة وسيطة.
+ *
+ * ولا يُحجَب شيء: «ليس الآن» يمرّر إلى الدرس فوراً، والحدّ مرّتان في اليوم.
+ */
+@Composable
+private fun LessonUpdateNudge(
+    status: AppConfigRepository.Status,
+    onUpdate: () -> Unit,
+    onLater: () -> Unit,
+    onMute: () -> Unit,
+) {
+    val required = status is AppConfigRepository.Status.Required
+    androidx.compose.ui.window.Dialog(onDismissRequest = onLater) {
+        Surface(
+            shape = RoundedCornerShape(22.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 22.dp, vertical = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Icon(
+                    Icons.Filled.SystemUpdate,
+                    contentDescription = null,
+                    modifier = Modifier.size(58.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    "حدِّث التطبيق",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    if (required) {
+                        "نسختك قديمة، وقد يتوقّف دعمها قريباً فلا تعمل كما ينبغي."
+                    } else {
+                        "صدرت نسخة أحدث. نسختك الحاليّة قد يتوقّف دعمها قريباً."
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "تنزيلاتك وقوائمك تبقى كما هي.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(22.dp))
+                Button(
+                    onClick = onUpdate,
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Text("تحديث الآن", style = MaterialTheme.typography.titleLarge)
+                }
+                Spacer(Modifier.height(4.dp))
+                TextButton(onClick = onLater, modifier = Modifier.fillMaxWidth()) {
+                    Text("ليس الآن")
+                }
+                // مخرج صريح لمن حسم أمره — يسكت هذه النسخة وحدها، ويعود
+                // التذكير حين تصدر نسخة أحدث منها.
+                TextButton(onClick = onMute, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "لا تُذكّرني مجدداً",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
 /// شريحة السلسلة 🔥 في الشريط العلوي — كانت مدفونة في ورقة الإعدادات
 /// و«حصادك» فقط، فلا يراها المستخدم حيث تحفّزه فعلاً. تظهر من يومين فصاعداً،
 /// والنقر يفتح «حصادك».
@@ -586,6 +720,9 @@ private fun titleFor(route: Route, vm: AppViewModel, content: ContentState): Str
     is Route.AdhkarSection -> com.ali.menbaradkshk.data.Adhkar.titleFor(route.id)
     Route.AdhkarReminders -> "تذكيرات الأذكار"
     Route.Downloads -> "تنزيلاتي"
+    Route.Quran -> "المصحف الكامل"
+    // اسم السورة نفسه عنواناً — أوضح من كلمة «المصحف» المكرَّرة.
+    is Route.QuranSurah -> vm.quranSurahName(route.number)
     Route.Favorites -> "المفضّلة"
     is Route.Category -> content.categoryById[route.id]?.name ?: "الأقسام"
     is Route.Subcategory -> content.subcategoryById[route.id]?.name ?: "الدروس"

@@ -122,6 +122,16 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (payload.isEmpty()) return null
+        // 🛒 حمولة «صدر إصدار جديد» حين يرسم النظام إشعارها (التطبيق في
+        // الخلفية): النقر يجب أن ينتهي في المتجر لا في الرئيسية. نقفز إليه
+        // هنا ولا نُبقي وجهةً داخل التطبيق — والرابط يبقى مخفياً.
+        if (MinbarMessagingService.isUpdate(payload)) {
+            com.ali.menbaradkshk.util.StoreRedirectActivity.open(
+                this,
+                payload["storeUrl"].orEmpty(),
+            )
+            return null
+        }
         val destination = MinbarMessagingService.destinationFor(payload) ?: return null
         return runCatching { Uri.parse(destination) }.getOrNull()
     }

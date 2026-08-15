@@ -102,6 +102,51 @@ class AppConfigRepository private constructor(context: Context) {
             .apply()
     }
 
+    // ---- 📣 التذكير عند فتح درس ----
+    //
+    // الطبقة الثالثة، وهي الأهم عملياً: أغلب مستخدمي التطبيق لا يقرؤون
+    // الإشعارات، وكثير منهم لا يقرأ العربية جيّداً ولا يعرف من التقنية شيئاً.
+    // فالمكان الوحيد المضمون أن يمرّ به كلّ مستخدم هو **فتح درس**. نعترض
+    // هناك برسالة قصيرة جدّاً بزرّ واحد كبير، لا أكثر من **مرّتين في اليوم**،
+    // ومع مخرج صريح لمن أراد السكوت.
+
+    /** هل نعترض فتح الدرس الآن بتذكير التحديث؟ */
+    fun shouldNudgeOnLesson(status: Status): Boolean {
+        val latest = when (status) {
+            is Status.Required -> status.latest
+            is Status.Optional -> status.latest
+            is Status.None -> return false
+        }
+        // «لا تُذكّرني مجدداً» يسكت هذه النسخة بعينها. صدور نسخة أحدث منها
+        // يُعيد التذكير — وإلا لصار خيار الصمت قراراً أبديّاً يُجمّد المستخدم
+        // على نسخة ميتة إلى الأبد.
+        if (prefs.getInt(KEY_LESSON_MUTED, 0) >= latest) return false
+        val now = System.currentTimeMillis()
+        val day = now / DAY_MS
+        val storedDay = prefs.getLong(KEY_LESSON_DAY, -1L)
+        val shownToday = if (storedDay == day) prefs.getInt(KEY_LESSON_COUNT, 0) else 0
+        if (shownToday >= MAX_LESSON_NUDGES_PER_DAY) return false
+        // فجوة بين التذكيرين في اليوم نفسه: مرّتان متلاصقتان تُقرآن إزعاجاً.
+        return now - prefs.getLong(KEY_LESSON_AT, 0L) >= LESSON_NUDGE_GAP_MS
+    }
+
+    fun markLessonNudged() {
+        val now = System.currentTimeMillis()
+        val day = now / DAY_MS
+        val storedDay = prefs.getLong(KEY_LESSON_DAY, -1L)
+        val shownToday = if (storedDay == day) prefs.getInt(KEY_LESSON_COUNT, 0) else 0
+        prefs.edit()
+            .putLong(KEY_LESSON_DAY, day)
+            .putInt(KEY_LESSON_COUNT, shownToday + 1)
+            .putLong(KEY_LESSON_AT, now)
+            .apply()
+    }
+
+    /** «لا تُذكّرني مجدداً» — صمتٌ لهذه النسخة، يزول حين تصدر نسخة أحدث. */
+    fun muteLessonNudge(latest: Int) {
+        prefs.edit().putInt(KEY_LESSON_MUTED, latest).apply()
+    }
+
     /// فحص فوريّ يتجاوز خانق الست ساعات — للفحص الدوريّ اليوميّ وللعودة
     /// إلى التطبيق بعد غياب: التذكير الذي يتأخّر ست ساعات عن الإصدار
     /// الجديد يفوّت أوّل يوم كامل من عمره.
@@ -162,6 +207,16 @@ class AppConfigRepository private constructor(context: Context) {
         private const val KEY_PROMPTED = "prompted_at_ms"
         private const val KEY_NOTIFIED = "notified_at_ms"
         private const val KEY_NOTIFIED_FOR = "notified_for"
+        private const val KEY_LESSON_DAY = "lesson_nudge_day"
+        private const val KEY_LESSON_COUNT = "lesson_nudge_count"
+        private const val KEY_LESSON_AT = "lesson_nudge_at_ms"
+        private const val KEY_LESSON_MUTED = "lesson_nudge_muted_for"
+
+        /// مرّتان في اليوم كحدّ أقصى — طلب صريح، والتوازن مقصود: كافٍ ليُرى،
+        /// قليل بما لا يُنفّر من التطبيق نفسه.
+        private const val MAX_LESSON_NUDGES_PER_DAY = 2
+        private const val LESSON_NUDGE_GAP_MS = 4 * 60 * 60 * 1000L
+        private const val DAY_MS = 24 * 60 * 60 * 1000L
         /// لا تتكرّر شاشة التذكير الاختياريّة قبل يوم كامل.
         private const val PROMPT_INTERVAL_MS = 24 * 60 * 60 * 1000L
         private const val CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L

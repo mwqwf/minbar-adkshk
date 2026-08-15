@@ -38,6 +38,11 @@ sealed interface Route {
     data object Library : Route
     data object Adhkar : Route
     data object MyLists : Route
+    data object Quran : Route
+
+    /// «تنزيلاتي» لم تعد تبويباً سفلياً — انتقلت إلى الإجراءات السريعة في
+    /// الرئيسية وأخلت مكانها للمصحف. المسار باقٍ كما هو: يُفتح من الرئيسية
+    /// ومن الإشعارات ومن الإعدادات، ويعرض الشاشة نفسها كاملة بلا نقصان.
     data object Downloads : Route
 
     /// المفضّلة لم تعد تبويباً مستقلاً — صارت تبويباً داخل «قوائمي». يبقى
@@ -61,6 +66,9 @@ sealed interface Route {
     data object About : Route
     data class AdhkarSection(val id: String) : Route
     data object AdhkarReminders : Route
+
+    /// قراءة سورة بعينها في المصحف؛ `ayah` فهرس مسطّح اختياري للقفز إليه.
+    data class QuranSurah(val number: Int, val ayah: Int? = null) : Route
 }
 
 /// صورة/نص وصلا من تطبيق خارجي عبر «المشاركة» لميزة «ساهم بالنص».
@@ -325,6 +333,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _updateStatus.value = AppConfigRepository.Status.None
     }
 
+    // ---- 📣 تذكير التحديث عند فتح درس ----
+
+    /// هل يُعترَض فتح الدرس الآن بتذكير التحديث؟ (مرّتان يومياً كحدّ أقصى.)
+    fun shouldNudgeOnLesson(status: AppConfigRepository.Status): Boolean =
+        appConfig.shouldNudgeOnLesson(status)
+
+    fun noteLessonNudgeShown() = appConfig.markLessonNudged()
+
+    /// «لا تُذكّرني مجدداً» — يسكت التذكير لهذه النسخة، ويعود عند نسخة أحدث.
+    fun muteLessonNudge(status: AppConfigRepository.Status) {
+        val latest = when (status) {
+            is AppConfigRepository.Status.Required -> status.latest
+            is AppConfigRepository.Status.Optional -> status.latest
+            else -> return
+        }
+        appConfig.muteLessonNudge(latest)
+    }
+
     fun openStoreFor(status: AppConfigRepository.Status) {
         val url = when (status) {
             is AppConfigRepository.Status.Required -> status.storeUrl
@@ -354,6 +380,97 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (runCatching { context.startActivity(intent) }.isSuccess) return
         }
         _message.value = "تعذّر فتح المتجر."
+    }
+
+    // ---- 🕌 المصحف الكامل ----
+
+    val quran = com.ali.menbaradkshk.data.QuranRepository.get(application)
+    private val _quranIndex =
+        MutableStateFlow<com.ali.menbaradkshk.data.QuranIndex?>(null)
+    val quranIndex: StateFlow<com.ali.menbaradkshk.data.QuranIndex?> = _quranIndex.asStateFlow()
+
+    /// الرواية المختارة — تُحفظ محلّياً فيعود المستخدم إلى مصحفه هو، ومبدؤها
+    /// **حفص** (الرواية الرئيسيّة بقرار صريح).
+    private val _riwaya = MutableStateFlow(store.quranRiwaya())
+    val riwaya: StateFlow<String> = _riwaya.asStateFlow()
+
+    private val _quranText = MutableStateFlow<List<String>>(emptyList())
+    val quranText: StateFlow<List<String>> = _quranText.asStateFlow()
+
+    private val _quranError = MutableStateFlow<String?>(null)
+    val quranError: StateFlow<String?> = _quranError.asStateFlow()
+
+    /// يُحمّل الفهرس ونصّ الرواية الحالية عند أوّل فتح للمصحف. البيانات
+    /// محلّية فالتحميل سريع، لكنّه يبقى خارج الخيط الرئيسي (فكّ gzip).
+    fun loadQuran() {
+        if (_quranIndex.value != null && _quranText.value.isNotEmpty()) return
+        viewModelScope.launch {
+            runCatching {
+                val index = quran.index()
+                _quranIndex.value = index
+                // رواية محفوظة لم تعد موجودة (حُذفت من الأصول) ⇒ نعود للافتراضيّة
+                // بدل الانهيار أو شاشة فارغة بلا تفسير.
+                val resolved = index.riwaya(_riwaya.value)
+                if (resolved.id != _riwaya.value) {
+                    _riwaya.value = resolved.id
+                    store.setQuranRiwaya(resolved.id)
+                }
+                _quranText.value = quran.text(resolved.id)
+                _quranError.value = null
+            }.onFailure {
+                _quranError.value = "تعذّر فتح المصحف. أعد تشغيل التطبيق."
+            }
+        }
+    }
+
+    fun setRiwaya(id: String) {
+        if (_riwaya.value == id) return
+        _riwaya.value = id
+        store.setQuranRiwaya(id)
+        viewModelScope.launch {
+            runCatching { _quranText.value = quran.text(id) }
+                .onFailure { _quranError.value = "تعذّر فتح هذه الرواية." }
+        }
+    }
+
+    fun quranSurahName(number: Int): String =
+        _quranIndex.value?.surahs?.firstOrNull { it.number == number }?.let { "سورة ${it.name}" }
+            ?: "المصحف"
+
+    /**
+     * 🎧 تشغيل التلاوة من آية بعينها إلى آخر السورة.
+     *
+     * كل آية عنصرٌ مستقلّ في قائمة التشغيل، فيصير تمييز الآية الجارية مجّانياً
+     * ودقيقاً (فهرس العنصر = رقم الآية) بلا أيّ ملفّ توقيتات.
+     */
+    fun playQuran(
+        surah: com.ali.menbaradkshk.data.Surah,
+        reciter: com.ali.menbaradkshk.data.Reciter,
+        fromAyah: Int = 1,
+    ) {
+        if (!reciter.perAyah) {
+            // قارئ بملفّ سورة كاملة: لا تمييز آية بآية، لكنّ التلاوة تعمل.
+            playback.playQuran(
+                listOf(
+                    com.ali.menbaradkshk.media.PlaybackController.quranItem(
+                        id = "s${surah.number}",
+                        url = reciter.surahUrl(surah.number),
+                        title = "سورة ${surah.name}",
+                        artist = reciter.name,
+                    ),
+                ),
+            )
+            return
+        }
+        val items = (1..surah.ayahs).map { ayah ->
+            com.ali.menbaradkshk.media.PlaybackController.quranItem(
+                id = "${surah.number}:$ayah",
+                url = reciter.ayahUrl(surah.number, ayah),
+                title = "${surah.name} — الآية $ayah",
+                artist = reciter.name,
+            )
+        }
+        playback.playQuran(items, (fromAyah - 1).coerceIn(0, items.lastIndex))
     }
 
     // ---- تذكيرات الأذكار (محلّية بحتة) ----

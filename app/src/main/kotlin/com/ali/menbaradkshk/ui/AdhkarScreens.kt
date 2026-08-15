@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.LightMode
@@ -50,6 +51,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -70,6 +72,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.menbaradkshk.data.Adhkar
 import com.ali.menbaradkshk.data.Dhikr
+import com.ali.menbaradkshk.data.LocalStore
 
 /// أيقونة ولون لكل قسم — تمييز بصري سريع بلا صور (خفّة).
 private fun iconFor(id: String): ImageVector = when (id) {
@@ -213,6 +216,7 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
         vm.store.adhkarCompleted(sectionId, items.map { it.repeat })
     }
     val allDone = items.isNotEmpty() && completed >= items.size
+    val fontSp = remember(revision) { vm.store.adhkarFontSp() }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -239,6 +243,12 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
             }
         }
 
+        // 🔎 مكبّر خطّ الأذكار — في متناول اليد داخل الشاشة نفسها لا مدفوناً
+        // في الإعدادات: مَن يحتاجه (كبير السنّ) هو أقلّ الناس بحثاً في
+        // القوائم. زرّان كبيران بحرفَي «أ» بحجمين مختلفين — رمز مفهوم بلا
+        // قراءة، وهذا مقصود: كثير من المستخدمين لا يقرأ العربية جيّداً.
+        AdhkarFontControls(vm, fontSp)
+
         if (allDone) {
             Text(
                 "تقبّل الله منك 🤍",
@@ -264,6 +274,13 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
                 DhikrCard(
                     dhikr = items[index],
                     done = done,
+                    fontSp = fontSp,
+                    onCopy = {
+                        copyToClipboard(
+                            context,
+                            items[index].text + "\n\n" + items[index].source,
+                        )
+                    },
                     onTap = {
                         val current = vm.store.adhkarDone(sectionId, index) ?: 0L
                         val target = items[index].repeat.toLong()
@@ -305,12 +322,66 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
     }
 }
 
+/**
+ * 🔎 شريط تكبير خطّ الأذكار.
+ *
+ * ثلاثة أزرار فقط: تصغير، الحجم الحالي (نقرة تُعيده إلى الافتراضي)، تكبير.
+ * الخطوة 3sp — ناعمة بما يكفي ليصل المستخدم إلى مقاسه بالضبط، وكبيرة بما
+ * يكفي ليشعر بالفرق من أوّل ضغطة فلا يظنّ الزرّ معطّلاً.
+ */
+@Composable
+private fun AdhkarFontControls(vm: AppViewModel, current: Float) {
+    val atMin = current <= LocalStore.ADHKAR_FONT_MIN
+    val atMax = current >= LocalStore.ADHKAR_FONT_MAX
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.End,
+    ) {
+        IconButton(
+            onClick = { vm.store.setAdhkarFontSp(current - FONT_STEP_SP) },
+            enabled = !atMin,
+        ) {
+            Text(
+                "أ",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                color = if (atMin) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .35f) else Teal,
+            )
+        }
+        // النقر على الرقم يُرجع الحجم الافتراضي — مخرج آمن لمن كبّر أكثر
+        // ممّا ينبغي ولا يعرف كيف يعود.
+        TextButton(onClick = { vm.store.setAdhkarFontSp(LocalStore.ADHKAR_FONT_DEFAULT) }) {
+            Text(
+                "${current.toInt()}",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        IconButton(
+            onClick = { vm.store.setAdhkarFontSp(current + FONT_STEP_SP) },
+            enabled = !atMax,
+        ) {
+            Text(
+                "أ",
+                fontSize = 26.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (atMax) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .35f) else Teal,
+            )
+        }
+    }
+}
+
+private const val FONT_STEP_SP = 3f
+
 @Composable
 private fun DhikrCard(
     dhikr: Dhikr,
     done: Long,
+    fontSp: Float,
     onTap: () -> Unit,
     onShare: () -> Unit,
+    onCopy: () -> Unit,
 ) {
     val target = dhikr.repeat.toLong()
     val finished = done >= target
@@ -334,10 +405,16 @@ private fun DhikrCard(
             Text(
                 dhikr.text,
                 style = MaterialTheme.typography.bodyLarge.copy(
-                    fontSize = 19.sp,
-                    lineHeight = 34.sp,
+                    fontSize = fontSp.sp,
+                    // ارتفاع السطر يتبع الحجم نسبياً (١.٧٥×): ثابتاً كان
+                    // النصّ المكبَّر يتراكب على نفسه ويصير غير مقروء أصلاً.
+                    lineHeight = (fontSp * 1.75f).sp,
                 ),
-                modifier = Modifier.fillMaxWidth().graphicsLayer { this.alpha = alpha },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer { this.alpha = alpha }
+                    // ضغطة مطوّلة على نصّ الذكر تنسخه — بلا زرّ إضافي.
+                    .copyableOnLongPress(text = { dhikr.text }, onClick = onTap),
                 textAlign = TextAlign.Justify,
             )
             if (dhikr.note.isNotBlank()) {
@@ -371,6 +448,14 @@ private fun DhikrCard(
                             fontWeight = FontWeight.Bold,
                         )
                     }
+                }
+                IconButton(onClick = onCopy) {
+                    Icon(
+                        Icons.Filled.ContentCopy,
+                        "نسخ الذكر",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 IconButton(onClick = onShare) {
                     Icon(

@@ -120,6 +120,10 @@ android {
     // الإبقاء على العربيّة + الافتراضيّة يقلّص الحزمة دون أي أثر على الواجهة.
     androidResources {
         localeFilters += listOf("ar")
+        // 🕌 أصول المصحف (`.jz`) مضغوطة بـgzip أصلاً؛ إعادة ضغطها في الحزمة
+        // لا تُنقص بايتاً وتُبطئ البناء. والامتداد محايد عمداً: لاحقة `.gz`
+        // تجعل AGP يفكّ الضغط ويحذف اللاحقة فيختفي الملف الذي يطلبه الكود.
+        noCompress += "jz"
     }
     packaging {
         // These two dependency binaries are already stripped by their publishers. Avoid asking

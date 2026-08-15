@@ -188,6 +188,7 @@ class UpdateCheckWorker(
             body = message.ifBlank { "حدِّث التطبيق لتصلك المزايا والإصلاحات الجديدة." },
             destination = com.ali.menbaradkshk.data.AppConfigRepository.PLAY_URL,
             channel = NotificationChannels.CONTENT,
+            toStore = true,
         )
         return Result.success()
     }
@@ -328,11 +329,18 @@ private object NotificationPublisher {
         body: String,
         destination: String,
         channel: String,
+        /// حين تكون الوجهة المتجر: نقفز إليه مباشرة عبر الوسيط الصامت بدل
+        /// فتح التطبيق. الرابط لا يظهر للمستخدم في الحالتين.
+        toStore: Boolean = false,
     ) {
-        val intent = Intent(context, MainActivity::class.java).apply {
-            action = Intent.ACTION_VIEW
-            data = android.net.Uri.parse(destination)
-            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        val intent = if (toStore) {
+            com.ali.menbaradkshk.util.StoreRedirectActivity.intent(context, destination)
+        } else {
+            Intent(context, MainActivity::class.java).apply {
+                action = Intent.ACTION_VIEW
+                data = android.net.Uri.parse(destination)
+                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
         }
         val pendingIntent = PendingIntent.getActivity(
             context,

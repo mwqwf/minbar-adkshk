@@ -319,6 +319,60 @@ class LocalStore private constructor(context: Context) {
     fun setFontScale(value: Float) =
         write { putFloat(KEY_FONT_SCALE, value.coerceIn(0.8f, 1.4f)) }
 
+    /**
+     * 🔎 حجم خطّ الأذكار — مستقلّ عن `fontScale` العام عمداً.
+     *
+     * منزلق الإعدادات العام محصور في 0.8–1.4 لأنّ تكبيره أكثر يكسر تخطيط
+     * القوائم والأشرطة. لكنّ الأذكار **نصّ يُقرأ ويُردَّد**، وكثير من قرّائه
+     * كبار سنّ لا يبصرون 19sp. فله مقياسه الخاصّ يصل إلى **64sp** — ثلاثة
+     * أضعاف الافتراضي — بلا أن يمسّ بقيّة التطبيق بشيء.
+     */
+    fun adhkarFontSp(): Float =
+        double(KEY_ADHKAR_FONT, ADHKAR_FONT_DEFAULT.toDouble()).toFloat()
+            .coerceIn(ADHKAR_FONT_MIN, ADHKAR_FONT_MAX)
+
+    fun setAdhkarFontSp(value: Float) = write {
+        putFloat(KEY_ADHKAR_FONT, value.coerceIn(ADHKAR_FONT_MIN, ADHKAR_FONT_MAX))
+    }
+
+    // ---- 🕌 تفضيلات المصحف ----
+
+    /// الرواية المختارة — حفص افتراضاً (الرواية الرئيسيّة).
+    fun quranRiwaya(): String = string(KEY_QURAN_RIWAYA, QuranRepository.DEFAULT_RIWAYA)
+    fun setQuranRiwaya(value: String) = write { putString(KEY_QURAN_RIWAYA, value) }
+
+    /// القارئ المختار لكل رواية على حدة (لكل رواية قرّاؤها).
+    fun quranReciter(riwaya: String): String = string("$KEY_QURAN_RECITER$riwaya", "")
+    fun setQuranReciter(riwaya: String, value: String) =
+        write { putString("$KEY_QURAN_RECITER$riwaya", value) }
+
+    /// حجم خطّ المصحف — مدى أوسع من خطّ الواجهة لأنّ الرسم العثماني يحتاج
+    /// حجماً أكبر ليُقرأ بوضوح، ولأنّ كثيراً من قرّائه كبار سنّ.
+    fun quranFontSp(): Float =
+        double(KEY_QURAN_FONT, QURAN_FONT_DEFAULT.toDouble()).toFloat()
+            .coerceIn(QURAN_FONT_MIN, QURAN_FONT_MAX)
+
+    fun setQuranFontSp(value: Float) = write {
+        putFloat(KEY_QURAN_FONT, value.coerceIn(QURAN_FONT_MIN, QURAN_FONT_MAX))
+    }
+
+    /**
+     * 💡 تلميح «استمع إلى تلاوة هذه الرواية داخل المنبر».
+     *
+     * تلميح خفيف يظهر من حين لآخر في المصحف ثم **يختفي وحده** ولو لم يُلمس.
+     * المخزن يحفظ أمرين فقط: آخر مرّة ظهر فيها، وهل أوقفه المستخدم نهائياً.
+     */
+    fun quranHintMutedForever(): Boolean = bool(KEY_QURAN_HINT_MUTED)
+    fun setQuranHintMutedForever(value: Boolean) =
+        write { putBoolean(KEY_QURAN_HINT_MUTED, value) }
+
+    fun quranHintShownAtMs(): Long = long(KEY_QURAN_HINT_AT)
+    fun markQuranHintShown() = write { putLong(KEY_QURAN_HINT_AT, System.currentTimeMillis()) }
+
+    /// آخر موضع قراءة (فهرس مسطّح) — يفتح المصحف حيث تركه صاحبه.
+    fun quranLastAyah(): Int = long(KEY_QURAN_LAST, 0L).toInt()
+    fun setQuranLastAyah(value: Int) = write { putLong(KEY_QURAN_LAST, value.toLong()) }
+
     fun autoDownloadEnabled(): Boolean = bool(KEY_AUTO_DOWNLOAD)
     fun setAutoDownloadEnabled(value: Boolean) = write { putBoolean(KEY_AUTO_DOWNLOAD, value) }
     fun autoDownloadTarget(): String? = string(KEY_AUTO_TARGET).takeIf { it.isNotBlank() }
@@ -819,6 +873,24 @@ class LocalStore private constructor(context: Context) {
         const val KEY_QUEUE_WIFI_IDS = "download_queue_wifi_ids"
         const val KEY_THEME = "theme_mode"
         const val KEY_FONT_SCALE = "font_scale"
+        const val KEY_ADHKAR_FONT = "adhkar_font_sp"
+
+        /// مدى خطّ الأذكار بالنقاط: من مقروء عادي إلى **كبير جدّاً** لكبار
+        /// السنّ وضعاف البصر. الحدّ الأعلى مختار عملياً: أكبر منه يجعل الذكر
+        /// الواحد لا يتّسع في شاشة كاملة فيصير التمرير عائقاً لا عوناً.
+        const val ADHKAR_FONT_MIN = 16f
+        const val ADHKAR_FONT_DEFAULT = 19f
+        const val ADHKAR_FONT_MAX = 64f
+
+        const val KEY_QURAN_RIWAYA = "quran_riwaya"
+        const val KEY_QURAN_RECITER = "quran_reciter_"
+        const val KEY_QURAN_FONT = "quran_font_sp"
+        const val KEY_QURAN_LAST = "quran_last_ayah"
+        const val KEY_QURAN_HINT_MUTED = "quran_hint_muted"
+        const val KEY_QURAN_HINT_AT = "quran_hint_at_ms"
+        const val QURAN_FONT_MIN = 20f
+        const val QURAN_FONT_DEFAULT = 26f
+        const val QURAN_FONT_MAX = 72f
         const val KEY_AUTO_DOWNLOAD = "auto_dl_enabled"
         const val KEY_AUTO_TARGET = "auto_dl_target"
         const val KEY_WIFI_ONLY = "auto_dl_wifi_only"

@@ -11,6 +11,7 @@ import androidx.core.content.ContextCompat
 import com.ali.menbaradkshk.MainActivity
 import com.ali.menbaradkshk.R
 import com.ali.menbaradkshk.data.LocalStore
+import com.ali.menbaradkshk.util.StoreRedirectActivity
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
@@ -21,10 +22,18 @@ class MinbarMessagingService : FirebaseMessagingService() {
         val title = message.notification?.title ?: message.data["title"] ?: getString(R.string.app_name)
         val body = message.notification?.body ?: message.data["body"].orEmpty()
         val destination = destinationFor(message.data)
-        val intent = Intent(this, MainActivity::class.java).apply {
-            action = Intent.ACTION_VIEW
-            destination?.let { data = android.net.Uri.parse(it) }
-            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        // 🛒 إشعار الإصدار الجديد يقفز إلى المتجر مباشرة، لا إلى التطبيق:
+        // فتح التطبيق ثم انتظار أن يعثر المستخدم على زرّ التحديث بنفسه هو
+        // بالضبط ما يجعل نسخاً قديمة تبقى شهوراً. والرابط يبقى مخفياً في
+        // النيّة — لا يراه المستخدم ولا يُطالَب بنسخه.
+        val intent = if (isUpdate(message.data)) {
+            StoreRedirectActivity.intent(this, message.data["storeUrl"].orEmpty())
+        } else {
+            Intent(this, MainActivity::class.java).apply {
+                action = Intent.ACTION_VIEW
+                destination?.let { data = android.net.Uri.parse(it) }
+                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
         }
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -57,6 +66,16 @@ class MinbarMessagingService : FirebaseMessagingService() {
     }
 
     companion object {
+        /**
+         * هل هذه حمولة «صدر إصدار جديد»؟ وجهتها المتجر لا التطبيق.
+         *
+         * نقبل `type=update` (ما ترسله الدالة السحابيّة اليوم) وكذلك أي
+         * حمولة يدويّة تحمل `route=store` — كي يستطيع المالك دفع تذكير
+         * تحديث من اللوحة بلا نشر دالة جديدة.
+         */
+        fun isUpdate(data: Map<String, String>): Boolean =
+            data["type"]?.trim() == "update" || data["route"]?.trim() == "store"
+
         /**
          * «الحمولة ← وجهة» — مصدر الحقيقة الوحيد للتوجيه، يستعمله هذا
          * المستقبل (رسائل التطبيق في المقدّمة) و`MainActivity` معاً (نقر

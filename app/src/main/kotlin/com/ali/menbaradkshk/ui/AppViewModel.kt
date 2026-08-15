@@ -142,6 +142,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
+    /**
+     * ↩️ رسالة مع «تراجع».
+     *
+     * قاعدة التطبيق في الحذف: **ما لا يُتراجَع عنه يُسأل عنه قبل وقوعه**
+     * (حوار تأكيد، كحذف التنزيلات وقوائم التشغيل)، **وما يُتراجَع عنه ينفَّذ
+     * فوراً مع مخرج ظاهر** (هذا). كلاهما «خيار واضح»، والفرق أنّ الثاني لا
+     * يُبطئ الفعل الرخيص بسؤال في كل مرّة.
+     */
+    data class ActionMessage(
+        val text: String,
+        val actionLabel: String,
+        val action: () -> Unit,
+    )
+
+    private val _undo = MutableStateFlow<ActionMessage?>(null)
+    val undo: StateFlow<ActionMessage?> = _undo.asStateFlow()
+
+    /// الوسم قابل للتخصيص لأنّ الفعل ليس دائماً «تراجعاً»: قد يكون اقتراحاً
+    /// («جرّب هذا القارئ») — والوسم المطابق للفعل هو ما يجعله مفهوماً بلا شرح.
+    fun showUndo(message: String, actionLabel: String = "تراجع", action: () -> Unit) {
+        _undo.value = ActionMessage(message, actionLabel, action)
+    }
+
+    fun consumeUndo() {
+        _undo.value = null
+    }
+
     /// آخر ختم «رآه المستخدم» قبل فتح شاشة الإشعارات. الختم نفسه يُحدَّث فور
     /// الفتح (لتصفير شارة الجرس)، فلو قرأته الشاشة لظهر كل شيء مقروءاً ولما
     /// عرف المستخدم ما الجديد — فنلتقطه هنا **قبل** التحديث ونمرّره للشاشة.
@@ -442,19 +469,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      *
      * كل آية عنصرٌ مستقلّ في قائمة التشغيل، فيصير تمييز الآية الجارية مجّانياً
      * ودقيقاً (فهرس العنصر = رقم الآية) بلا أيّ ملفّ توقيتات.
+     *
+     * والملفّ المحلّي يسبق الشبكة دائماً حين يكون منزَّلاً — فتعمل التلاوة
+     * بلا إنترنت، وبلا استهلاك بيانات لمن نزّلها مرّة.
      */
     fun playQuran(
         surah: com.ali.menbaradkshk.data.Surah,
         reciter: com.ali.menbaradkshk.data.Reciter,
         fromAyah: Int = 1,
     ) {
+        fun source(ayah: Int, remote: String): String =
+            quranDownloads.localAyah(reciter.id, surah.number, ayah)
+                ?.let { "file://$it" }
+                ?: remote
+
         if (!reciter.perAyah) {
             // قارئ بملفّ سورة كاملة: لا تمييز آية بآية، لكنّ التلاوة تعمل.
             playback.playQuran(
                 listOf(
                     com.ali.menbaradkshk.media.PlaybackController.quranItem(
-                        id = "s${surah.number}",
-                        url = reciter.surahUrl(surah.number),
+                        id = "${surah.number}:1",
+                        url = source(1, reciter.surahUrl(surah.number)),
                         title = "سورة ${surah.name}",
                         artist = reciter.name,
                     ),
@@ -465,12 +500,116 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val items = (1..surah.ayahs).map { ayah ->
             com.ali.menbaradkshk.media.PlaybackController.quranItem(
                 id = "${surah.number}:$ayah",
-                url = reciter.ayahUrl(surah.number, ayah),
+                url = source(ayah, reciter.ayahUrl(surah.number, ayah)),
                 title = "${surah.name} — الآية $ayah",
                 artist = reciter.name,
             )
         }
         playback.playQuran(items, (fromAyah - 1).coerceIn(0, items.lastIndex))
+    }
+
+    // ---- ⬇️ تنزيل التلاوة للعمل بلا إنترنت ----
+
+    val quranDownloads = com.ali.menbaradkshk.data.QuranDownloadRepository.get(application)
+
+    private var quranDownloadJob: kotlinx.coroutines.Job? = null
+
+    fun downloadSurah(
+        surah: com.ali.menbaradkshk.data.Surah,
+        reciter: com.ali.menbaradkshk.data.Reciter,
+    ) {
+        if (quranDownloadJob?.isActive == true) {
+            _message.value = "هناك تنزيل جارٍ — انتظر انتهاءه."
+            return
+        }
+        quranDownloadJob = viewModelScope.launch {
+            runCatching { quranDownloads.downloadSurah(reciter, surah.number, surah.ayahs) }
+                .onSuccess { _message.value = "نُزّلت سورة ${surah.name} — تعمل بلا إنترنت." }
+                .onFailure {
+                    if (it !is kotlinx.coroutines.CancellationException) {
+                        _message.value = "تعذّر إكمال التنزيل — أعد المحاولة."
+                    }
+                }
+        }
+    }
+
+    fun cancelSurahDownload() {
+        quranDownloadJob?.cancel()
+        quranDownloadJob = null
+    }
+
+    /**
+     * ⬇️ تنزيل **المصحف كاملاً** بالتلاوة المختارة، سورةً بعد سورة.
+     *
+     * عمليّة طويلة بطبيعتها (مئات الميغابايتات)، فهي:
+     *  - تتخطّى ما نُزّل أصلاً، فإعادة تشغيلها بعد انقطاع تُكمل لا تُعيد؛
+     *  - قابلة للإلغاء في أي لحظة بالزرّ نفسه؛
+     *  - وتُبقي ما نُزّل — لا تُلغى بالجملة عند التوقّف.
+     */
+    fun downloadWholeMushaf(reciter: com.ali.menbaradkshk.data.Reciter) {
+        if (quranDownloadJob?.isActive == true) {
+            _message.value = "هناك تنزيل جارٍ — انتظر انتهاءه أو ألغِه."
+            return
+        }
+        val index = _quranIndex.value ?: return
+        quranDownloadJob = viewModelScope.launch {
+            runCatching {
+                for (surah in index.surahs) {
+                    if (quranDownloads.isSurahDownloaded(reciter.id, surah.number, surah.ayahs)) continue
+                    quranDownloads.downloadSurah(reciter, surah.number, surah.ayahs)
+                }
+            }
+                .onSuccess { _message.value = "اكتمل تنزيل المصحف بصوت ${reciter.name}." }
+                .onFailure {
+                    if (it is kotlinx.coroutines.CancellationException) {
+                        _message.value = "أُوقف التنزيل — ما نُزّل محفوظ."
+                    } else {
+                        _message.value = "انقطع التنزيل — اضغط مجدداً ليُكمل من حيث توقّف."
+                    }
+                }
+        }
+    }
+
+    /// هل يجري تنزيل المصحف كاملاً الآن؟ (يميّزه عن تنزيل سورة واحدة.)
+    val quranDownloadActive: Boolean get() = quranDownloadJob?.isActive == true
+
+    /**
+     * يفتح شاشة ما يُشغَّل الآن — درساً كان أم سورة.
+     *
+     * معرّف عنصر المصحف على صورة `q:<سورة>:<آية>`، وليس معرّف درس؛ ففتحه
+     * كدرس ينتهي بشاشة «غير متاح». هنا نفكّه ونفتح السورة عند آيتها.
+     */
+    fun openNowPlaying() {
+        val mediaId = playback.state.value.mediaId.takeIf { it.isNotBlank() } ?: return
+        val prefix = com.ali.menbaradkshk.media.PlaybackService.QURAN_ID_PREFIX
+        if (!mediaId.startsWith(prefix)) {
+            open(Route.Lesson(mediaId))
+            return
+        }
+        val parts = mediaId.removePrefix(prefix).split(":")
+        val surahNumber = parts.getOrNull(0)?.toIntOrNull() ?: return
+        val ayah = parts.getOrNull(1)?.toIntOrNull() ?: 1
+        val start = _quranIndex.value?.surahs?.firstOrNull { it.number == surahNumber }?.start
+        open(Route.QuranSurah(surahNumber, start?.plus(ayah - 1)))
+    }
+
+    fun deleteSurahDownload(
+        surah: com.ali.menbaradkshk.data.Surah,
+        reciter: com.ali.menbaradkshk.data.Reciter,
+    ) {
+        quranDownloads.deleteSurah(reciter.id, surah.number)
+        _message.value = "حُذفت تلاوة سورة ${surah.name}."
+    }
+
+    /// مشاركة نصّ (آية أو سورة) إلى أي تطبيق — نصّ عاديّ بلا زخرفة.
+    fun shareText(text: String, chooserTitle: String = "مشاركة") {
+        val send = android.content.Intent(android.content.Intent.ACTION_SEND)
+            .setType("text/plain")
+            .putExtra(android.content.Intent.EXTRA_TEXT, text)
+        val chooser = android.content.Intent.createChooser(send, chooserTitle)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { getApplication<android.app.Application>().startActivity(chooser) }
+            .onFailure { _message.value = "تعذّرت المشاركة." }
     }
 
     // ---- تذكيرات الأذكار (محلّية بحتة) ----

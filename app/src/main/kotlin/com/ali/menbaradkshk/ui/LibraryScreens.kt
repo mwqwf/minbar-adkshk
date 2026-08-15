@@ -54,6 +54,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -369,6 +370,16 @@ fun PlaylistDetailScreen(vm: AppViewModel, playlistId: String) {
     }
     // المدد تُقرأ مرّة واحدة لا مرّة لكل صفّ (كل قراءة تحليل JSON كامل).
     val durations = remember(revision) { vm.store.durations() }
+    // الدرس الذي أُزيل للتوّ — يُنفَّذ الإزالة ويُعرض «تراجع» فوراً.
+    var removedFromPlaylist by remember { mutableStateOf<com.ali.menbaradkshk.data.Lesson?>(null) }
+    LaunchedEffect(removedFromPlaylist) {
+        val lesson = removedFromPlaylist ?: return@LaunchedEffect
+        vm.store.removeFromPlaylist(playlistId, lesson.id)
+        vm.showUndo("أُزيل «${lesson.displayTitle}» من القائمة.") {
+            vm.store.addToPlaylist(playlistId, lesson.id)
+        }
+        removedFromPlaylist = null
+    }
     if (playlist == null) {
         EmptyState("القائمة غير موجودة", "")
         return
@@ -483,7 +494,11 @@ fun PlaylistDetailScreen(vm: AppViewModel, playlistId: String) {
                                     )
                                 }
                             }
-                            IconButton(onClick = { vm.store.removeFromPlaylist(playlist.id, lesson.id) }) {
+                            // إزالة بضغطة واحدة مقبولة هنا **لأنّ لها تراجعاً
+                            // فوريّاً**: لا شيء يُفقَد، والدرس يعود بضغطة.
+                            // القاعدة العامّة في التطبيق: ما لا يُتراجَع عنه
+                            // يُسأل عنه أوّلاً (كحذف التنزيلات والقوائم).
+                            IconButton(onClick = { removedFromPlaylist = lesson }) {
                                 Icon(
                                     Icons.Filled.RemoveCircleOutline,
                                     contentDescription = "إزالة من القائمة",

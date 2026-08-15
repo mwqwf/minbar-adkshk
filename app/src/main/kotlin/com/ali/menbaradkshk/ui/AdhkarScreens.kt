@@ -27,8 +27,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.LocalFireDepartment
@@ -56,6 +59,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -217,6 +221,44 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
     }
     val allDone = items.isNotEmpty() && completed >= items.size
     val fontSp = remember(revision) { vm.store.adhkarFontSp() }
+    // الذكر المفتوح مكبَّراً بملء الشاشة (فهرسه في القائمة).
+    var zoomed by remember { mutableStateOf<Int?>(null) }
+
+    /// عدُّ ذكرٍ بفهرسه — يستعمله الصفّ العاديّ والشاشة المكبَّرة معاً، فلا
+    /// يفترق سلوك العدّاد بينهما ولا يُنسى تحديث السلسلة في أحدهما.
+    fun count(index: Int) {
+        val current = vm.store.adhkarDone(sectionId, index) ?: 0L
+        val target = items[index].repeat.toLong()
+        if (current >= target) return
+        val next = current + 1
+        vm.store.setAdhkarDone(sectionId, index, next)
+        runCatching {
+            view.performHapticFeedback(
+                if (next >= target) {
+                    android.view.HapticFeedbackConstants.LONG_PRESS
+                } else {
+                    android.view.HapticFeedbackConstants.KEYBOARD_TAP
+                },
+            )
+        }
+        if (next >= target) {
+            val all = vm.store.adhkarCompleted(sectionId, items.map { it.repeat })
+            if (all >= items.size) vm.store.noteAdhkarCompletion()
+        }
+    }
+
+    zoomed?.let { index ->
+        DhikrZoomDialog(
+            dhikr = items[index],
+            done = remember(revision, index) { vm.store.adhkarDone(sectionId, index) ?: 0L },
+            // يبدأ كبيراً بلا ضبط: من فتح «تكبير» يريد الأكبر لا الحجم نفسه.
+            fontSp = maxOf(fontSp, ZOOM_MIN_SP),
+            currentFont = { maxOf(vm.store.adhkarFontSp(), ZOOM_MIN_SP) },
+            onCount = { count(index) },
+            onFont = { vm.store.setAdhkarFontSp(it) },
+            onDismiss = { zoomed = null },
+        )
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -281,27 +323,8 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
                             items[index].text + "\n\n" + items[index].source,
                         )
                     },
-                    onTap = {
-                        val current = vm.store.adhkarDone(sectionId, index) ?: 0L
-                        val target = items[index].repeat.toLong()
-                        if (current >= target) return@DhikrCard
-                        val next = current + 1
-                        vm.store.setAdhkarDone(sectionId, index, next)
-                        // اهتزازة خفيفة عند كل عدّة، وأوضح عند إتمام الذكر.
-                        runCatching {
-                            view.performHapticFeedback(
-                                if (next >= target) {
-                                    android.view.HapticFeedbackConstants.LONG_PRESS
-                                } else {
-                                    android.view.HapticFeedbackConstants.KEYBOARD_TAP
-                                },
-                            )
-                        }
-                        if (next >= target) {
-                            val all = vm.store.adhkarCompleted(sectionId, items.map { it.repeat })
-                            if (all >= items.size) vm.store.noteAdhkarCompletion()
-                        }
-                    },
+                    onTap = { count(index) },
+                    onZoom = { zoomed = index },
                     onShare = {
                         runCatching {
                             val send = android.content.Intent(android.content.Intent.ACTION_SEND)
@@ -323,56 +346,161 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
 }
 
 /**
- * 🔎 شريط تكبير خطّ الأذكار.
+ * 🔎 شريط تكبير خطّ الأذكار — يصل إلى **أقصى حجم ممكن** (١٢٠ نقطة).
  *
  * ثلاثة أزرار فقط: تصغير، الحجم الحالي (نقرة تُعيده إلى الافتراضي)، تكبير.
- * الخطوة 3sp — ناعمة بما يكفي ليصل المستخدم إلى مقاسه بالضبط، وكبيرة بما
- * يكفي ليشعر بالفرق من أوّل ضغطة فلا يظنّ الزرّ معطّلاً.
+ * والضغط المطوّل على «أ» الكبيرة يقفز إلى الحدّ الأقصى دفعةً واحدة، وعلى
+ * الصغيرة يعود إلى الأصغر — كي لا يضطرّ كبير السنّ (وهو المقصود بالميزة)
+ * إلى عشرات الضغطات ليبلغ مقاسه.
+ *
+ * والخطوة **نسبيّة لا ثابتة**: ١٥٪ من الحجم الحالي. الخطوة الثابتة تكون
+ * قفزةً فجّة عند ١٦ نقطة وزحفاً لا يُحسّ عند ١٠٠ — والنسبة تُبقي الإحساس
+ * بالفرق واحداً على المدى كلّه.
  */
 @Composable
 private fun AdhkarFontControls(vm: AppViewModel, current: Float) {
     val atMin = current <= LocalStore.ADHKAR_FONT_MIN
     val atMax = current >= LocalStore.ADHKAR_FONT_MAX
+    fun step(up: Boolean): Float {
+        val delta = (current * 0.15f).coerceAtLeast(2f)
+        return if (up) current + delta else current - delta
+    }
+    // زرّان كبيران بعلامتَي − و + بجانب كلمة «حجم الخطّ» صريحة. الشكل
+    // السابق (حرفا «أ» صغيران بلا مسمّى في طرف صفّ) كان غير مرئيّ عملياً:
+    // من يحتاج التكبير هو أقلّ الناس قدرةً على تمييز أيقونة خافتة صغيرة.
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.End,
     ) {
-        IconButton(
-            onClick = { vm.store.setAdhkarFontSp(current - FONT_STEP_SP) },
+        Text(
+            "حجم الخطّ",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(10.dp))
+        FontStepButton(
+            label = "−",
             enabled = !atMin,
-        ) {
-            Text(
-                "أ",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Bold,
-                color = if (atMin) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .35f) else Teal,
-            )
-        }
+            onStep = { vm.store.setAdhkarFontSp(vm.store.adhkarFontSp().let { it - (it * 0.12f).coerceAtLeast(1f) }) },
+        )
         // النقر على الرقم يُرجع الحجم الافتراضي — مخرج آمن لمن كبّر أكثر
         // ممّا ينبغي ولا يعرف كيف يعود.
         TextButton(onClick = { vm.store.setAdhkarFontSp(LocalStore.ADHKAR_FONT_DEFAULT) }) {
             Text(
                 "${current.toInt()}",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = Teal,
             )
         }
-        IconButton(
-            onClick = { vm.store.setAdhkarFontSp(current + FONT_STEP_SP) },
+        FontStepButton(
+            label = "+",
             enabled = !atMax,
+            onStep = { vm.store.setAdhkarFontSp(vm.store.adhkarFontSp().let { it + (it * 0.12f).coerceAtLeast(1f) }) },
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            if (atMax) "أكبر حجم" else "استمرّ بالضغط ليكبر",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/// أصغر حجم تبدأ به الشاشة المكبَّرة — من فتحها يريد الكبير لا المعتاد.
+private const val ZOOM_MIN_SP = 60f
+
+/**
+ * 🔍 «ذكرٌ واحد بملء الشاشة» — تكبير كل ذكر على حدة إلى أقصى حجم ممكن.
+ *
+ * **لماذا شاشة مستقلّة لا تكبير للقائمة كلّها؟** لأنّ الذاكر يردّد ذكراً
+ * واحداً في المرّة. تكبير القائمة يجعل التمرير عملاً متواصلاً، أمّا هنا
+ * فالذكر وحده أمام العين، والشاشة كلّها زرُّ عدٍّ — يضغط في أيّ مكان فيتقدّم
+ * العدّاد بلا أن يبحث عن زرّ صغير. وهذا هو المقصود بالميزة أصلاً: من لا
+ * يبصر جيّداً لا يجب أن يُطالَب بإصابة هدفٍ صغير.
+ *
+ * الحجم يبدأ كبيراً بلا ضبط (٦٠ نقطة على الأقلّ)، ويبقى قابلاً للزيادة إلى
+ * ١٢٠ — وهو محفوظ فيعود كما تركه صاحبه.
+ */
+@Composable
+private fun DhikrZoomDialog(
+    dhikr: Dhikr,
+    done: Long,
+    fontSp: Float,
+    /// القيمة اللحظيّة من المخزن — حلقة التكرار أثناء الضغط تحتاج آخر حجم
+    /// لا الحجم الذي رُكِّبت به الدالة، وإلا تجمّد التكبير عند خطوة واحدة.
+    currentFont: () -> Float,
+    onCount: () -> Unit,
+    onFont: (Float) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val target = dhikr.repeat.toLong()
+    val finished = done >= target
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        androidx.compose.material3.Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background,
         ) {
-            Text(
-                "أ",
-                fontSize = 26.sp,
-                fontWeight = FontWeight.Bold,
-                color = if (atMax) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .35f) else Teal,
-            )
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Filled.Close, "إغلاق", tint = MaterialTheme.colorScheme.onSurface)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    FontStepButton(
+                        label = "−",
+                        enabled = fontSp > LocalStore.ADHKAR_FONT_MIN,
+                        onStep = { onFont(currentFont() - (currentFont() * 0.12f).coerceAtLeast(1f)) },
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    FontStepButton(
+                        label = "+",
+                        enabled = fontSp < LocalStore.ADHKAR_FONT_MAX,
+                        onStep = { onFont(currentFont() + (currentFont() * 0.12f).coerceAtLeast(1f)) },
+                    )
+                }
+                // الشاشة كلّها منطقة عدّ: لا هدف صغير يُصاب.
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clickable(enabled = !finished, onClick = onCount)
+                        .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                ) {
+                    Text(
+                        dhikr.text,
+                        fontSize = fontSp.sp,
+                        lineHeight = (fontSp * 1.7f).sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CounterBadge(done = done, target = target, finished = finished)
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        if (finished) "تمّ — تقبّل الله" else "اضغط في أيّ مكان للعدّ  ($done من ${dhikr.repeat})",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = if (finished) Teal else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
     }
 }
 
-private const val FONT_STEP_SP = 3f
+// زرّ الخطوة مشترك بين الأذكار والمصحف — انظر [FontStepButton] في ملفّه.
 
 @Composable
 private fun DhikrCard(
@@ -382,6 +510,7 @@ private fun DhikrCard(
     onTap: () -> Unit,
     onShare: () -> Unit,
     onCopy: () -> Unit,
+    onZoom: () -> Unit,
 ) {
     val target = dhikr.repeat.toLong()
     val finished = done >= target
@@ -448,6 +577,17 @@ private fun DhikrCard(
                             fontWeight = FontWeight.Bold,
                         )
                     }
+                }
+                // 🔍 تكبير هذا الذكر وحده بملء الشاشة — الميزة التي يحتاجها
+                // كبير السنّ: لا يريد تكبير القائمة كلّها، بل أن يرى الذكر
+                // الذي يردّده الآن بأكبر خطّ ممكن ويعدّه وهو مكبَّر.
+                IconButton(onClick = onZoom) {
+                    Icon(
+                        Icons.Filled.ZoomIn,
+                        "تكبير هذا الذكر",
+                        modifier = Modifier.size(22.dp),
+                        tint = Teal,
+                    )
                 }
                 IconButton(onClick = onCopy) {
                     Icon(

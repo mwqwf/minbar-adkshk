@@ -1,0 +1,164 @@
+package com.ali.menbaradkshk.data
+
+import android.content.Context
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import kotlin.coroutines.coroutineContext
+
+/**
+ * ⬇️ تنزيل تلاوة سورة للعمل **بلا إنترنت**.
+ *
+ * **لماذا بالسورة لا بالمصحف كلّه؟** المصحف الكامل لقارئ واحد يقارب
+ * الغيغابايت، وتنزيله زرٌّ واحدٌ يملأ هاتف المستخدم بلا أن يشعر — وهذا يخالف
+ * قاعدة «لا يضرّ جهاز المستخدم» مخالفةً صريحة. أمّا السورة فوحدة الاستماع
+ * الطبيعيّة: من يريد الكهف كلّ جمعة ينزّلها مرّة، ولا يدفع ثمن الباقي.
+ *
+ * والتخزين منفصل تماماً عن «تنزيلاتي» (فهرس الدروس): تلاوات المصحف لا تظهر
+ * هناك ولا تختلط بإحصاءات الدروس — كما لا تختلط في المشغّل (انظر
+ * `PlaybackService.isLesson`).
+ */
+class QuranDownloadRepository private constructor(context: Context) {
+
+    private val app = context.applicationContext
+
+    /** حالة التنزيل الجاري — سورة واحدة في كل مرّة يكفي ويبقي الأمر بسيطاً. */
+    data class Progress(
+        val reciterId: String,
+        val surah: Int,
+        val done: Int,
+        val total: Int,
+    ) {
+        val fraction: Float get() = if (total <= 0) 0f else done.toFloat() / total
+    }
+
+    private val _progress = MutableStateFlow<Progress?>(null)
+    val progress: StateFlow<Progress?> = _progress.asStateFlow()
+
+    /// يُرفع عند اكتمال/حذف تنزيل كي تُعيد الواجهة قراءة الحالة من القرص.
+    private val _revision = MutableStateFlow(0L)
+    val revision: StateFlow<Long> = _revision.asStateFlow()
+
+    private fun rootFor(reciterId: String): File =
+        File(File(app.filesDir, DIR), reciterId)
+
+    private fun dirFor(reciterId: String, surah: Int): File =
+        File(rootFor(reciterId), surah.toString())
+
+    private fun fileFor(reciterId: String, surah: Int, ayah: Int): File =
+        File(dirFor(reciterId, surah), "$ayah.mp3")
+
+    /** المسار المحلّي لآية إن كانت منزَّلة، وإلا `null`. */
+    fun localAyah(reciterId: String, surah: Int, ayah: Int): String? =
+        fileFor(reciterId, surah, ayah).takeIf { it.isFile && it.length() > 0L }?.absolutePath
+
+    /**
+     * هل السورة منزَّلة كاملةً لهذا القارئ؟
+     *
+     * نعدّ الملفات لا نثق بعلامةٍ محفوظة: حذف المستخدم لبيانات التطبيق أو
+     * تنظيف النظام للمساحة يترك العلامة كاذبةً فيُشغَّل صمتٌ بلا إنترنت.
+     */
+    fun isSurahDownloaded(reciterId: String, surah: Int, ayahs: Int): Boolean {
+        val dir = dirFor(reciterId, surah)
+        if (!dir.isDirectory) return false
+        return (1..ayahs).all { fileFor(reciterId, surah, it).let { f -> f.isFile && f.length() > 0L } }
+    }
+
+    /** حجم ما نُزّل لهذا القارئ بالبايت (لعرضه في الإعدادات وللحذف). */
+    fun bytesFor(reciterId: String): Long =
+        rootFor(reciterId).walkBottomUp().filter { it.isFile }.sumOf { it.length() }
+
+    /** حجم كل تلاوات المصحف المنزَّلة. */
+    fun totalBytes(): Long =
+        File(app.filesDir, DIR).walkBottomUp().filter { it.isFile }.sumOf { it.length() }
+
+    fun deleteSurah(reciterId: String, surah: Int) {
+        dirFor(reciterId, surah).deleteRecursively()
+        // مجلّد القارئ الفارغ يُزال أيضاً كي لا تتراكم مجلّدات خاوية.
+        rootFor(reciterId).takeIf { it.isDirectory && it.list()?.isEmpty() == true }?.delete()
+        _revision.value++
+    }
+
+    fun deleteAll() {
+        File(app.filesDir, DIR).deleteRecursively()
+        _revision.value++
+    }
+
+    /**
+     * ينزّل تلاوة السورة كاملةً.
+     *
+     * يتخطّى ما نُزّل أصلاً فيصلح للاستئناف بعد انقطاع، ويكتب إلى ملفّ مؤقّت
+     * ثم يعيد التسمية — فلا يبقى ملفّ نصفيّ يُشغَّل مبتوراً إن قُطع الاتصال.
+     */
+    suspend fun downloadSurah(
+        reciter: Reciter,
+        surahNumber: Int,
+        ayahs: Int,
+    ) = withContext(Dispatchers.IO) {
+        val urls: List<Pair<Int, String>> = if (reciter.perAyah) {
+            (1..ayahs).map { it to reciter.ayahUrl(surahNumber, it) }
+        } else {
+            // قارئ بملفّ سورة كاملة: ملفّ واحد نخزّنه بالرقم 1.
+            listOf(1 to reciter.surahUrl(surahNumber))
+        }
+        val dir = dirFor(reciter.id, surahNumber).apply { mkdirs() }
+        _progress.value = Progress(reciter.id, surahNumber, 0, urls.size)
+        try {
+            urls.forEachIndexed { i, (ayah, url) ->
+                coroutineContext.ensureActive()
+                val target = File(dir, "$ayah.mp3")
+                if (!(target.isFile && target.length() > 0L)) fetch(url, target)
+                _progress.value = Progress(reciter.id, surahNumber, i + 1, urls.size)
+            }
+            _revision.value++
+        } finally {
+            _progress.value = null
+        }
+    }
+
+    private fun fetch(url: String, target: File) {
+        val temp = File(target.parentFile, target.name + ".part")
+        var connection: HttpURLConnection? = null
+        try {
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 20_000
+                readTimeout = 45_000
+                instanceFollowRedirects = true
+                setRequestProperty(
+                    "User-Agent",
+                    "MinbarAdkassahk/${com.ali.menbaradkshk.BuildConfig.VERSION_NAME}",
+                )
+                connect()
+            }
+            if (connection.responseCode !in 200..299) {
+                throw java.io.IOException("HTTP ${connection.responseCode}")
+            }
+            connection.inputStream.use { input ->
+                temp.outputStream().use { output -> input.copyTo(output, DEFAULT_BUFFER_SIZE) }
+            }
+            if (temp.length() <= 0L) throw java.io.IOException("ملفّ فارغ")
+            if (!temp.renameTo(target)) throw java.io.IOException("تعذّر حفظ الملف")
+        } finally {
+            runCatching { temp.delete() }
+            connection?.disconnect()
+        }
+    }
+
+    companion object {
+        private const val DIR = "quran_audio"
+
+        @Volatile
+        private var instance: QuranDownloadRepository? = null
+
+        fun get(context: Context): QuranDownloadRepository =
+            instance ?: synchronized(this) {
+                instance ?: QuranDownloadRepository(context).also { instance = it }
+            }
+    }
+}

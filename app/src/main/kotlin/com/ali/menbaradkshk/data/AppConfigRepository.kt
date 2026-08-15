@@ -26,7 +26,11 @@ import kotlinx.coroutines.tasks.await
 class AppConfigRepository private constructor(context: Context) {
 
     private val app = context.applicationContext
-    private val db = FirebaseFirestore.getInstance()
+    /// كسولٌ عمداً: المستودع يُنشَأ مع الـViewModel عند الإقلاع، بينما لا
+    /// يُحتاج Firestore إلا عند قراءة شبكيّة فعليّة (مرّة كل ست ساعات على
+    /// الأكثر). فبناؤه فوراً كان يوقظ Firestore بلا داعٍ في كل تشغيل —
+    /// وكان يجعل المستودع غير قابل للاختبار أصلاً بلا Firebase مهيّأ.
+    private val db by lazy { FirebaseFirestore.getInstance() }
     private val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     /** ما يُعرض للمستخدم — أو `None` حين لا شيء يُذكَر به. */

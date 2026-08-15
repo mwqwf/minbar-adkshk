@@ -190,7 +190,20 @@ data class Riwaya(
     val name: String,
     val textAsset: String,
     val reciters: List<Reciter>,
-)
+) {
+    /**
+     * القارئ المبدئيّ لهذه الرواية.
+     *
+     * **يُفضَّل قارئ «آية بآية» دائماً** لأنّه وحده من يتيح تمييز الآية
+     * الجارية والبدء من آية بعينها — وهما جوهر الصفحة. ولولا هذا التفضيل
+     * لظهرت الميزة معطَّلةً لمن لم يختر قارئاً بنفسه، فيظنّها لا تعمل أصلاً.
+     */
+    val defaultReciter: Reciter?
+        get() = reciters.firstOrNull { it.perAyah } ?: reciters.firstOrNull()
+
+    /** هل في هذه الرواية قارئ يدعم التمييز آية بآية؟ */
+    val hasPerAyah: Boolean get() = reciters.any { it.perAyah }
+}
 
 data class Reciter(
     val id: String,

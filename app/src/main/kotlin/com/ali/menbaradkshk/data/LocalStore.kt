@@ -875,12 +875,20 @@ class LocalStore private constructor(context: Context) {
         const val KEY_FONT_SCALE = "font_scale"
         const val KEY_ADHKAR_FONT = "adhkar_font_sp"
 
-        /// مدى خطّ الأذكار بالنقاط: من مقروء عادي إلى **كبير جدّاً** لكبار
-        /// السنّ وضعاف البصر. الحدّ الأعلى مختار عملياً: أكبر منه يجعل الذكر
-        /// الواحد لا يتّسع في شاشة كاملة فيصير التمرير عائقاً لا عوناً.
-        const val ADHKAR_FONT_MIN = 16f
+        /**
+         * مدى خطّ الأذكار بالنقاط: من مقروء عادي إلى **أقصى ما يمكن**.
+         *
+         * ١٢٠ نقطة ≈ ستّة أضعاف الافتراضي — وهو الحدّ الذي يبقى بعده الحرف
+         * العربيّ كاملاً على شاشة الهاتف بلا قصّ أفقيّ (الأعرض في أذكارنا
+         * كلمات كـ«أستغفر» تشغل عندها عرض الشاشة كلّه). ما فوقه يقطع الكلمة
+         * فيصير التكبير ضرراً لا عوناً — وهذا هو السقف التقنيّ الفعليّ لا
+         * اختياراً محافظاً.
+         *
+         * والمقصد صريح: كبار السنّ وضعاف البصر يقرؤون الذكر بلا نظّارة.
+         */
+        const val ADHKAR_FONT_MIN = 14f
         const val ADHKAR_FONT_DEFAULT = 19f
-        const val ADHKAR_FONT_MAX = 64f
+        const val ADHKAR_FONT_MAX = 120f
 
         const val KEY_QURAN_RIWAYA = "quran_riwaya"
         const val KEY_QURAN_RECITER = "quran_reciter_"

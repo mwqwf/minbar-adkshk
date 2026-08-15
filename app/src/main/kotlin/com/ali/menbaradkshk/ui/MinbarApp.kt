@@ -219,6 +219,19 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
             vm.consumeMessage()
         }
     }
+    // ↩️ شريط «تراجع» للأفعال القابلة للرجوع (الإزالة من قائمة تشغيل مثلاً).
+    val undo by vm.undo.collectAsState()
+    LaunchedEffect(undo) {
+        val pending = undo ?: return@LaunchedEffect
+        val result = snackbar.showSnackbar(
+            message = pending.text,
+            actionLabel = pending.actionLabel,
+            withDismissAction = true,
+            duration = SnackbarDuration.Long,
+        )
+        if (result == SnackbarResult.ActionPerformed) pending.action()
+        vm.consumeUndo()
+    }
     // فشل التشغيل كان صامتاً خارج شاشة المشغّل (صفوف القوائم/المشغّل المصغّر):
     // نعرضه عالمياً مع «إعادة المحاولة». شاشة المشغّل لها شريطها الثابت فلا نكرّره.
     // نعرض الرسالة مرة واحدة لكل خطأ؛ كل محاولة جديدة تُصفّر الخطأ أولاً فيُعاد عرضه.
@@ -317,9 +330,13 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                                 StreakChip(vm)
                                 NotificationBell(vm)
                                 MySubmissionsButton(vm)
-                                // «تنزيلاتي» ليست هنا: مكانها شريحةٌ باسمها في
-                                // الإجراءات السريعة بجانب حصادك (طلب صريح).
-                                // مدخلان لشاشة واحدة ازدحامٌ بلا فائدة.
+                                // «تنزيلاتي» هنا بطلب صريح: مكانها الطبيعيّ مع
+                                // بقيّة مداخل «ما يخصّني» (الإشعارات
+                                // والمساهمات)، لا مع شرائح الاستماع في
+                                // الإجراءات السريعة.
+                                IconButton(onClick = { vm.open(Route.Downloads) }) {
+                                    Icon(Icons.Filled.Download, "تنزيلاتي")
+                                }
                                 IconButton(onClick = { vm.open(Route.Search()) }) {
                                     Icon(Icons.Filled.Search, "بحث")
                                 }
@@ -352,14 +369,17 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         bottomBar = {
             if (!fullScreen) {
                 Column {
-                    // المشغّل المصغّر: التبويبات الجذرية + شاشة دروس القسم الفرعي.
-                    if (isRoot || route is Route.Subcategory) {
+                    // المشغّل المصغّر: التبويبات الجذرية + دروس القسم الفرعي
+                    // + **قراءة سورة**. المصحف يستعمل مشغّل التطبيق نفسه، فمن
+                    // غير المفهوم أن يختفي شريطه المعتاد هناك وحده: الشكل
+                    // والأزرار (تشغيل/التالي/فتح) تبقى واحدة في كل مكان.
+                    if (isRoot || route is Route.Subcategory || route is Route.QuranSurah) {
                         MiniPlayer(
                             state = playback,
-                            onOpen = {
-                                playback.mediaId.takeIf(String::isNotBlank)
-                                    ?.let { vm.open(Route.Lesson(it)) }
-                            },
+                            // المشغّل المصغّر يخدم الدروس **والمصحف** معاً:
+                            // معرّف الآية ليس معرّف درس، وفتحه كدرس كان
+                            // ينتهي بشاشة «الدرس غير متاح» أثناء التلاوة.
+                            onOpen = { vm.openNowPlaying() },
                             onToggle = vm.playback::toggle,
                             onNext = { vm.playback.next() },
                             onRetry = { vm.playback.retry() },

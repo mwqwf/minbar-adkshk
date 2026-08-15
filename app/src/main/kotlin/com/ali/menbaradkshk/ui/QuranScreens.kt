@@ -3,6 +3,7 @@ package com.ali.menbaradkshk.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,10 +23,16 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RecordVoiceOver
@@ -37,6 +44,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ListItem
@@ -157,6 +165,12 @@ fun QuranIndexScreen(vm: AppViewModel) {
             }
         }
 
+        // 🎧 القارئ المفضَّل وتنزيل المصحف كاملاً — بطاقة واحدة تجمع أهمّ
+        // ما يجهله المستخدم عن هذه الصفحة. صياغتها فعلٌ صريح لا وصفٌ عامّ
+        // («اختر قارئك المفضَّل» لا «إعدادات التلاوة»)، لأنّ أغلب المستخدمين
+        // لا يفتحون ما لا يفهمون عنوانه.
+        ReciterAndOfflineCard(vm, loaded, riwaya)
+
         PrimaryTabRow(selectedTabIndex = tab) {
             TAB_TITLES.forEachIndexed { i, title ->
                 Tab(selected = tab == i, onClick = { tab = i }, text = { Text(title) })
@@ -173,6 +187,216 @@ fun QuranIndexScreen(vm: AppViewModel) {
 }
 
 private val TAB_TITLES = listOf("السور", "الأجزاء", "الأحزاب", "الصفحات")
+
+/**
+ * 🎧 «قارئك المفضَّل» + «نزّل المصحف كاملاً».
+ *
+ * ميزتان قويّتان لا يكتشفهما أحد إن بقيتا مدفونتين في شاشة القراءة: عدد
+ * القرّاء (عشرات لكل رواية) وإمكان العمل بلا إنترنت. فنعرضهما هنا في سطرين
+ * صريحين — لا شرح ولا إعدادات، فعلان اثنان فقط.
+ *
+ * وزرّ التنزيل الكامل يذكر **الحجم المنزَّل فعلاً** لا وعداً مبهماً: من حقّ
+ * صاحب الهاتف أن يعرف ما يشغله قبل أن يشغله وبعده.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun ReciterAndOfflineCard(
+    vm: AppViewModel,
+    index: QuranIndex,
+    riwayaId: String,
+) {
+    val riwaya = index.riwaya(riwayaId)
+    val storeRevision by vm.store.revision.collectAsState()
+    val downloadRevision by vm.quranDownloads.revision.collectAsState()
+    val progress by vm.quranDownloads.progress.collectAsState()
+
+    val savedId = remember(storeRevision, riwaya.id) { vm.store.quranReciter(riwaya.id) }
+    val reciter = riwaya.reciters.firstOrNull { it.id == savedId } ?: riwaya.defaultReciter
+    val bytes = remember(downloadRevision, reciter?.id) {
+        reciter?.let { vm.quranDownloads.bytesFor(it.id) } ?: 0L
+    }
+    var sheet by remember { mutableStateOf(false) }
+    var confirmDeleteAll by remember { mutableStateOf(false) }
+    val running = progress != null
+
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .40f),
+        ),
+    ) {
+        Column {
+            ListItem(
+                modifier = Modifier.clickable { sheet = true },
+                colors = androidx.compose.material3.ListItemDefaults.colors(
+                    containerColor = Color.Transparent,
+                ),
+                leadingContent = { Icon(Icons.Filled.RecordVoiceOver, null, tint = Teal) },
+                headlineContent = { Text("قارئك المفضَّل", fontWeight = FontWeight.Bold) },
+                supportingContent = {
+                    Text(
+                        "${reciter?.name ?: "اختر قارئاً"} • ${riwaya.reciters.size} قارئاً متاحاً",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                },
+            )
+            ListItem(
+                modifier = Modifier.clickable {
+                    val r = reciter ?: return@clickable
+                    if (running) vm.cancelSurahDownload() else vm.downloadWholeMushaf(r)
+                },
+                colors = androidx.compose.material3.ListItemDefaults.colors(
+                    containerColor = Color.Transparent,
+                ),
+                leadingContent = {
+                    Icon(
+                        if (running) Icons.Filled.Close else Icons.Filled.Download,
+                        null,
+                        tint = if (running) MaterialTheme.colorScheme.error else Teal,
+                    )
+                },
+                headlineContent = {
+                    Text(
+                        if (running) "إيقاف التنزيل" else "نزّل المصحف كاملاً",
+                        fontWeight = FontWeight.Bold,
+                    )
+                },
+                supportingContent = {
+                    val label = when {
+                        running -> progress?.let {
+                            "سورة ${it.surah} — ${it.done} من ${it.total}"
+                        }.orEmpty()
+                        bytes > 0L -> "المنزَّل: ${formatSize(bytes)} • يعمل بلا إنترنت"
+                        else -> "ليعمل بلا إنترنت — يُكمل من حيث توقّف إن انقطع"
+                    }
+                    Text(label, style = MaterialTheme.typography.bodySmall)
+                },
+                // الحذف بسؤال صريح لا بنقرة — القاعدة نفسها في كل التطبيق.
+                trailingContent = if (bytes > 0L && !running) {
+                    {
+                        TextButton(onClick = { confirmDeleteAll = true }) {
+                            Text("حذف", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                } else {
+                    null
+                },
+            )
+        }
+    }
+
+    if (sheet) {
+        ReciterSheet(
+            riwaya = riwaya,
+            currentId = reciter?.id,
+            onPick = {
+                vm.store.setQuranReciter(riwaya.id, it)
+                sheet = false
+            },
+            onDismiss = { sheet = false },
+        )
+    }
+
+    if (confirmDeleteAll) {
+        ConfirmDeleteDownload(
+            title = "حذف كل التلاوات المنزَّلة؟",
+            body = "سيُحرَّر ${formatSize(bytes)}، وستحتاج إنترنت للاستماع بعدها. " +
+                "نصّ المصحف يبقى متاحاً دائماً بلا إنترنت.",
+            onConfirm = {
+                confirmDeleteAll = false
+                vm.quranDownloads.deleteAll()
+                vm.showMessage("حُذفت التلاوات المنزَّلة.")
+            },
+            onDismiss = { confirmDeleteAll = false },
+        )
+    }
+}
+
+/// صيغة حجم عربيّة مختصرة — الأرقام وحدها تكفي، بلا خانات عشريّة زائدة.
+private fun formatSize(bytes: Long): String = when {
+    bytes >= 1_073_741_824L -> "${"%.1f".format(bytes / 1_073_741_824.0)} غ.ب"
+    bytes >= 1_048_576L -> "${bytes / 1_048_576} م.ب"
+    bytes >= 1024L -> "${bytes / 1024} ك.ب"
+    else -> "$bytes بايت"
+}
+
+/**
+ * ورقة اختيار القارئ — مشتركة بين شاشة الفهرسة وشاشة القراءة.
+ *
+ * القرّاء بنمط «آية بآية» أوّلاً لأنّهم وحدهم من يتيح تمييز الآية الجارية،
+ * وهو أهمّ ما في الصفحة. والفرق مكتوب صراحةً تحت كل قارئ من النمط الآخر
+ * كي لا يظنّ المستخدم أنّ الميزة تعطّلت عنده.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun ReciterSheet(
+    riwaya: com.ali.menbaradkshk.data.Riwaya,
+    currentId: String?,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            "اختر القارئ — ${riwaya.name}",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            textAlign = TextAlign.Center,
+        )
+        // تنبيه صريح حين لا تملك الرواية أيّ قارئ «آية بآية» — قالون اليوم
+        // كذلك: لا تلاوة آية-بآية منشورة له. قول ذلك مرّة خيرٌ من أن يجرّب
+        // المستخدم النقر على الآيات فيظنّ التطبيق معطّلاً.
+        if (!riwaya.hasPerAyah) {
+            Text(
+                "تلاوات هذه الرواية بملفّ سورة كاملة، فلا يتوفّر فيها تمييز " +
+                    "الآية الجارية ولا البدء من آية بعينها. والنصّ والقراءة " +
+                    "يعملان كاملَين.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+            )
+        }
+        LazyColumn(Modifier.fillMaxWidth()) {
+            items(riwaya.reciters, key = { it.id }) { option ->
+                ListItem(
+                    modifier = Modifier.clickable { onPick(option.id) },
+                    leadingContent = {
+                        Icon(
+                            Icons.Filled.RecordVoiceOver,
+                            contentDescription = null,
+                            tint = if (option.id == currentId) {
+                                Teal
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    },
+                    headlineContent = {
+                        Text(
+                            option.name,
+                            fontWeight = if (option.id == currentId) FontWeight.Bold else FontWeight.Normal,
+                        )
+                    },
+                    // شارة موجبة لمن يدعم التمييز خيرٌ من عبارة سلبيّة تحت
+                    // كل من لا يدعمه: أقصر، وتوجّه الاختيار إلى الأفضل.
+                    trailingContent = if (option.perAyah) {
+                        {
+                            Text(
+                                "آية بآية",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Teal,
+                            )
+                        }
+                    } else {
+                        null
+                    },
+                )
+            }
+            item { Spacer(Modifier.height(24.dp)) }
+        }
+    }
+}
 
 /// شرائح الروايات — حفص أوّلها دائماً (ترتيب الفهرس نفسه).
 @Composable
@@ -305,9 +529,10 @@ fun QuranSurahScreen(
     val fontSp = remember(revision) { vm.store.quranFontSp() }
     val savedReciterId = remember(revision, riwaya.id) { vm.store.quranReciter(riwaya.id) }
     val reciter = riwaya.reciters.firstOrNull { it.id == savedReciterId }
-        ?: riwaya.reciters.firstOrNull()
+        ?: riwaya.defaultReciter
 
     val listState = rememberLazyListState()
+    val context = androidx.compose.ui.platform.LocalContext.current
     var reciterSheet by remember { mutableStateOf(false) }
 
     // الآية الجارية: فهرس عنصر المشغّل، وهو صالح فقط ما دام المُشغَّل تلاوةً
@@ -335,39 +560,29 @@ fun QuranSurahScreen(
             .collect { vm.store.setQuranLastAyah(surah.start + it) }
     }
 
-    // 💡 تلميح «اسمعها من المنبر» — يظهر بعد قراءة فعليّة ثم يختفي وحده.
-    val content by vm.content.state.collectAsState()
-    val recitation = remember(riwaya.id) {
-        com.ali.menbaradkshk.data.QuranRecitationLink.forRiwaya(riwaya.id)
+    // ⬇️ حالة التنزيل — تُقرأ من القرص لا من علامة محفوظة (انظر المستودع).
+    val downloadProgress by vm.quranDownloads.progress.collectAsState()
+    val downloadRevision by vm.quranDownloads.revision.collectAsState()
+    val downloaded = remember(downloadRevision, reciter?.id, surah.number) {
+        reciter?.let { vm.quranDownloads.isSurahDownloaded(it.id, surah.number, surah.ayahs) } == true
     }
-    val firstVisible = listState.firstVisibleItemIndex
-    val hizb = remember(loaded, surah.start, firstVisible) {
-        com.ali.menbaradkshk.data.QuranRecitationLink.hizbAt(loaded, surah.start + firstVisible)
-    }
-    val hintLesson = remember(content.lessons, recitation, hizb) {
-        recitation?.let {
-            com.ali.menbaradkshk.data.QuranRecitationLink.lessonForHizb(
-                content.lessons,
-                it.subcategoryId,
-                hizb,
-            )
+    val downloadingThis = downloadProgress?.let {
+        it.surah == surah.number && it.reciterId == reciter?.id
+    } == true
+
+    // 📋 قائمة إجراءات الآية — تُفتح بالضغط المطوّل على الآية.
+    var ayahSheet by remember { mutableStateOf<Int?>(null) }
+    var confirmDeleteSurah by remember { mutableStateOf(false) }
+
+    /// نصّ السورة كاملاً للنسخ/المشاركة — يُبنى عند الطلب فقط.
+    fun surahText(): String = buildString {
+        append("سورة ").append(surah.name).append(" — ").append(riwaya.name).append('\n')
+        if (surah.number != 1 && surah.number != 9) append(BASMALA).append('\n')
+        for (i in 0 until surah.ayahs) {
+            append(text.getOrElse(surah.start + i) { "" })
+            append(" ﴿").append(i + 1).append("﴾\n")
         }
-    }
-    var hintVisible by remember { mutableStateOf(false) }
-    // شرط الظهور كلّه هنا: تلاوة معروفة لهذه الرواية، ودرس الحزب موجود فعلاً،
-    // ولم يُوقِف المستخدم التلميح، ومضى وقتٌ كافٍ منذ آخر ظهور.
-    LaunchedEffect(hintLesson, revision) {
-        if (hintLesson == null || vm.store.quranHintMutedForever()) return@LaunchedEffect
-        val since = System.currentTimeMillis() - vm.store.quranHintShownAtMs()
-        if (since < HINT_INTERVAL_MS) return@LaunchedEffect
-        // تأخير قبل الظهور: التلميح الذي يقفز في وجه القارئ فور فتحه الصفحة
-        // مقاطعةٌ لا مساعدة. ننتظر حتى يستقرّ على القراءة فعلاً.
-        kotlinx.coroutines.delay(HINT_DELAY_MS)
-        vm.store.markQuranHintShown()
-        hintVisible = true
-        // ثمّ يختفي وحده ولو لم يُلمس — هذا شرط «الخفّة» الذي طُلب صراحةً.
-        kotlinx.coroutines.delay(HINT_VISIBLE_MS)
-        hintVisible = false
+        append("\n— من تطبيق منبر ادكصهك")
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -378,6 +593,7 @@ fun QuranSurahScreen(
             reciterName = reciter?.name.orEmpty(),
             fontSp = fontSp,
             playing = playingThisSurah && playback.playing,
+            currentFont = { vm.store.quranFontSp() },
             onFont = { vm.store.setQuranFontSp(it) },
             onReciter = { reciterSheet = true },
             onPlay = {
@@ -387,7 +603,45 @@ fun QuranSurahScreen(
                     reciter?.let { vm.playQuran(surah, it) }
                 }
             },
+            downloaded = downloaded,
+            downloading = downloadingThis,
+            downloadFraction = downloadProgress?.fraction ?: 0f,
+            // ⚠️ الحذف **لا** يقع بنقرة واحدة: نقرة عابرة على أيقونة
+            // «منزَّلة» كانت تمحو تنزيلاً كلّف المستخدم بياناته ووقته بلا أن
+            // يقصد. الآن تفتح النقرة سؤالاً صريحاً، والحذف قرارٌ لا حادث.
+            onDownload = {
+                val r = reciter ?: return@QuranReaderBar
+                when {
+                    downloadingThis -> vm.cancelSurahDownload()
+                    downloaded -> confirmDeleteSurah = true
+                    else -> vm.downloadSurah(surah, r)
+                }
+            },
+            onShare = { vm.shareText(surahText(), "مشاركة سورة ${surah.name}") },
         )
+        // 🎛️ لوحة التحكّم أثناء التلاوة — **بأزرار مشغّل التطبيق نفسها**:
+        // السابق/تشغيل كبير ملوّن/التالي، بالألوان والأحجام ذاتها التي
+        // يعرفها المستخدم من شاشة الدرس. ولا تظهر إلا أثناء تلاوة هذه
+        // السورة، فتبقى صفحة القراءة نظيفة حين لا تلاوة.
+        if (playingThisSurah) {
+            QuranPlayerControls(
+                playing = playback.playing,
+                loading = playback.loading,
+                onPrevious = { vm.playback.previous() },
+                onToggle = { vm.playback.toggle() },
+                onNext = { vm.playback.next() },
+                onSleep = { vm.playback.setSleepTimer(it) },
+                // شريط الموضع يلزم القارئ بملفّ السورة الكاملة وحده: مع
+                // «آية بآية» يكفي النقر على الآية للانتقال إليها.
+                seek = if (reciter?.perAyah == false) {
+                    Triple(playback.positionMs, playback.durationMs) { ms: Long ->
+                        vm.playback.seekTo(ms)
+                    }
+                } else {
+                    null
+                },
+            )
+        }
         HorizontalDivider()
 
         LazyColumn(
@@ -414,141 +668,157 @@ fun QuranSurahScreen(
                     text = text.getOrElse(surah.start + i) { "" },
                     fontSp = fontSp,
                     active = i == activeAyah,
-                    onPlayFromHere = { reciter?.let { vm.playQuran(surah, it, fromAyah = i + 1) } },
+                    // النقر على آية: يبدأ منها إن كان القارئ «آية بآية».
+                    // وإن كان بملفّ سورة كاملة فالبدء من آية مستحيل تقنياً —
+                    // فنقول ذلك صراحةً ونشغّل السورة، بدل أن يظنّ المستخدم
+                    // أنّ النقر لا يعمل أو أنّ التطبيق معطّل.
+                    onPlayFromHere = {
+                        val r = reciter ?: return@AyahRow
+                        vm.playQuran(surah, r, fromAyah = i + 1)
+                        if (!r.perAyah) {
+                            // لا نكتفي بقول «غير متاح»: إمّا نقترح **قارئاً
+                            // بعينه** في الرواية نفسها يدعم البدء من آية —
+                            // وننقل إليه بضغطة واحدة — وإمّا نقول صراحةً إنّ
+                            // الرواية كلّها ليس فيها من يدعمه. الغموض هنا
+                            // يجعل المستخدم يظنّ التطبيق معطّلاً.
+                            val alternative = riwaya.reciters.firstOrNull { it.perAyah }
+                            if (alternative != null) {
+                                vm.showUndo(
+                                    "${r.name} تلاوته بملفّ سورة كاملة. " +
+                                        "جرّب ${alternative.name} للبدء من أي آية.",
+                                    actionLabel = "بدّل",
+                                ) {
+                                    vm.store.setQuranReciter(riwaya.id, alternative.id)
+                                    vm.playQuran(surah, alternative, fromAyah = i + 1)
+                                }
+                            } else {
+                                vm.showMessage(
+                                    "لا يتوفّر في رواية ${riwaya.name} قارئ بتلاوة " +
+                                        "آية بآية، فتبدأ التلاوة من أوّل السورة.",
+                                )
+                            }
+                        }
+                    },
+                    onActions = { ayahSheet = i },
                 )
             }
         }
     }
 
-    // التلميح فوق النصّ لا داخله: إدراجه في القائمة كان يزحزح الآيات تحت
-    // إصبع القارئ عند ظهوره واختفائه — وهذا أسوأ ما يفعله تلميح.
-    androidx.compose.animation.AnimatedVisibility(
-        visible = hintVisible && hintLesson != null,
-        modifier = Modifier.align(Alignment.BottomCenter),
-        enter = androidx.compose.animation.fadeIn() +
-            androidx.compose.animation.slideInVertically { it },
-        exit = androidx.compose.animation.fadeOut() +
-            androidx.compose.animation.slideOutVertically { it },
-    ) {
-        ListenHintCard(
-            reciterName = recitation?.reciter.orEmpty(),
-            hizb = hizb,
-            onListen = {
-                hintVisible = false
-                hintLesson?.let { lesson ->
-                    val queue = content.lessons.filter { it.subcategoryId == lesson.subcategoryId }
-                    vm.openPlayer(lesson, queue.ifEmpty { listOf(lesson) })
-                }
-            },
-            onMute = {
-                hintVisible = false
-                vm.store.setQuranHintMutedForever(true)
-            },
+    // شريط تقدّم رفيع أسفل الشاشة أثناء التنزيل — يُطمئن بلا أن يحجب النصّ.
+    if (downloadingThis) {
+        LinearProgressIndicator(
+            progress = { downloadProgress?.fraction ?: 0f },
+            modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter).height(3.dp),
+            color = Teal,
         )
     }
     }
 
-    if (reciterSheet) {
-        ModalBottomSheet(onDismissRequest = { reciterSheet = false }) {
+    // 📋 إجراءات آية بعينها — أربعة أفعال واضحة بأسماء صريحة، لا أيقونات
+    // مبهمة: كثير من مستخدمي التطبيق لا يقرؤون العربية بطلاقة، والأيقونة
+    // وحدها تُخمَّن أمّا الصفّ المكتوب فيُقرأ مرّة ويُحفظ.
+    ayahSheet?.let { i ->
+        val ayahNumber = i + 1
+        val body = text.getOrElse(surah.start + i) { "" }
+        val full = "$body ﴿$ayahNumber﴾\n[سورة ${surah.name} — الآية $ayahNumber]"
+        ModalBottomSheet(onDismissRequest = { ayahSheet = null }) {
             Text(
-                "اختر القارئ — ${riwaya.name}",
+                "الآية $ayahNumber من سورة ${surah.name}",
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.fillMaxWidth().padding(12.dp),
                 textAlign = TextAlign.Center,
             )
-            riwaya.reciters.forEach { option ->
-                ListItem(
-                    modifier = Modifier.clickable {
-                        vm.store.setQuranReciter(riwaya.id, option.id)
-                        reciterSheet = false
-                    },
-                    leadingContent = {
-                        Icon(
-                            Icons.Filled.RecordVoiceOver,
-                            contentDescription = null,
-                            tint = if (option.id == reciter?.id) Teal else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                        )
-                    },
-                    headlineContent = { Text(option.name) },
-                    supportingContent = if (option.perAyah) {
-                        null
-                    } else {
-                        // صراحةً لا ضمناً: قارئ بملفّ سورة كاملة لا يمكن
-                        // تمييز آياته، ومن حقّ المستخدم أن يعرف قبل الاختيار.
-                        { Text("سورة كاملة — بلا تمييز آية بآية", style = MaterialTheme.typography.bodySmall) }
-                    },
-                )
-            }
+            ListItem(
+                modifier = Modifier.clickable {
+                    ayahSheet = null
+                    reciter?.let { vm.playQuran(surah, it, fromAyah = ayahNumber) }
+                },
+                leadingContent = { Icon(Icons.Filled.PlayArrow, null, tint = Teal) },
+                headlineContent = { Text("تلاوة من هذه الآية") },
+            )
+            ListItem(
+                modifier = Modifier.clickable {
+                    ayahSheet = null
+                    copyToClipboard(context, full)
+                },
+                leadingContent = { Icon(Icons.Filled.ContentCopy, null, tint = Teal) },
+                headlineContent = { Text("نسخ الآية") },
+            )
+            ListItem(
+                modifier = Modifier.clickable {
+                    ayahSheet = null
+                    vm.shareText("$full\n\n— من تطبيق منبر ادكصهك", "مشاركة الآية")
+                },
+                leadingContent = { Icon(Icons.Filled.Share, null, tint = Teal) },
+                headlineContent = { Text("مشاركة الآية") },
+            )
+            ListItem(
+                modifier = Modifier.clickable {
+                    ayahSheet = null
+                    vm.store.setQuranLastAyah(surah.start + i)
+                    vm.showMessage("حُفظ موضع القراءة عند الآية $ayahNumber.")
+                },
+                leadingContent = { Icon(Icons.Filled.Bookmark, null, tint = Teal) },
+                headlineContent = { Text("علّم موضع القراءة هنا") },
+            )
             Spacer(Modifier.height(16.dp))
         }
     }
+
+    if (reciterSheet) {
+        ReciterSheet(
+            riwaya = riwaya,
+            currentId = reciter?.id,
+            onPick = {
+                vm.store.setQuranReciter(riwaya.id, it)
+                reciterSheet = false
+            },
+            onDismiss = { reciterSheet = false },
+        )
+    }
+
+    if (confirmDeleteSurah) {
+        ConfirmDeleteDownload(
+            title = "حذف تلاوة سورة ${surah.name}؟",
+            body = "ستحتاج إنترنت لسماعها بعد الحذف. النصّ يبقى متاحاً دائماً بلا إنترنت.",
+            onConfirm = {
+                confirmDeleteSurah = false
+                reciter?.let { vm.deleteSurahDownload(surah, it) }
+            },
+            onDismiss = { confirmDeleteSurah = false },
+        )
+    }
+}
+
+/**
+ * تأكيد حذف تلاوة منزَّلة.
+ *
+ * **لماذا سؤال لا فعل مباشر؟** لأنّ التنزيل كلّف صاحبه بياناتٍ ووقتاً، وقد
+ * يكون على شبكة لا يملك مثلها الآن. فمحوُه بنقرة عابرة خسارةٌ لا رجعة فيها
+ * في اللحظة، والسؤال ثمنه نقرة واحدة فقط.
+ */
+@Composable
+private fun ConfirmDeleteDownload(
+    title: String,
+    body: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(body) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("حذف", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إبقاء") } },
+    )
 }
 
 private const val BASMALA = "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ"
-
-/// مهلة قبل ظهور التلميح داخل الجلسة — يقرأ المستخدم أوّلاً ثم يُدعى.
-private const val HINT_DELAY_MS = 25_000L
-/// مدّة بقائه على الشاشة ثم يختفي وحده.
-private const val HINT_VISIBLE_MS = 9_000L
-/// أقلّ فاصل بين ظهورين — «من حين لآخر» لا في كل مرّة.
-private const val HINT_INTERVAL_MS = 6 * 60 * 60 * 1000L
-
-/**
- * 💡 «تسمع هذا الحزب بصوت فلان؟» — بطاقة خفيفة أسفل الشاشة.
- *
- * تربط ما يقرؤه المستخدم الآن بتلاوةٍ مسجّلة **بالرواية نفسها** موجودة في
- * المنبر، وتفتح **الحزب المطابق بالضبط** لا رأس القسم — فالوصول خطوة واحدة.
- *
- * وهي خفيفة بثلاثة قيود مجتمعة: تتأخّر قبل الظهور، وتختفي وحدها ولو لم
- * تُلمَس، ولا تعود قبل ساعات. ومعها مخرج نهائيّ لمن لا يريدها أصلاً.
- */
-@Composable
-private fun ListenHintCard(
-    reciterName: String,
-    hizb: Int,
-    onListen: () -> Unit,
-    onMute: () -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(12.dp),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-    ) {
-        Row(
-            Modifier.fillMaxWidth().padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Filled.Headphones, contentDescription = null, tint = Teal)
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "اسمع الحزب $hizb بهذه الرواية",
-                    fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.bodyLarge,
-                )
-                if (reciterName.isNotBlank()) {
-                    Text(
-                        "بصوت $reciterName",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            TextButton(onClick = onListen) { Text("استمع") }
-            IconButton(onClick = onMute) {
-                Icon(
-                    Icons.Filled.Close,
-                    contentDescription = "لا تُظهر هذا مجدداً",
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-}
 
 /// شريط أدوات القارئ: تشغيل، اختيار القارئ، وتكبير/تصغير الخطّ.
 @Composable
@@ -558,12 +828,19 @@ private fun QuranReaderBar(
     reciterName: String,
     fontSp: Float,
     playing: Boolean,
+    /// آخر حجم من المخزن — تحتاجه حلقة الضغط المستمرّ (انظر [FontStepButton]).
+    currentFont: () -> Float,
     onFont: (Float) -> Unit,
     onReciter: () -> Unit,
     onPlay: () -> Unit,
+    downloaded: Boolean,
+    downloading: Boolean,
+    downloadFraction: Float,
+    onDownload: () -> Unit,
+    onShare: () -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(onClick = onPlay) {
@@ -572,6 +849,44 @@ private fun QuranReaderBar(
                 contentDescription = if (playing) "إيقاف التلاوة" else "تشغيل التلاوة",
                 tint = Teal,
                 modifier = Modifier.size(30.dp),
+            )
+        }
+        // ⬇️ حالة واحدة لثلاثة أفعال في زرّ واحد: نزِّل / ألغِ / احذف.
+        // ثلاثة أزرار لثلاث حالات لا يقع منها إلا واحدة = ضجيج بصريّ.
+        IconButton(onClick = onDownload) {
+            when {
+                downloading -> Box(contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(
+                        progress = { downloadFraction },
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.dp,
+                        color = Teal,
+                    )
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "إلغاء التنزيل",
+                        modifier = Modifier.size(12.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                downloaded -> Icon(
+                    Icons.Filled.DownloadDone,
+                    contentDescription = "منزَّلة — اضغط للحذف",
+                    tint = GreenBrand,
+                )
+                else -> Icon(
+                    Icons.Filled.Download,
+                    contentDescription = "تنزيل للعمل بلا إنترنت",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        IconButton(onClick = onShare) {
+            Icon(
+                Icons.Filled.Share,
+                contentDescription = "مشاركة السورة",
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         Column(Modifier.weight(1f)) {
@@ -588,26 +903,154 @@ private fun QuranReaderBar(
                 Text(
                     " $riwayaName — ${reciterName.ifBlank { "اختر قارئاً" }}",
                     style = MaterialTheme.typography.bodySmall,
+                    // سطر واحد دائماً: التفافه إلى سطرين كان يزحم شريط
+                    // الأدوات ويدفع أزراره، وأسماء القرّاء تطول كثيراً.
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 )
             }
         }
-        // مكبّر الخطّ — الحرفان بحجمين مختلفين رمزٌ يُفهَم بلا قراءة.
-        IconButton(
-            onClick = { onFont(fontSp - QURAN_FONT_STEP) },
+        // مكبّر الخطّ: **الاستمرار بالضغط يواصل التكبير** حتى الحجم المطلوب،
+        // والنقرة المفردة تبقى للضبط الدقيق.
+        FontStepButton(
+            label = "−",
             enabled = fontSp > LocalStore.QURAN_FONT_MIN,
-        ) {
-            Text("أ", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = Teal)
-        }
-        IconButton(
-            onClick = { onFont(fontSp + QURAN_FONT_STEP) },
+            onStep = { onFont(currentFont() - (currentFont() * 0.10f).coerceAtLeast(1f)) },
+            size = 40,
+            fontSize = 20,
+        )
+        FontStepButton(
+            label = "+",
             enabled = fontSp < LocalStore.QURAN_FONT_MAX,
-        ) {
-            Text("أ", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Teal)
-        }
+            onStep = { onFont(currentFont() + (currentFont() * 0.10f).coerceAtLeast(1f)) },
+            size = 40,
+            fontSize = 24,
+        )
     }
 }
 
 private const val QURAN_FONT_STEP = 3f
+
+/**
+ * 🎛️ تحكّم التلاوة — **نسخة مطابقة لصفّ تحكّم مشغّل التطبيق**.
+ *
+ * الأزرار نفسها بالألوان والأحجام نفسها (السابق/التالي أزرقان ٤٠ نقطة، وزرّ
+ * التشغيل دائرة ٧٢ نقطة خضراء أثناء التشغيل وبرتقاليّة عند التوقّف). التطابق
+ * مقصود: المستخدم تعلّم هذه الأزرار في شاشة الدرس، فتعليمه لغةً ثانية في
+ * المصحف تعقيدٌ بلا مقابل.
+ *
+ * ويُضاف شريط الموضع ومؤقّت النوم فقط حين يفيدان.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun QuranPlayerControls(
+    playing: Boolean,
+    loading: Boolean,
+    onPrevious: () -> Unit,
+    onToggle: () -> Unit,
+    onNext: () -> Unit,
+    onSleep: (Int) -> Unit,
+    seek: Triple<Long, Long, (Long) -> Unit>?,
+) {
+    var sleepSheet by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        seek?.let { (position, duration, onSeek) ->
+            if (duration > 0L) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        clock(position),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    androidx.compose.material3.Slider(
+                        value = position.coerceIn(0L, duration).toFloat(),
+                        onValueChange = { onSeek(it.toLong()) },
+                        valueRange = 0f..duration.toFloat(),
+                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                    )
+                    Text(
+                        clock(duration),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = { sleepSheet = true }) {
+                Icon(Icons.Filled.Bedtime, contentDescription = "مؤقّت نوم", tint = Teal)
+            }
+            IconButton(onClick = onPrevious, modifier = Modifier.size(56.dp)) {
+                Icon(
+                    Icons.Filled.SkipPrevious,
+                    contentDescription = "السابق",
+                    tint = BlueBrand,
+                    modifier = Modifier.size(40.dp),
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .size(72.dp)
+                    .background(if (playing) GreenBrand else OrangeBrand, CircleShape)
+                    .clickable(enabled = !loading, onClick = onToggle),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (loading) {
+                    CircularProgressIndicator(Modifier.size(32.dp), strokeWidth = 2.dp, color = Color.White)
+                } else {
+                    Icon(
+                        if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = if (playing) "إيقاف" else "تشغيل",
+                        tint = Color.White,
+                        modifier = Modifier.size(42.dp),
+                    )
+                }
+            }
+            IconButton(onClick = onNext, modifier = Modifier.size(56.dp)) {
+                Icon(
+                    Icons.Filled.SkipNext,
+                    contentDescription = "التالي",
+                    tint = BlueBrand,
+                    modifier = Modifier.size(40.dp),
+                )
+            }
+            Spacer(Modifier.size(48.dp))
+        }
+    }
+
+    if (sleepSheet) {
+        ModalBottomSheet(onDismissRequest = { sleepSheet = false }) {
+            Text(
+                "مؤقّت نوم",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                textAlign = TextAlign.Center,
+            )
+            listOf(5, 10, 15, 30, 45, 60).forEach { minutes ->
+                ListItem(
+                    modifier = Modifier.clickable {
+                        onSleep(minutes)
+                        sleepSheet = false
+                    },
+                    headlineContent = { Text("بعد $minutes دقيقة") },
+                )
+            }
+            Spacer(Modifier.height(20.dp))
+        }
+    }
+}
+
+private fun clock(ms: Long): String {
+    val total = (ms / 1000).coerceAtLeast(0L)
+    return "%d:%02d".format(total / 60, total % 60)
+}
 
 /**
  * بطاقة آية واحدة.
@@ -623,14 +1066,18 @@ private fun AyahRow(
     fontSp: Float,
     active: Boolean,
     onPlayFromHere: () -> Unit,
+    onActions: () -> Unit,
 ) {
     Box(
         Modifier
             .fillMaxWidth()
             .background(if (active) SecondaryGold.copy(alpha = .14f) else Color.Transparent)
-            .copyableOnLongPress(
-                text = { "$text ﴿$number﴾" },
+            // نقرة = تلاوة من هنا (الفعل الأكثر طلباً، فبأقلّ كلفة).
+            // ضغطة مطوّلة = بقيّة الأفعال في ورقة واحدة — بلا أزرار مبعثرة
+            // حول كل آية، وهو ما يُبقي صفحة المصحف نظيفة كالمصحف الورقي.
+            .combinedClickable(
                 onClick = onPlayFromHere,
+                onLongClick = onActions,
             )
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {

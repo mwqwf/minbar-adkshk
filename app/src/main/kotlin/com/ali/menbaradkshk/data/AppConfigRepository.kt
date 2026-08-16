@@ -200,6 +200,8 @@ class AppConfigRepository private constructor(context: Context) {
                         // اسم الحزمة يُرسَل ليرفض الخادم نسخ التطوير (`.dev`)
                         // ولو تسرّبت — الحارس المحلّي وحده لا يكفي.
                         "packageName" to app.packageName,
+                        // 🎯 **البرهان**: من ثبَّت هذه النسخة؟
+                        "installer" to installerPackage(),
                     ),
                 )
                 .await()
@@ -208,6 +210,29 @@ class AppConfigRepository private constructor(context: Context) {
         // وإلا ضاع الإعلان لأنّ أوّل تشغيل صادف انقطاعاً.
         if (sent) prefs.edit().putInt(KEY_ANNOUNCED, current).apply()
     }
+
+    /**
+     * 🎯 **مَن ثبّت هذا التطبيق؟** — البرهان الذي يُغني عن الانتظار.
+     *
+     * المهلة الزمنيّة حلٌّ تقريبيّ: تنتظر ساعةً *لعلّ* النسخة تكون قد نُشرت.
+     * أمّا هذا فبرهانٌ مباشر: إن كان مثبِّت التطبيق هو **متجر Play**
+     * (`com.android.vending`)، فالنسخة منشورةٌ على المتجر بالضرورة — إذ لا
+     * يستطيع المتجر أن يسلّم ما لم ينشره. فيُعلَن عنها فوراً بلا انتظار.
+     *
+     * وما ثُبِّت بـADB أو من ملف APK يعود بغير ذلك، فيسقط عن البرهان — وهو
+     * تحديداً ما وقع في عطل النسخة ٢٠.
+     *
+     * تُعاد `""` عند الجهل بالمصدر، ولا نُخمّن: البرهان الناقص ليس برهاناً.
+     */
+    private fun installerPackage(): String = runCatching {
+        val pm = app.packageManager
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            pm.getInstallSourceInfo(app.packageName).installingPackageName
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getInstallerPackageName(app.packageName)
+        }
+    }.getOrNull().orEmpty()
 
     /// فحص فوريّ يتجاوز خانق الست ساعات — للفحص الدوريّ اليوميّ وللعودة
     /// إلى التطبيق بعد غياب: التذكير الذي يتأخّر ست ساعات عن الإصدار

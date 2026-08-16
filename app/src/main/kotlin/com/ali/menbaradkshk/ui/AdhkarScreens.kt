@@ -221,6 +221,7 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
     }
     val allDone = items.isNotEmpty() && completed >= items.size
     val fontSp = remember(revision) { vm.store.adhkarFontSp() }
+    val bold = remember(revision) { vm.store.adhkarBold() }
     // الذكر المفتوح مكبَّراً بملء الشاشة (فهرسه في القائمة).
     var zoomed by remember { mutableStateOf<Int?>(null) }
 
@@ -251,11 +252,15 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
         DhikrZoomDialog(
             dhikr = items[index],
             done = remember(revision, index) { vm.store.adhkarDone(sectionId, index) ?: 0L },
-            // يبدأ كبيراً بلا ضبط: من فتح «تكبير» يريد الأكبر لا الحجم نفسه.
-            fontSp = maxOf(fontSp, ZOOM_MIN_SP),
-            currentFont = { maxOf(vm.store.adhkarFontSp(), ZOOM_MIN_SP) },
+            // ⚠️ مقياس مستقلّ عن خطّ القائمة. كان يشاركه مع أرضيّة ٦٠، فكان
+            // التصغير يُبتلع بالأرضيّة ولا يتحرّك شيء («تجمُّد»)، وكان
+            // التكبير يُضخّم القائمة كلّها بعد الخروج بلا أن يطلب أحد ذلك.
+            fontSp = remember(revision) { vm.store.adhkarZoomFontSp() },
+            currentFont = { vm.store.adhkarZoomFontSp() },
+            bold = bold,
             onCount = { count(index) },
-            onFont = { vm.store.setAdhkarFontSp(it) },
+            onFont = { vm.store.setAdhkarZoomFontSp(it) },
+            onToggleBold = { vm.store.setAdhkarBold(!vm.store.adhkarBold()) },
             onDismiss = { zoomed = null },
         )
     }
@@ -289,7 +294,7 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
         // في الإعدادات: مَن يحتاجه (كبير السنّ) هو أقلّ الناس بحثاً في
         // القوائم. زرّان كبيران بحرفَي «أ» بحجمين مختلفين — رمز مفهوم بلا
         // قراءة، وهذا مقصود: كثير من المستخدمين لا يقرأ العربية جيّداً.
-        AdhkarFontControls(vm, fontSp)
+        AdhkarFontControls(vm, fontSp, bold)
 
         if (allDone) {
             Text(
@@ -302,7 +307,15 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
         }
 
         LazyColumn(
-            modifier = Modifier.weight(1f),
+            modifier = Modifier
+                .weight(1f)
+                // 🔍 طريقة تكبير ثانية: الإصبعان. الأزرار تكفي من يعرفها،
+                // والإيماءة تخدم من يجرّبها بلا تعلّم — وهي لا تبتلع التمرير
+                // (انظر [pinchFontSize])، فلا نخسر شيئاً بإضافتها.
+                .pinchFontSize(
+                    current = { vm.store.adhkarFontSp() },
+                    onChange = { vm.store.setAdhkarFontSp(it) },
+                ),
             contentPadding = PaddingValues(bottom = 24.dp),
         ) {
             items(items.size, key = { it }) { index ->
@@ -317,6 +330,7 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
                     dhikr = items[index],
                     done = done,
                     fontSp = fontSp,
+                    bold = bold,
                     onCopy = {
                         copyToClipboard(
                             context,
@@ -358,13 +372,12 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
  * بالفرق واحداً على المدى كلّه.
  */
 @Composable
-private fun AdhkarFontControls(vm: AppViewModel, current: Float) {
+private fun AdhkarFontControls(vm: AppViewModel, current: Float, bold: Boolean) {
     val atMin = current <= LocalStore.ADHKAR_FONT_MIN
     val atMax = current >= LocalStore.ADHKAR_FONT_MAX
-    fun step(up: Boolean): Float {
-        val delta = (current * 0.15f).coerceAtLeast(2f)
-        return if (up) current + delta else current - delta
-    }
+    // ⚠️ لا دالّة خطوة هنا: الزرّان يحسبان خطوتهما من **آخر قيمة في المخزن**
+    // لا من القيمة التي رُكِّبت بها الدالّة، وإلّا تجمّد التكبير عند خطوة
+    // واحدة أثناء الضغط المستمرّ. (كانت هنا `step()` لا يناديها أحد.)
     // زرّان كبيران بعلامتَي − و + بجانب كلمة «حجم الخطّ» صريحة. الشكل
     // السابق (حرفا «أ» صغيران بلا مسمّى في طرف صفّ) كان غير مرئيّ عملياً:
     // من يحتاج التكبير هو أقلّ الناس قدرةً على تمييز أيقونة خافتة صغيرة.
@@ -400,11 +413,17 @@ private fun AdhkarFontControls(vm: AppViewModel, current: Float) {
             onStep = { vm.store.setAdhkarFontSp(vm.store.adhkarFontSp().let { it + (it * 0.12f).coerceAtLeast(1f) }) },
         )
         Spacer(Modifier.weight(1f))
-        Text(
-            if (atMax) "أكبر حجم" else "استمرّ بالضغط ليكبر",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // ⭐ «عريض» — كلمةً لا أيقونة، ومكتوبةً بالوزن الذي تصفه فيراها
+        // المستخدم قبل أن يقرأها. والحجم وحده لا يكفي لضعيف البصر: الثخانة
+        // هي ما يفصل الحرف عن الخلفيّة.
+        TextButton(onClick = { vm.store.setAdhkarBold(!bold) }) {
+            Text(
+                "عريض",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
+                color = if (bold) Teal else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -431,8 +450,10 @@ private fun DhikrZoomDialog(
     /// القيمة اللحظيّة من المخزن — حلقة التكرار أثناء الضغط تحتاج آخر حجم
     /// لا الحجم الذي رُكِّبت به الدالة، وإلا تجمّد التكبير عند خطوة واحدة.
     currentFont: () -> Float,
+    bold: Boolean,
     onCount: () -> Unit,
     onFont: (Float) -> Unit,
+    onToggleBold: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val target = dhikr.repeat.toLong()
@@ -453,17 +474,25 @@ private fun DhikrZoomDialog(
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Filled.Close, "إغلاق", tint = MaterialTheme.colorScheme.onSurface)
                     }
+                    TextButton(onClick = onToggleBold) {
+                        Text(
+                            "عريض",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
+                            color = if (bold) Teal else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Spacer(Modifier.weight(1f))
                     FontStepButton(
                         label = "−",
-                        enabled = fontSp > LocalStore.ADHKAR_FONT_MIN,
-                        onStep = { onFont(currentFont() - (currentFont() * 0.12f).coerceAtLeast(1f)) },
+                        enabled = fontSp > LocalStore.ZOOM_FONT_MIN,
+                        onStep = { onFont(currentFont() - (currentFont() * 0.12f).coerceAtLeast(2f)) },
                     )
                     Spacer(Modifier.width(8.dp))
                     FontStepButton(
                         label = "+",
-                        enabled = fontSp < LocalStore.ADHKAR_FONT_MAX,
-                        onStep = { onFont(currentFont() + (currentFont() * 0.12f).coerceAtLeast(1f)) },
+                        enabled = fontSp < LocalStore.ZOOM_FONT_MAX,
+                        onStep = { onFont(currentFont() + (currentFont() * 0.12f).coerceAtLeast(2f)) },
                     )
                 }
                 // الشاشة كلّها منطقة عدّ: لا هدف صغير يُصاب.
@@ -473,12 +502,19 @@ private fun DhikrZoomDialog(
                         .fillMaxWidth()
                         .clickable(enabled = !finished, onClick = onCount)
                         .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                        // الطريقة الثالثة هنا أيضاً: الإصبعان يكبّران الذكر
+                        // مباشرةً بلا مغادرة الشاشة ولا بحث عن زرّ.
+                        .pinchFontSize(current = currentFont, onChange = onFont)
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                 ) {
                     Text(
                         dhikr.text,
                         fontSize = fontSp.sp,
                         lineHeight = (fontSp * 1.7f).sp,
+                        // ⭐ الوزن العريض شقيقُ الحجم لا زينةً بعده: التكبير
+                        // يمدّ الحرف والوزن يُثخّنه، وبالثخانة يفترق عن
+                        // الخلفيّة في العين الضعيفة.
+                        fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -507,6 +543,7 @@ private fun DhikrCard(
     dhikr: Dhikr,
     done: Long,
     fontSp: Float,
+    bold: Boolean,
     onTap: () -> Unit,
     onShare: () -> Unit,
     onCopy: () -> Unit,
@@ -538,6 +575,7 @@ private fun DhikrCard(
                     // ارتفاع السطر يتبع الحجم نسبياً (١.٧٥×): ثابتاً كان
                     // النصّ المكبَّر يتراكب على نفسه ويصير غير مقروء أصلاً.
                     lineHeight = (fontSp * 1.75f).sp,
+                    fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
                 ),
                 modifier = Modifier
                     .fillMaxWidth()

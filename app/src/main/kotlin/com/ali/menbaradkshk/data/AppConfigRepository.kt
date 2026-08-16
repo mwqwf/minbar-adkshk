@@ -151,6 +151,51 @@ class AppConfigRepository private constructor(context: Context) {
         prefs.edit().putInt(KEY_LESSON_MUTED, latest).apply()
     }
 
+    /**
+     * 📣 **الإعلان الذاتيّ عن الإصدار الجديد** — بلا أيّ خطوة يدويّة.
+     *
+     * **المشكلة التي يحلّها**: كان على صاحب التطبيق أن يفتح لوحة التحكّم بعد
+     * كل نشرٍ على المتجر ويكتب الرقم والرسالة بيده. وهي خطوةٌ تُنسى — ونُسيت
+     * فعلاً — فيبقى الناس على نسخة قديمة لا يعلمون أنّ بعدها شيئاً.
+     *
+     * **الفكرة**: النسخة الجديدة نفسها هي أصدق من يُعلن عن نفسها. فحين تعمل
+     * نسخةٌ أحدث ممّا في `app_config` على جهاز مستخدم، تُبلّغ الخادمَ برقمها
+     * وبموجزها المشحون معها ([ReleaseNotes]). ولا يقع ذلك إلا بعد أن ينشر
+     * المتجر النسخة فعلاً — فالإعلان لا يسبق التوفّر أبداً، وهو عيبُ النشر
+     * وقت البناء.
+     *
+     * **الأمان**: القرار ليس للعميل. الدالة السحابيّة `reportAppVersion` هي
+     * التي تقرّر، ولا تنشر إلا عند بلوغ **نصابٍ من أجهزة متمايزة** — فجهازٌ
+     * واحد مُتلاعَب به لا يستطيع أن يُطلق إشعاراً لكل الناس.
+     *
+     * ويقع مرّة واحدة لكل نسخة على كل جهاز (ختم محليّ)، فلا يكلّف شيئاً.
+     */
+    suspend fun announceOwnVersionIfNewer() {
+        val current = com.ali.menbaradkshk.BuildConfig.VERSION_CODE
+        if (prefs.getInt(KEY_ANNOUNCED, 0) >= current) return
+        // لا نُبلّغ إلا إن كنّا فعلاً أحدث ممّا يعرفه الخادم.
+        val known = prefs.getInt(KEY_LATEST, 0)
+        if (known >= current) {
+            prefs.edit().putInt(KEY_ANNOUNCED, current).apply()
+            return
+        }
+        val sent = runCatching {
+            com.google.firebase.functions.FirebaseFunctions.getInstance()
+                .getHttpsCallable("reportAppVersion")
+                .call(
+                    hashMapOf(
+                        "versionCode" to current,
+                        "versionName" to com.ali.menbaradkshk.BuildConfig.VERSION_NAME,
+                        "summary" to ReleaseNotes.trimmed(),
+                    ),
+                )
+                .await()
+        }.isSuccess
+        // الختم يُوضع عند النجاح فقط: فشل الشبكة يجب أن يُعيد المحاولة لاحقاً،
+        // وإلا ضاع الإعلان لأنّ أوّل تشغيل صادف انقطاعاً.
+        if (sent) prefs.edit().putInt(KEY_ANNOUNCED, current).apply()
+    }
+
     /// فحص فوريّ يتجاوز خانق الست ساعات — للفحص الدوريّ اليوميّ وللعودة
     /// إلى التطبيق بعد غياب: التذكير الذي يتأخّر ست ساعات عن الإصدار
     /// الجديد يفوّت أوّل يوم كامل من عمره.
@@ -202,6 +247,8 @@ class AppConfigRepository private constructor(context: Context) {
             "https://play.google.com/store/apps/details?id=$STORE_PACKAGE"
 
         private const val PREFS = "minbar_app_config"
+        /// آخر نسخة أعلنت عن نفسها من هذا الجهاز — كي لا يتكرّر الإبلاغ.
+        private const val KEY_ANNOUNCED = "announced_version_code"
         private const val KEY_LATEST = "latest_version_code"
         private const val KEY_MIN = "min_supported_version_code"
         private const val KEY_MESSAGE = "message"

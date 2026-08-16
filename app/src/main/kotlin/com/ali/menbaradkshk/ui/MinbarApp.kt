@@ -211,7 +211,11 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
     val navigationBlocked = route == Route.ContributeTranscript &&
         transcriptContribution.submitting
     // المشغّل ووضع القيادة شاشتان بملء الشاشة بلا أشرطة (نمط الأصل).
-    val fullScreen = route is Route.Lesson || route == Route.Car
+    // المصحف المصوَّر بملء الشاشة أيضاً حين تُخفى أدواته: الصفحة نسبتها
+    // ١:١٫٤٣ فكل شريط يقتطع من ارتفاعها يقتطع من عرضها أضعافه.
+    val quranImmersive by vm.quranImmersive.collectAsState()
+    val fullScreen = route is Route.Lesson || route == Route.Car ||
+        (route is Route.QuranSurah && quranImmersive)
 
     LaunchedEffect(message) {
         message?.let {
@@ -344,6 +348,19 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                                     Icon(Icons.Filled.Menu, "الإعدادات")
                                 }
                             }
+                            // 🕌 المصحف: البحث والعلامات في الشريط العلوي كما
+                            // في الرئيسية — لا في متن الصفحة. كانت الحاشية
+                            // تلتهم ٥٧٪ من الشاشة فلا يظهر إلا ثلاث سور،
+                            // والفهرس هو المقصود من الصفحة لا حاشيتها.
+                            Route.Quran -> {
+                                QuranBookmarksAction(vm)
+                                IconButton(onClick = { vm.setQuranSearchOpen(true) }) {
+                                    Icon(Icons.Filled.Search, "بحث في المصحف")
+                                }
+                                IconButton(onClick = vm::openSettings) {
+                                    Icon(Icons.Filled.Menu, "الإعدادات")
+                                }
+                            }
                             Route.Contribute -> {
                                 IconButton(onClick = { vm.open(Route.MySubmissions) }) {
                                     Icon(Icons.Filled.HistoryEdu, "مساهماتي")
@@ -433,7 +450,10 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         // صورة تفتح «ساهم بالنص») يدمّر rememberSaveable لنموذج «شارك درساً»
         // المفتوح فيمسح ملفات المستخدم وعنوانه بصمت.
         val screenStateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
-        Column(Modifier.padding(padding)) {
+        // ⚠️ `fillMaxSize` لازم: بدونه يقيس العمود بارتفاع محتواه، فالشاشة
+        // التي تطلب ملء الارتفاع (المصحف المصوَّر) تحصل على أقلّ ممّا يتاح
+        // لها — كانت صفحة المصحف تظهر في نصف الشاشة بلا سبب ظاهر.
+        Column(Modifier.fillMaxSize().padding(padding)) {
         Box(Modifier.weight(1f)) {
             screenStateHolder.SaveableStateProvider(routeStateKey(route)) {
                 when (val current = route) {
@@ -614,6 +634,31 @@ private fun LessonUpdateNudge(
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // 📝 موجز ما في النسخة الجديدة — لا «تحسينات عامّة» التي لا
+                // تقول شيئاً. من يعرف ما ينتظره يحدّث، ومن لا يعرف يؤجّل.
+                // وسطران يكفيان: هذا حوارٌ يعترض قارئاً لا صفحةُ إصدار.
+                val summary = when (status) {
+                    is AppConfigRepository.Status.Required -> status.message
+                    is AppConfigRepository.Status.Optional -> status.message
+                    else -> ""
+                }
+                if (summary.isNotBlank()) {
+                    Spacer(Modifier.height(10.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .5f),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text(
+                            summary,
+                            style = MaterialTheme.typography.bodyMedium,
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 4,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        )
+                    }
+                }
                 Spacer(Modifier.height(6.dp))
                 Text(
                     "تنزيلاتك وقوائمك تبقى كما هي.",
@@ -644,6 +689,27 @@ private fun LessonUpdateNudge(
                 }
             }
         }
+    }
+}
+
+/**
+ * ⭐ أيقونة «علاماتي» في شريط المصحف.
+ *
+ * **لماذا مكوّن مستقلّ؟** لأنّ قراءة العلامات تحتاج مراقبة `revision`، ولو
+ * رُوقب في `MinbarApp` نفسه لأُعيد تركيب هيكل التطبيق كلّه مع **كل** كتابة
+ * تفضيل — والكتابات كثيرة (موضع القراءة، حجم الخطّ، العدّادات). فالمراقبة
+ * تبقى محبوسة في أصغر نطاق يحتاجها.
+ *
+ * ولا تظهر إلا لمن علّم آيةً فعلاً: أيقونةٌ لميزة لم تُستعمل بعدُ زحامٌ بلا
+ * فائدة، وشريط المصحف يقرؤه كبار السنّ.
+ */
+@Composable
+private fun QuranBookmarksAction(vm: AppViewModel) {
+    val revision by vm.store.revision.collectAsState()
+    val hasBookmarks = remember(revision) { vm.store.quranBookmarks().isNotEmpty() }
+    if (!hasBookmarks) return
+    IconButton(onClick = { vm.setQuranBookmarksOpen(true) }) {
+        Icon(Icons.Filled.Star, "علاماتي")
     }
 }
 

@@ -335,6 +335,39 @@ class LocalStore private constructor(context: Context) {
         putFloat(KEY_ADHKAR_FONT, value.coerceIn(ADHKAR_FONT_MIN, ADHKAR_FONT_MAX))
     }
 
+    /**
+     * 🔍 حجم خطّ **شاشة الذكر المكبَّرة** — مقياس مستقلّ تماماً عن خطّ القائمة.
+     *
+     * ⚠️ كان الاثنان مقياساً واحداً، وكانت الشاشة المكبَّرة ترفع القيمة إلى
+     * أرضيّة ٦٠ بينما سقف القائمة ٦٤ — فلم يبقَ إلا أربع نقاط للحركة،
+     * والتصغير يُبتلع بالأرضيّة فلا يتحرّك شيء أصلاً. النتيجة: أزرار تعمل
+     * ولا يتغيّر الخطّ = «تجمُّد» في نظر المستخدم.
+     *
+     * والفصل صحيح مفهوميّاً لا التفافاً على العطل: خطّ القائمة يجب أن يبقى
+     * في حدود تُبقي البطاقات مقروءة، أمّا الشاشة المكبَّرة فغرضها الوحيد
+     * **أكبر خطّ ممكن** لكبير السنّ — فمداها واسع (٤٠–١٦٠).
+     */
+    /**
+     * ⭐ **خطّ الأذكار عريضاً** — مفعَّل افتراضياً.
+     *
+     * **لماذا افتراضاً؟** لأنّ التكبير وحده لا يكفي لضعيف البصر: الحجم يمدّ
+     * الحرف والوزن يُغمِّقه، وثخانة الحرف هي ما يفصله عن الخلفيّة فعلاً.
+     * وعائلة Amiri فيها `amiri_bold` حقيقيّ، فالوزن مرسومٌ لا مُصطنَع
+     * بتغليظ حسابيّ يشوّه الحرف العربي.
+     *
+     * ويبقى المخرج قائماً لمن يفضّل الرفيع — تبديلٌ واحد بجوار الحجم.
+     */
+    fun adhkarBold(): Boolean = bool(KEY_ADHKAR_BOLD, true)
+    fun setAdhkarBold(value: Boolean) = write { putBoolean(KEY_ADHKAR_BOLD, value) }
+
+    fun adhkarZoomFontSp(): Float =
+        double(KEY_ADHKAR_ZOOM_FONT, ZOOM_FONT_DEFAULT.toDouble()).toFloat()
+            .coerceIn(ZOOM_FONT_MIN, ZOOM_FONT_MAX)
+
+    fun setAdhkarZoomFontSp(value: Float) = write {
+        putFloat(KEY_ADHKAR_ZOOM_FONT, value.coerceIn(ZOOM_FONT_MIN, ZOOM_FONT_MAX))
+    }
+
     // ---- 🕌 تفضيلات المصحف ----
 
     /// الرواية المختارة — حفص افتراضاً (الرواية الرئيسيّة).
@@ -357,21 +390,66 @@ class LocalStore private constructor(context: Context) {
     }
 
     /**
-     * 💡 تلميح «استمع إلى تلاوة هذه الرواية داخل المنبر».
+     * ⭐ خطّ المصحف عريضاً — **مفعَّل افتراضياً**.
      *
-     * تلميح خفيف يظهر من حين لآخر في المصحف ثم **يختفي وحده** ولو لم يُلمس.
-     * المخزن يحفظ أمرين فقط: آخر مرّة ظهر فيها، وهل أوقفه المستخدم نهائياً.
+     * **لماذا افتراضاً؟** لأنّ التكبير وحده لا يحلّ ضعف البصر: الحرف الكبير
+     * الرفيع يبقى باهتاً، والوزن هو ما يفصله عن الخلفيّة. وجمهور المصحف فيه
+     * كبار سنّ، فالافتراض يجب أن يكون في صفّهم — ومن أراد الرفيع أوقفه بضغطة.
+     *
+     * وعائلة Amiri فيها وزنٌ عريض حقيقيّ (`amiri_bold`)، فالعرض رسمٌ أصليّ لا
+     * تغليظٌ مصطنع يُشوّه الرسم العثمانيّ بعلاماته.
      */
-    fun quranHintMutedForever(): Boolean = bool(KEY_QURAN_HINT_MUTED)
-    fun setQuranHintMutedForever(value: Boolean) =
-        write { putBoolean(KEY_QURAN_HINT_MUTED, value) }
+    fun quranBold(): Boolean = bool(KEY_QURAN_BOLD, true)
+    fun setQuranBold(value: Boolean) = write { putBoolean(KEY_QURAN_BOLD, value) }
 
-    fun quranHintShownAtMs(): Long = long(KEY_QURAN_HINT_AT)
-    fun markQuranHintShown() = write { putLong(KEY_QURAN_HINT_AT, System.currentTimeMillis()) }
+    /**
+     * نمط عرض المصحف: `true` مصوَّر (صفحات المصحف الورقي)، `false` مكتوب.
+     *
+     * **الافتراض مصوَّر** (قرار صريح): من يفتح مصحفاً يتوقّع صفحة المصحف التي
+     * حفظ مواضعها عينُه — الإطار والخطّ وموضع الآية في الصفحة. والمكتوب خيارٌ
+     * ثانٍ لمن أراد تكبير الخطّ أو النسخ أو القراءة بلا إنترنت قبل التنزيل.
+     *
+     * والاختيار يُحفظ فلا يُسأل عنه في كل فتح.
+     */
+    fun quranImageMode(): Boolean = bool(KEY_QURAN_IMAGE_MODE, true)
+    fun setQuranImageMode(value: Boolean) = write { putBoolean(KEY_QURAN_IMAGE_MODE, value) }
 
-    /// آخر موضع قراءة (فهرس مسطّح) — يفتح المصحف حيث تركه صاحبه.
-    fun quranLastAyah(): Int = long(KEY_QURAN_LAST, 0L).toInt()
+    /**
+     * آخر موضع قراءة (فهرس مسطّح) — يفتح المصحف حيث تركه صاحبه، و`-1` إن لم
+     * يقرأ بعدُ.
+     *
+     * ⚠️ الافتراض **`-1` لا `0`**: الصفر موضعٌ صحيح (الفاتحة، الآية ١)، فلمّا
+     * كان هو أيضاً «لا موضع» كانت بطاقة «تابع القراءة» تختفي كلّما فتح المستخدم
+     * الفاتحة — وهي أكثر السور فتحاً — فيُمحى موضعه في البقرة بلا أن يفعل شيئاً.
+     * تمييز «لا شيء» عن «أوّل المصحف» شرطُ صحّة لا تجميل.
+     */
+    fun quranLastAyah(): Int = long(KEY_QURAN_LAST, -1L).toInt()
     fun setQuranLastAyah(value: Int) = write { putLong(KEY_QURAN_LAST, value.toLong()) }
+
+    /**
+     * ⭐ علامات الآيات — فهارس مسطّحة يحفظها القارئ ليرجع إليها.
+     *
+     * **لماذا منفصلة عن «موضع القراءة»؟** لأنّهما حاجتان مختلفتان: الموضع
+     * واحدٌ يتحرّك مع القارئ تلقائياً، والعلامة قرارٌ صريح يبقى (آية يحفظها،
+     * أو موضع في ورد آخر). خلطهما كان يجعل كل تمريرة تمحو ما علّمه بيده.
+     *
+     * والأحدث أوّلاً كالمفضّلة في بقيّة التطبيق — نمطٌ واحد يتعلّمه المستخدم
+     * مرّة.
+     */
+    fun quranBookmarks(): List<Int> =
+        stringList(KEY_QURAN_BOOKMARKS).mapNotNull(String::toIntOrNull)
+
+    fun isQuranBookmarked(flatAyah: Int): Boolean = flatAyah in quranBookmarks()
+
+    /// يُرجع `true` إن أُضيفت العلامة، و`false` إن أُزيلت — كي تعرف الواجهة
+    /// ماذا تقول للمستخدم بلا قراءة ثانية للقرص.
+    fun toggleQuranBookmark(flatAyah: Int): Boolean {
+        val values = quranBookmarks().toMutableList()
+        val added = !values.remove(flatAyah)
+        if (added) values.add(0, flatAyah)
+        setStringList(KEY_QURAN_BOOKMARKS, values.map(Int::toString))
+        return added
+    }
 
     fun autoDownloadEnabled(): Boolean = bool(KEY_AUTO_DOWNLOAD)
     fun setAutoDownloadEnabled(value: Boolean) = write { putBoolean(KEY_AUTO_DOWNLOAD, value) }
@@ -890,12 +968,22 @@ class LocalStore private constructor(context: Context) {
         const val ADHKAR_FONT_DEFAULT = 19f
         const val ADHKAR_FONT_MAX = 120f
 
+        const val KEY_ADHKAR_ZOOM_FONT = "adhkar_zoom_font_sp"
+        const val KEY_ADHKAR_BOLD = "adhkar_bold"
+
+        /// مدى الشاشة المكبَّرة: من مقروء مريح إلى **ضخم** لضعاف البصر.
+        /// السقف ١٦٠ مختار عملياً: أكبر منه لا تتّسع الكلمة الواحدة عرضاً.
+        const val ZOOM_FONT_MIN = 40f
+        const val ZOOM_FONT_DEFAULT = 90f
+        const val ZOOM_FONT_MAX = 160f
+
         const val KEY_QURAN_RIWAYA = "quran_riwaya"
         const val KEY_QURAN_RECITER = "quran_reciter_"
         const val KEY_QURAN_FONT = "quran_font_sp"
         const val KEY_QURAN_LAST = "quran_last_ayah"
-        const val KEY_QURAN_HINT_MUTED = "quran_hint_muted"
-        const val KEY_QURAN_HINT_AT = "quran_hint_at_ms"
+        const val KEY_QURAN_IMAGE_MODE = "quran_image_mode"
+        const val KEY_QURAN_BOOKMARKS = "quran_bookmarks"
+        const val KEY_QURAN_BOLD = "quran_bold"
         const val QURAN_FONT_MIN = 20f
         const val QURAN_FONT_DEFAULT = 26f
         const val QURAN_FONT_MAX = 72f

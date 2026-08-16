@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
@@ -768,6 +769,63 @@ fun OfflineBanner(message: String, onRetry: () -> Unit) {
         Spacer(Modifier.width(10.dp))
         Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
         androidx.compose.material3.TextButton(onClick = onRetry) { Text("إعادة المحاولة") }
+    }
+}
+
+/**
+ * 🔔 شريط «تتوفّر نسخة أحدث» — الطبقة **المستمرّة** من تذكير التحديث.
+ *
+ * **لماذا شريطٌ لا يزول؟** لأنّ بقيّة الطبقات مؤقّتة كلّها: الإشعار يمرّ
+ * ويُمسح، والشاشة الكاملة لا تعود قبل ٢٤ ساعة، وتذكير الدرس مرّتان يومياً
+ * ثم يسكت. فمن أغلقها جميعاً بقي على نسخةٍ قديمة أسابيع بلا ما يذكّره —
+ * وهذا ما يجعل التحديث لا يصل إلى من يحتاجه أكثر.
+ *
+ * وهو مع ذلك **غير مزعج**: سطرٌ واحد لا يحجب شيئاً ولا يعترض فعلاً. الإلحاح
+ * في البقاء لا في الحجم.
+ *
+ * ولا يظهر إلا حين تكون هناك نسخة أحدث فعلاً — فهو صامتٌ تماماً في الحالة
+ * الطبيعيّة، ولا يراه إلا من عليه أن يراه.
+ */
+@Composable
+fun UpdateBanner(vm: AppViewModel) {
+    val status by vm.updateStatus.collectAsState()
+    val latest = when (val s = status) {
+        is com.ali.menbaradkshk.data.AppConfigRepository.Status.Required -> s
+        is com.ali.menbaradkshk.data.AppConfigRepository.Status.Optional -> s
+        else -> null
+    } ?: return
+
+    val required = latest is com.ali.menbaradkshk.data.AppConfigRepository.Status.Required
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (required) OrangeBrand.copy(alpha = .16f) else Teal.copy(alpha = .13f),
+            )
+            .clickable { vm.openStore("") }
+            .padding(start = 12.dp, top = 9.dp, bottom = 9.dp, end = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Filled.SystemUpdate,
+            contentDescription = null,
+            tint = if (required) OrangeBrand else Teal,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            if (required) "نسختك قديمة — حدِّث الآن" else "تتوفّر نسخة أحدث من التطبيق",
+            Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        androidx.compose.material3.TextButton(onClick = { vm.openStore("") }) {
+            Text("تحديث")
+        }
     }
 }
 

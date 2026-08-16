@@ -344,6 +344,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             // قرار العرض كلّه في `shouldPrompt` (الصرف + خانق ٢٤ ساعة)،
             // فنكتفي هنا بنشر الحالة كما هي.
             _updateStatus.value = status
+            // 📣 وبعد معرفة ما يعرفه الخادم: إن كنّا أحدث منه، أعلنّا عن
+            // أنفسنا. **بعد** الفحص لا قبله، كي نقارن برقمٍ حديث لا قديم.
+            runCatching { appConfig.announceOwnVersionIfNewer() }
         }
     }
 
@@ -427,6 +430,45 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _quranError = MutableStateFlow<String?>(null)
     val quranError: StateFlow<String?> = _quranError.asStateFlow()
 
+    /**
+     * 🔍 هل حقل بحث المصحف مفتوح؟
+     *
+     * **لماذا في الـViewModel لا في الشاشة؟** لأنّ زرّه في **الشريط العلوي**
+     * (كما في الرئيسية) والحقل في متن الشاشة، وهما مكوّنان متجاوران لا
+     * متداخلان. وبقاؤه هنا يجعله ينجو من تدوير الشاشة أيضاً.
+     *
+     * وسببُ نقله إلى الشريط أصلاً: كانت حاشية الفهرس تلتهم **٥٧٪ من الشاشة**
+     * فلا يظهر إلا ثلاث سور — والفهرس هو المقصود من الصفحة لا حاشيتها.
+     */
+    private val _quranSearchOpen = MutableStateFlow(false)
+    val quranSearchOpen: StateFlow<Boolean> = _quranSearchOpen.asStateFlow()
+
+    fun setQuranSearchOpen(open: Boolean) {
+        _quranSearchOpen.value = open
+    }
+
+    /// ورقة «علاماتي» — تُفتح من الشريط العلوي كذلك.
+    private val _quranBookmarksOpen = MutableStateFlow(false)
+    val quranBookmarksOpen: StateFlow<Boolean> = _quranBookmarksOpen.asStateFlow()
+
+    fun setQuranBookmarksOpen(open: Boolean) {
+        _quranBookmarksOpen.value = open
+    }
+
+    /**
+     * 🖼️ هل المصحف المصوَّر معروضٌ بملء الشاشة (بلا شريط علويّ)؟
+     *
+     * صفحة المصحف نسبتها ١:١٫٤٣، فكل شريطٍ يقتطع من ارتفاعها يقتطع من
+     * **عرضها** أضعافه: بالأشرطة كانت تظهر في أقلّ من نصف الشاشة. فتُخفى
+     * كلّها وتُستدعى بنقرة على فراغ الصفحة.
+     */
+    private val _quranImmersive = MutableStateFlow(false)
+    val quranImmersive: StateFlow<Boolean> = _quranImmersive.asStateFlow()
+
+    fun setQuranImmersive(value: Boolean) {
+        _quranImmersive.value = value
+    }
+
     /// يُحمّل الفهرس ونصّ الرواية الحالية عند أوّل فتح للمصحف. البيانات
     /// محلّية فالتحميل سريع، لكنّه يبقى خارج الخيط الرئيسي (فكّ gzip).
     fun loadQuran() {
@@ -458,6 +500,102 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { _quranText.value = quran.text(id) }
                 .onFailure { _quranError.value = "تعذّر فتح هذه الرواية." }
         }
+    }
+
+    // ---- 🖼️ المصحف المصوَّر ----
+
+    val mushaf = com.ali.menbaradkshk.data.MushafRepository.get(application)
+
+    private val _mushafPages = MutableStateFlow<List<IntArray>>(emptyList())
+    val mushafPages: StateFlow<List<IntArray>> = _mushafPages.asStateFlow()
+
+    /// أوّل آية في كل صفحة — تُشتقّ من الفهرس مرّة، ويُبنى عليها
+    /// «أي صفحة لأي آية» (بحث ثنائيّ) فيتبع العرض المصوَّر التلاوة.
+    private val _pageStarts = MutableStateFlow(IntArray(0))
+    val pageStarts: StateFlow<IntArray> = _pageStarts.asStateFlow()
+
+    /// يُحمَّل **كسلاً**: لا يفكّ ضغط الإحداثيات إلا من فتح العرض المصوَّر
+    /// فعلاً، فلا يدفع قارئ النصّ ثمن ميزة لا يستعملها.
+    fun loadMushaf() {
+        // بدايات الصفحات تُحدَّث في كل نداء لا مرّة واحدة: قد يُطلب العرض
+        // المصوَّر قبل أن يكتمل تحميل الفهرس، فتبقى فارغةً أبداً لو ربطناها
+        // بشرط تحميل الإحداثيات — ومعها يتعطّل تتبّع التلاوة للصفحات.
+        if (_pageStarts.value.isEmpty()) {
+            _pageStarts.value =
+                _quranIndex.value?.pages?.map { it.start }?.toIntArray() ?: IntArray(0)
+        }
+        // ⚠️ الرواية جزءٌ من المفتاح: لكل مصحفٍ تخطيطُ صفحاته وترقيمُ آياته،
+        // فإبقاء إحداثيات رواية عند تبديلها يعني إطاراً على آية أخرى.
+        val riwaya = _riwaya.value
+        if (_mushafRiwaya.value == riwaya && _mushafPages.value.isNotEmpty()) return
+        viewModelScope.launch {
+            runCatching {
+                val layout = mushaf.layout(riwaya)
+                _mushafPages.value = layout.pages
+                _mushafFlatNumbering.value = layout.isFlat
+                _mushafAspect.value = layout.aspect
+                _mushafRiwaya.value = riwaya
+            }.onFailure { _message.value = "تعذّر فتح المصحف المصوَّر." }
+        }
+    }
+
+    /// الرواية التي حُمِّلت إحداثياتها فعلاً — تمنع خلط مصحفٍ بآخر.
+    private val _mushafRiwaya = MutableStateFlow("")
+
+    /**
+     * هل ترقيم إحداثيات المصحف المعروض **مسطّحٌ بعدّ حفص**؟
+     *
+     * حفص نعم، أمّا ورش وقالون فيرقّمان بعدّهما المدنيّ (`سورة×1000 + آية`) —
+     * وهو عدٌّ يقسم آية الكرسي آيتين مثلاً. فلا يجوز مقارنة رقمٍ من هذا بذاك.
+     */
+    /// نسبة صفحة المصحف المعروض — تُقرأ من التخطيط لا من ثابت، فلكل رواية
+    /// صندوقُ قصٍّ خاصّ بها.
+    private val _mushafAspect = MutableStateFlow(920f / 1301f)
+    val mushafAspect: StateFlow<Float> = _mushafAspect.asStateFlow()
+
+    private val _mushafFlatNumbering = MutableStateFlow(true)
+    val mushafFlatNumbering: StateFlow<Boolean> = _mushafFlatNumbering.asStateFlow()
+
+    fun setQuranImageMode(enabled: Boolean) {
+        store.setQuranImageMode(enabled)
+        if (enabled) loadMushaf()
+    }
+
+    private var pagesDownloadJob: kotlinx.coroutines.Job? = null
+
+    fun downloadMushafPages(riwayaId: String = _riwaya.value) {
+        if (pagesDownloadJob?.isActive == true) {
+            _message.value = "هناك تنزيل جارٍ — انتظر انتهاءه أو ألغِه."
+            return
+        }
+        pagesDownloadJob = viewModelScope.launch {
+            runCatching { quranDownloads.downloadMushafPages(riwayaId) }
+                .onSuccess { _message.value = "اكتمل تنزيل صور المصحف — يعمل بلا إنترنت." }
+                .onFailure {
+                    if (it is kotlinx.coroutines.CancellationException) {
+                        _message.value = "أُوقف التنزيل — ما نُزّل محفوظ."
+                    } else {
+                        _message.value = "انقطع التنزيل — اضغط مجدداً ليُكمل من حيث توقّف."
+                    }
+                }
+        }
+    }
+
+    fun cancelPagesDownload() {
+        pagesDownloadJob?.cancel()
+        pagesDownloadJob = null
+    }
+
+    fun deleteMushafPages() {
+        quranDownloads.deletePages(_riwaya.value)
+        _message.value = "حُذفت صور المصحف المنزَّلة."
+    }
+
+    /// يفتح المصحف عند آية بفهرسها المسطّح — يُستعمل للربط بين العرضين
+    /// حين تقع صفحة المصوَّر في سورة غير المفتوحة.
+    fun openQuranAtFlatAyah(flatAyah: Int) {
+        val surah = _quranIndex.value?.surahAt(flatAyah) ?: return
+        open(Route.QuranSurah(surah.number, flatAyah))
     }
 
     fun quranSurahName(number: Int): String =
@@ -508,6 +646,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         playback.playQuran(items, (fromAyah - 1).coerceIn(0, items.lastIndex))
     }
 
+    /**
+     * تلاوة من آية بفهرسها المسطّح — مدخل العرض المصوَّر.
+     *
+     * الصفحة الواحدة قد تحوي آخر سورة وأوّل التي تليها، فالنقر فيها لا يعرف
+     * سورةً مسبقاً؛ نستخرجها من الفهرس ثم نُسند إلى [playQuran] نفسه فلا
+     * يتفرّع منطق التشغيل إلى مسارين يتباعدان مع الوقت.
+     */
+    fun playQuranAtFlatAyah(flatAyah: Int, reciter: com.ali.menbaradkshk.data.Reciter) {
+        val surah = _quranIndex.value?.surahAt(flatAyah) ?: return
+        playQuran(surah, reciter, fromAyah = flatAyah - surah.start + 1)
+    }
+
     // ---- ⬇️ تنزيل التلاوة للعمل بلا إنترنت ----
 
     val quranDownloads = com.ali.menbaradkshk.data.QuranDownloadRepository.get(application)
@@ -555,7 +705,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         quranDownloadJob = viewModelScope.launch {
             runCatching {
                 for (surah in index.surahs) {
-                    if (quranDownloads.isSurahDownloaded(reciter.id, surah.number, surah.ayahs)) continue
+                    if (quranDownloads.isSurahDownloaded(reciter, surah.number, surah.ayahs)) continue
                     quranDownloads.downloadSurah(reciter, surah.number, surah.ayahs)
                 }
             }
@@ -569,9 +719,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
         }
     }
-
-    /// هل يجري تنزيل المصحف كاملاً الآن؟ (يميّزه عن تنزيل سورة واحدة.)
-    val quranDownloadActive: Boolean get() = quranDownloadJob?.isActive == true
 
     /**
      * يفتح شاشة ما يُشغَّل الآن — درساً كان أم سورة.

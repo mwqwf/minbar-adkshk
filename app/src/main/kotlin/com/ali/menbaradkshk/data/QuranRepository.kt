@@ -178,7 +178,6 @@ data class Surah(
     val start: Int,
     val page: Int,
 ) {
-    val endExclusive: Int get() = start + ayahs
     val placeLabel: String get() = if (makki) "مكّية" else "مدنيّة"
 }
 

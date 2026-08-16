@@ -63,20 +63,24 @@ class QuranDownloadRepository private constructor(context: Context) {
      *
      * نعدّ الملفات لا نثق بعلامةٍ محفوظة: حذف المستخدم لبيانات التطبيق أو
      * تنظيف النظام للمساحة يترك العلامة كاذبةً فيُشغَّل صمتٌ بلا إنترنت.
+     *
+     * ⚠️ العدد المتوقَّع يتبع نمط القارئ لا عدد آيات السورة: قارئ «السورة
+     * كاملة» ينزّل ملفاً واحداً باسم `1.mp3` (انظر [downloadSurah])، فلو
+     * طالبناه بكل الآيات لبقيت سورته «غير منزَّلة» أبداً — فلا تظهر علامة
+     * الاكتمال، ويُعاد فحصها في كل تنزيل شامل بلا داعٍ.
      */
-    fun isSurahDownloaded(reciterId: String, surah: Int, ayahs: Int): Boolean {
-        val dir = dirFor(reciterId, surah)
+    fun isSurahDownloaded(reciter: Reciter, surah: Int, ayahs: Int): Boolean {
+        val dir = dirFor(reciter.id, surah)
         if (!dir.isDirectory) return false
-        return (1..ayahs).all { fileFor(reciterId, surah, it).let { f -> f.isFile && f.length() > 0L } }
+        val expected = if (reciter.perAyah) ayahs else 1
+        return (1..expected).all {
+            fileFor(reciter.id, surah, it).let { f -> f.isFile && f.length() > 0L }
+        }
     }
 
     /** حجم ما نُزّل لهذا القارئ بالبايت (لعرضه في الإعدادات وللحذف). */
     fun bytesFor(reciterId: String): Long =
         rootFor(reciterId).walkBottomUp().filter { it.isFile }.sumOf { it.length() }
-
-    /** حجم كل تلاوات المصحف المنزَّلة. */
-    fun totalBytes(): Long =
-        File(app.filesDir, DIR).walkBottomUp().filter { it.isFile }.sumOf { it.length() }
 
     fun deleteSurah(reciterId: String, surah: Int) {
         dirFor(reciterId, surah).deleteRecursively()
@@ -122,6 +126,72 @@ class QuranDownloadRepository private constructor(context: Context) {
         }
     }
 
+    // ---- 🖼️ صور المصحف المصوَّر ----
+
+    /** حالة تنزيل صور الصفحات — عمليّة واحدة في كل مرّة، كتنزيل التلاوة. */
+    data class PageProgress(val done: Int, val total: Int) {
+        val fraction: Float get() = if (total <= 0) 0f else done.toFloat() / total
+    }
+
+    private val _pageProgress = MutableStateFlow<PageProgress?>(null)
+    val pageProgress: StateFlow<PageProgress?> = _pageProgress.asStateFlow()
+
+    /// ⚠️ مجلَّد لكل رواية: مصاحفها ثلاثة مختلفة تخطيطاً وترقيماً، فخلط
+    /// صفحاتها في مجلَّد واحد يعني عرض صفحة رواية تحت اسم أخرى.
+    private fun pagesDir(riwayaId: String): File =
+        File(File(app.filesDir, PAGES_DIR), riwayaId)
+
+    private fun pageFile(riwayaId: String, page: Int): File =
+        File(pagesDir(riwayaId), "$page.webp")
+
+    /**
+     * المسار المحلّي لصورة صفحة إن كانت منزَّلة، وإلا `null`.
+     *
+     * تُستعمل كنموذج لـcoil مباشرةً: الملفّ المحلّي يسبق الشبكة دائماً فتعمل
+     * الصفحة بلا إنترنت ولا تُستهلك بيانات لمن نزّلها مرّة.
+     */
+    fun localPage(riwayaId: String, page: Int): String? =
+        pageFile(riwayaId, page).takeIf { it.isFile && it.length() > 0L }?.absolutePath
+
+    /** عدد الصفحات المنزَّلة فعلاً لرواية — يُعدّ من القرص لا من علامة محفوظة. */
+    fun downloadedPageCount(riwayaId: String): Int =
+        pagesDir(riwayaId).listFiles()?.count { it.isFile && it.length() > 0L } ?: 0
+
+    /** حجم صور المصحف المنزَّلة بالبايت لرواية بعينها. */
+    fun pagesBytes(riwayaId: String): Long =
+        pagesDir(riwayaId).walkBottomUp().filter { it.isFile }.sumOf { it.length() }
+
+    fun deletePages(riwayaId: String) {
+        pagesDir(riwayaId).deleteRecursively()
+        _revision.value++
+    }
+
+    /**
+     * ينزّل صور المصحف المصوَّر كلّها (٦٠٤ صفحة، ≈٥١ م.ب).
+     *
+     * يتخطّى المنزَّل أصلاً فيُكمل بعد الانقطاع، وقابلة للإلغاء في أي لحظة —
+     * بنفس أسلوب تنزيل التلاوة تماماً كي لا يتعلّم المستخدم نظامين.
+     */
+    suspend fun downloadMushafPages(riwayaId: String) = withContext(Dispatchers.IO) {
+        val dir = pagesDir(riwayaId).apply { mkdirs() }
+        val total = MushafRepository.PAGE_COUNT
+        _pageProgress.value = PageProgress(0, total)
+        try {
+            for (page in 1..total) {
+                coroutineContext.ensureActive()
+                val target = File(dir, "$page.webp")
+                if (!(target.isFile && target.length() > 0L)) {
+                    fetch(MushafRepository.pageUrl(riwayaId, page), target)
+                }
+                _pageProgress.value = PageProgress(page, total)
+            }
+            _revision.value++
+        } finally {
+            _pageProgress.value = null
+            _revision.value++
+        }
+    }
+
     private fun fetch(url: String, target: File) {
         val temp = File(target.parentFile, target.name + ".part")
         var connection: HttpURLConnection? = null
@@ -152,6 +222,7 @@ class QuranDownloadRepository private constructor(context: Context) {
 
     companion object {
         private const val DIR = "quran_audio"
+        private const val PAGES_DIR = "quran_pages"
 
         @Volatile
         private var instance: QuranDownloadRepository? = null

@@ -85,7 +85,14 @@ class PlaybackService : MediaSessionService() {
                         // يُلغى إن غادر المستخدم قبل اكتمال المدّة المطلوبة.
                         listenedMs = 0L
                         playCounted = false
-                        if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
+                        // ⚠️ المصحف مستثنى من هذين السلوكين: قائمته آياتٌ لا
+                        // دروس، فالانتقال التلقائي بين الآيات هو التلاوة نفسها.
+                        // لولا الاستثناء لتوقّفت التلاوة عند كل آية لمن عطّل
+                        // «التشغيل التلقائي للتالي»، ولقفزت الآية إلى موضع
+                        // محفوظ لدرسٍ يحمل معرّفاً مشابهاً.
+                        if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO &&
+                            isLesson(trackedLessonId)
+                        ) {
                             // «تشغيل تلقائي للتالي» معطّل → نقف عند نهاية الدرس كما في الأصل.
                             if (!AutoplayState.enabled) pause()
                             // استئناف الدرس التالي من موضعه المحفوظ (نمط playLesson الأصلي).

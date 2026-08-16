@@ -171,6 +171,16 @@ class AppConfigRepository private constructor(context: Context) {
      * ويقع مرّة واحدة لكل نسخة على كل جهاز (ختم محليّ)، فلا يكلّف شيئاً.
      */
     suspend fun announceOwnVersionIfNewer() {
+        // ⛔ **نسخ التطوير لا تُبلّغ أبداً.**
+        //
+        // درسٌ من عطل واقع: أثناء تجربة النسخة ٢٠ على جهاز واحد، بلّغت نسخة
+        // التطوير عن نفسها مراراً، وكل مسحٍ لبيانات التطبيق يولّد هويّة مجهولة
+        // جديدة — فبدت وكأنّها أجهزة متعدّدة، فاكتمل النصاب وانطلق إشعار
+        // «تتوفّر نسخة أحدث» إلى **كل المستخدمين** لنسخةٍ لم تُنشر على المتجر
+        // بعد. ومن يضغط الإشعار يجد المتجر بلا جديد.
+        //
+        // فالحارس هنا أوّل خطّ دفاع، والخادم يتحقّق من الحزمة أيضاً.
+        if (com.ali.menbaradkshk.BuildConfig.DEBUG) return
         val current = com.ali.menbaradkshk.BuildConfig.VERSION_CODE
         if (prefs.getInt(KEY_ANNOUNCED, 0) >= current) return
         // لا نُبلّغ إلا إن كنّا فعلاً أحدث ممّا يعرفه الخادم.
@@ -187,6 +197,9 @@ class AppConfigRepository private constructor(context: Context) {
                         "versionCode" to current,
                         "versionName" to com.ali.menbaradkshk.BuildConfig.VERSION_NAME,
                         "summary" to ReleaseNotes.trimmed(),
+                        // اسم الحزمة يُرسَل ليرفض الخادم نسخ التطوير (`.dev`)
+                        // ولو تسرّبت — الحارس المحلّي وحده لا يكفي.
+                        "packageName" to app.packageName,
                     ),
                 )
                 .await()

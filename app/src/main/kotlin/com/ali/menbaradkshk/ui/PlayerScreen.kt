@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.Copyright
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DownloadDone
@@ -483,6 +484,24 @@ fun PlayerScreen(
                 Spacer(Modifier.width(8.dp))
                 Text("تشغيل تلقائي للتالي")
                 Switch(checked = playback.autoplay, onCheckedChange = vm.playback::setAutoplay)
+            }
+
+            // تخطّي الصمت — إلى جوار «التشغيل التلقائي» لأن كليهما يضبط سير
+            // الاستماع لا الصوت نفسه. مطفأ افتراضياً، ومحفوظ بين الجلسات.
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Filled.ContentCut,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("تخطّي الصمت")
+                Switch(checked = playback.skipSilence, onCheckedChange = vm.playback::setSkipSilence)
             }
             playback.sleepEndsAtMs?.let { ends ->
                 // ⚠️ العدّاد يحتاج مجدوله الخاص: كان يُحسب أثناء التركيب فقط،

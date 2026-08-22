@@ -106,6 +106,7 @@ import com.ali.menbaradkshk.data.QuranMark
 import com.ali.menbaradkshk.data.Reciter
 import com.ali.menbaradkshk.data.Surah
 import com.ali.menbaradkshk.media.PlaybackUiState
+import com.ali.menbaradkshk.util.quranPagesLabel
 
 /**
  * 🕌 المصحف الكامل — شاشة الفهرسة.
@@ -252,6 +253,30 @@ fun QuranIndexScreen(vm: AppViewModel) {
                 Spacer(Modifier.weight(1f))
             }
             QuranOfflineChip(vm, loaded, riwaya)
+        }
+
+        // 🕌 وِرد اليوم — **سطرٌ واحد هادئ** بجوار «تابع القراءة»: لا بطاقة
+        // تزاحمه ولا شاشة ثانية. وما بقي **قراءة خالصة** من عدّاد صفحات اليوم
+        // (انظر [LocalStore.quranWardRemaining]): العدّ يُحدَّث في مسار حفظ
+        // موضع القراءة وحده، فلا كتابة هنا أثناء التركيب تُبطل بقيّة الشاشات.
+        val wardRemaining = remember(revision) { vm.store.quranWardRemaining() }
+        if (wardRemaining >= 0) {
+            Text(
+                if (wardRemaining > 0) {
+                    "وِرد اليوم: بقي ${quranPagesLabel(wardRemaining)}"
+                } else {
+                    "تمّ وِردك اليوم 🤍"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                // لون الجوهر للتمام وحده: إشارةٌ صغيرة تُرى ولا تصرخ.
+                color = if (wardRemaining > 0) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    quranAccent()
+                },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+                textAlign = TextAlign.Center,
+            )
         }
 
         // ملاحظة: «علاماتي» انتقل إلى الشريط العلوي (انظر [QuranBookmarksAction])
@@ -1190,12 +1215,21 @@ fun QuranSurahScreen(
     // موضعها صفراً، و`snapshotFlow` يُصدر قيمته الابتدائيّة فور بدء التجميع —
     // فكان يكتب «أوّل السورة» فوق الصفحة التي حفظها `onPageSettled`، فيخسر من
     // فتح المصوَّر وغادر بلا تقليب موضعَه الحقيقيّ.
+    // 🕌 بدايات صفحات الفهرس — مصدرٌ واحد لعدّ صفحات الوِرد في النمطين
+    // (المكتوب والمصوَّر)، كي يبقى «تقدّمُ صفحةٍ متّصلة» بمعنى واحد مهما
+    // بدّل القارئ نمط العرض.
+    val wardPageStarts = remember(loaded.pages) { loaded.pages.map { it.start }.toIntArray() }
     LaunchedEffect(listState, surahNumber, imageMode) {
         if (imageMode) return@LaunchedEffect
         androidx.compose.runtime.snapshotFlow { listState.firstVisibleItemIndex }
             .collectLatest { first ->
                 kotlinx.coroutines.delay(600L)
-                vm.store.setQuranLastAyah(surah.start + (first - headerOffset).coerceAtLeast(0))
+                val flat = surah.start + (first - headerOffset).coerceAtLeast(0)
+                vm.store.setQuranLastAyah(flat)
+                // عدّ صفحات الوِرد من مسار الحفظ نفسه — لا من التركيب.
+                vm.store.recordQuranWardPage(
+                    com.ali.menbaradkshk.data.MushafGeometry.pageOfAyah(wardPageStarts, flat),
+                )
             }
     }
 
@@ -1456,9 +1490,13 @@ fun QuranSurahScreen(
                         currentPage = page
                         // موضع القراءة يُحفظ من المصوَّر أيضاً، فـ«تابع
                         // القراءة» يعمل مهما كان النمط الذي يقرأ به.
-                        vm.store.setQuranLastAyah(
+                        val flat = com.ali.menbaradkshk.data.MushafGeometry
+                            .firstAyahOfPage(pageStarts, page)
+                        vm.store.setQuranLastAyah(flat)
+                        // وعدّ صفحات الوِرد من مسار الحفظ نفسه.
+                        vm.store.recordQuranWardPage(
                             com.ali.menbaradkshk.data.MushafGeometry
-                                .firstAyahOfPage(pageStarts, page),
+                                .pageOfAyah(wardPageStarts, flat),
                         )
                     },
                 )
@@ -1590,6 +1628,12 @@ fun QuranSurahScreen(
                 modifier = Modifier.clickable {
                     ayahSheet = null
                     vm.store.setQuranLastAyah(surah.start + i)
+                    // التعليم اليدويّ حفظُ موضعٍ أيضاً — يُبقي آخر صفحة مزورة
+                    // في عدّاد الوِرد صادقةً (ولا يزيد العدّ إلا لتقدّمٍ متّصل).
+                    vm.store.recordQuranWardPage(
+                        com.ali.menbaradkshk.data.MushafGeometry
+                            .pageOfAyah(wardPageStarts, surah.start + i),
+                    )
                     vm.showMessage("حُفظ موضع القراءة عند الآية $ayahNumber.")
                 },
                 leadingContent = { Icon(Icons.Filled.Bookmark, null, tint = Teal) },

@@ -63,6 +63,25 @@ fun lessonShareText(
     add(shareFooter)
 }.joinToString("\n")
 
+/**
+ * 🔢 قاعدة العدد العربيّة الواحدة لكل معدود في التطبيق: المفرد المسمّى،
+ * والمثنّى، وجمع القلّة (٣..١٠ «$count $few»)، وما فوقها بتمييز المفرد
+ * («$count $many»). دالّة واحدة تتقاسمها «الصفحات» و«الأقسام» ونحوهما،
+ * فلا تتكرّر القاعدة بصيغ متفرّقة تتنافر عند أوّل تعديل.
+ */
+fun arabicCountLabel(count: Int, one: String, two: String, few: String, many: String): String =
+    when {
+        count == 1 -> one
+        count == 2 -> two
+        count in 3..10 -> "$count $few"
+        else -> "$count $many"
+    }
+
+/// عدد صفحات المصحف («صفحتان» لا «2 صفحة») — يتقاسمه سطرُ وِرد الفهرس
+/// وإشعارُ التذكير وورقة الإعدادات، فلا يفترق لفظُ ما يُرى عمّا يُقال.
+fun quranPagesLabel(count: Int): String =
+    arabicCountLabel(count, "صفحة واحدة", "صفحتان", "صفحات", "صفحة")
+
 fun progress(positionMs: Long, durationMs: Long): Float {
     if (durationMs <= 0L) return 0f
     return (positionMs.toDouble() / max(1L, durationMs)).coerceIn(0.0, 1.0).toFloat()

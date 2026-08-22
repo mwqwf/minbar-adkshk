@@ -42,10 +42,14 @@ class PlaybackService : MediaSessionService() {
     /// استماع فعليّ متراكم للدرس الحالي — أساس احتساب «استُمع إليه».
     private var listenedMs = 0L
     private var playCounted = false
+    /// مرجع ثابت لا لامدا جديدة عند كلّ تسجيل: به يتحقّق `onDestroy` أن التسجيل
+    /// القائم تسجيلُه هو، فلا تمحو خدمةٌ محتضِرة تسجيلَ خدمةٍ جديدة حلّت محلّها.
+    private val skipSilenceApplier: () -> Unit = { applySkipSilence() }
 
     override fun onCreate() {
         super.onCreate()
         store = LocalStore.get(this)
+        SkipSilenceState.load(this)
         // الملفات المحلّية (`file://`) تُقرأ مباشرةً بـ`FileDataSource` عبر
         // `DefaultDataSource`، فلا تدخل الكاش أبداً: «تنزيلاتي» فهرس منفصل.
         val networkSources = CacheDataSource.Factory()
@@ -85,6 +89,9 @@ class PlaybackService : MediaSessionService() {
                         // يُلغى إن غادر المستخدم قبل اكتمال المدّة المطلوبة.
                         listenedMs = 0L
                         playCounted = false
+                        // العنصر تبدّل ⇒ نوعه قد يتبدّل معه (درس ⇄ آية)، وعليه
+                        // وحده يتوقّف سريان «تخطّي الصمت».
+                        this@PlaybackService.applySkipSilence()
                         // ⚠️ المصحف مستثنى من هذين السلوكين: قائمته آياتٌ لا
                         // دروس، فالانتقال التلقائي بين الآيات هو التلاوة نفسها.
                         // لولا الاستثناء لتوقّفت التلاوة عند كل آية لمن عطّل
@@ -141,6 +148,10 @@ class PlaybackService : MediaSessionService() {
                 },
             )
         }
+        // بها يصل تبديل المفتاح إلى مشغّلٍ يعمل فوراً لا عند الدرس التالي. ولا
+        // نُسري التفضيل هنا: المشغّل خالٍ للتوّ، وأوّلُ `setMediaItems` يُطلق
+        // `onMediaItemTransition` فيُسريه عارفاً نوعَ ما يُشغَّل (درس أم آية).
+        SkipSilenceState.onChanged = skipSilenceApplier
         val activityIntent = PendingIntent.getActivity(
             this,
             0,
@@ -152,11 +163,19 @@ class PlaybackService : MediaSessionService() {
             .setCallback(resumptionCallback)
             .build()
         trackingJob = scope.launch {
+            var lastTickElapsedMs = android.os.SystemClock.elapsedRealtime()
             while (isActive) {
                 delay(TRACK_INTERVAL_MS)
+                // ⏱️ سقفُ الزمن الحقيقي: «تخطّي الصمت» يُقدّم موضع الملف أسرع
+                // من الساعة، فلا يُحتسب استماعٌ أكثر من الثواني التي مضت فعلاً.
+                val nowElapsedMs = android.os.SystemClock.elapsedRealtime()
+                val wallMs = (nowElapsedMs - lastTickElapsedMs).coerceAtLeast(0L)
+                lastTickElapsedMs = nowElapsedMs
                 if (player.isPlaying) {
                     val current = player.currentPosition.coerceAtLeast(0L)
-                    val delta = (current - lastTrackedPositionMs).coerceIn(0L, TRACK_INTERVAL_MS * 2)
+                    val delta = (current - lastTrackedPositionMs)
+                        .coerceIn(0L, TRACK_INTERVAL_MS * 2)
+                        .coerceAtMost(wallMs)
                     if (delta > 0L && isLesson(player.currentMediaItem?.mediaId.orEmpty())) {
                         store.addListenSeconds(delta / 1_000L)
                         // سلسلة الاستماع تتقدّم بالاستماع الفعلي لا بإتمام الدرس فقط.
@@ -188,6 +207,25 @@ class PlaybackService : MediaSessionService() {
                 persistPosition()
             }
         }
+    }
+
+    /**
+     * «تخطّي الصمت» — نُسنده إلى `SilenceSkippingAudioProcessor` الذي في سلسلة
+     * معالجات `DefaultAudioSink` أصلاً، عبر `ExoPlayer.skipSilenceEnabled`؛
+     * فلا معالج صمت مكتوب بيدنا ولا مصنع عارضات مخصّص ولا بايت واحد يُضاف
+     * إلى الحزمة. (ولهذا بقي `ExoPlayer.Builder` أعلاه بلا مساس: تفعيل
+     * `setEnableFloatOutput` أو `setEnableAudioTrackPlaybackParams` يُخرج
+     * الصوت من هذه السلسلة فيموت التخطّي صامتاً.)
+     *
+     * ⛔ **المصحف مستثنى مهما كان التفضيل**: سكتات التلاوة وقفٌ مقصود ومعنى
+     * مسموع، فتقصيرها تغييرٌ لها. القيمة الفعليّة = رغبة المستخدم **و** كون
+     * الجاري درساً لا آية — والمعرّف الفارغ (لا شيء في القائمة) يُحسب «ليس
+     * درساً» عمداً: الحارس يُغلق عند الشكّ، ثم يفتحه أوّلُ انتقالٍ إلى درس.
+     */
+    private fun applySkipSilence() {
+        val id = player.currentMediaItem?.mediaId.orEmpty()
+        val wanted = SkipSilenceState.enabled && id.isNotBlank() && isLesson(id)
+        if (player.skipSilenceEnabled != wanted) player.skipSilenceEnabled = wanted
     }
 
     /// يحتسب الاستماع بعد [COUNT_AFTER_MS] من السماع الفعليّ لا بمجرّد الفتح.
@@ -242,6 +280,8 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        // إلغاء التسجيل قبل كل شيء: تبديلٌ يصل بعد release() يلمس مشغّلاً محرَّراً.
+        if (SkipSilenceState.onChanged === skipSilenceApplier) SkipSilenceState.onChanged = null
         persistPosition()
         trackingJob?.cancel()
         sleepJob?.cancel()

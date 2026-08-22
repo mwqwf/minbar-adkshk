@@ -23,6 +23,7 @@ import com.ali.menbaradkshk.data.AdhkarReminders
 import com.ali.menbaradkshk.data.ContentRepository
 import com.ali.menbaradkshk.data.DownloadRepository
 import com.ali.menbaradkshk.data.LocalStore
+import com.ali.menbaradkshk.util.quranPagesLabel
 import java.time.Duration
 import java.time.ZonedDateTime
 import java.util.concurrent.TimeUnit
@@ -115,6 +116,35 @@ class WardWorker(
     }
 }
 
+/**
+ * 🕌 تذكير وِرد المصحف — نظير [WardWorker] حرفياً: نفس القناة، ونفس الجدولة
+ * اليوميّة، ونفس شرط الإشعارات والإذن.
+ *
+ * والفرق الوحيد أنّه **لا يُزعج من أتمّ ورده**: ما بقي يُقرأ من عدّاد صفحات
+ * اليوم نفسه الذي يعرضه فهرس المصحف (انظر [LocalStore.quranWardRemaining])،
+ * فمن ختم مقداره اليوم لا يصله شيء.
+ */
+class QuranWardWorker(
+    context: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result {
+        val store = LocalStore.get(applicationContext)
+        if (!store.notificationsEnabled() || !store.quranWardEnabled()) return Result.success()
+        val remaining = store.quranWardRemaining()
+        if (remaining <= 0) return Result.success()
+        NotificationPublisher.show(
+            applicationContext,
+            id = 701,
+            title = "وِرد المصحف 🕌",
+            body = "بقي ${quranPagesLabel(remaining)} من وِردك اليوم.",
+            destination = "minbar://quran",
+            channel = NotificationChannels.WARD,
+        )
+        return Result.success()
+    }
+}
+
 class AutoDownloadWorker(
     context: Context,
     params: WorkerParameters,
@@ -129,12 +159,22 @@ class AutoDownloadWorker(
             if (failure is kotlinx.coroutines.CancellationException) throw failure
         }
         val downloads = DownloadRepository.get(applicationContext)
-        // الهدف كما في الأصل: 'recent' = أحدث الدروس، 'main' = الخلاصة المقترحة.
+        // الأهداف: 'recent' أحدث الدروس، 'main' الخلاصة المقترحة،
+        // و'followed' جديد الأقسام التي يتابعها — بنفس الطابور وشرط الشبكة
+        // والحدّ الأقصى، فلا آليّة ثانية لهدفٍ ثالث.
         val target = store.autoDownloadTarget() ?: "recent"
-        val lessons = if (target == "main") {
-            content.recommended(MAX_PER_RUN)
-        } else {
-            content.newest(MAX_PER_RUN)
+        val lessons = when (target) {
+            "main" -> content.recommended(MAX_PER_RUN)
+            "followed" -> {
+                val followed = store.followedSubcategories().toSet()
+                // لا متابعات = لا عمل: ينتهي العامل صامتاً بلا طابور ولا إشعار.
+                if (followed.isEmpty()) return Result.success()
+                content.state.value.lessons
+                    .filter { it.subcategoryId in followed }
+                    .sortedByDescending { it.createdAtMs }
+                    .take(MAX_PER_RUN)
+            }
+            else -> content.newest(MAX_PER_RUN)
         }
         val missing = lessons
             .filter { it.audioUrl.isNotBlank() && !downloads.isDownloaded(it.id) }
@@ -147,7 +187,11 @@ class AutoDownloadWorker(
         // انقطاع الشبكة وإعادة المحاولة التلقائية وإشعار التقدّم.
         store.addToDownloadQueue(
             missing,
-            if (target == "main") "خلاصتك المقترحة" else "أحدث الدروس",
+            when (target) {
+                "main" -> "خلاصتك المقترحة"
+                "followed" -> "جديد أقسامك"
+                else -> "أحدث الدروس"
+            },
             wifiOnly = store.autoDownloadWifiOnly(),
         )
         com.ali.menbaradkshk.data.DownloadScheduler.enqueue(applicationContext)
@@ -199,12 +243,14 @@ class UpdateCheckWorker(
 object BackgroundScheduler {
     private const val CONTINUE_WORK = "continue_reminder"
     private const val WARD_WORK = "daily_ward"
+    private const val QURAN_WARD_WORK = "quran_ward"
     private const val AUTO_DOWNLOAD_WORK = "auto_download"
     private const val UPDATE_CHECK_WORK = "update_check"
 
     fun scheduleAll(context: Context) {
         scheduleContinue(context)
         scheduleWard(context)
+        scheduleQuranWard(context)
         scheduleAutoDownload(context)
         scheduleUpdateCheck(context)
         scheduleAdhkar(context)
@@ -286,6 +332,29 @@ object BackgroundScheduler {
             .pinNextRun(delay)
             .build()
         manager.enqueueUniquePeriodicWork(WARD_WORK, ExistingPeriodicWorkPolicy.UPDATE, request)
+    }
+
+    /// نظيرة [scheduleWard] بلا اختلاف في النمط — ومنه تثبيتُ الموعد التالي
+    /// عبر [pinNextRun] (انظر تعليقها: بدونه لا يُطبَّق تغيير الوقت أبداً).
+    /// وساعةٌ سالبة تعني «مقدارٌ بلا تذكير»: الوِرد يُعرض في الفهرس ولا يُجدوَل.
+    fun scheduleQuranWard(context: Context) {
+        val manager = WorkManager.getInstance(context)
+        val store = LocalStore.get(context)
+        val hour = store.quranWardHour()
+        if (!store.notificationsEnabled() || !store.quranWardEnabled() || hour < 0) {
+            manager.cancelUniqueWork(QURAN_WARD_WORK)
+            return
+        }
+        val delay = delayUntil(hour, store.quranWardMinute())
+        val request = PeriodicWorkRequestBuilder<QuranWardWorker>(24, TimeUnit.HOURS)
+            .setInitialDelay(delay, TimeUnit.MILLISECONDS)
+            .pinNextRun(delay)
+            .build()
+        manager.enqueueUniquePeriodicWork(
+            QURAN_WARD_WORK,
+            ExistingPeriodicWorkPolicy.UPDATE,
+            request,
+        )
     }
 
     fun scheduleAutoDownload(context: Context) {

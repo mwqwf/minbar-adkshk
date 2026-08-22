@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.HistoryToggleOff
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Restore
@@ -104,6 +105,12 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     val wardEnabled = remember(revision) { vm.store.wardEnabled() }
     val wardHour = remember(revision) { vm.store.wardHour() }
     val wardMinute = remember(revision) { vm.store.wardMinute() }
+    val quranWardPages = remember(revision) { vm.store.quranWardPages() }
+    val quranWardHour = remember(revision) { vm.store.quranWardHour() }
+    val quranWardMinute = remember(revision) { vm.store.quranWardMinute() }
+    // عدد المتابَعات يُكتب في وصف هدف التنزيل «الأقسام التي أتابعها» كي لا
+    // يبدو الخيار معطوباً لمن لا يتابع شيئاً.
+    val followedCount = remember(revision) { vm.store.followedSubcategories().size }
     val weeklyGoal = remember(revision) { vm.store.weeklyGoalMinutes() }
     val downloadsMap = remember(revision) { vm.store.downloads() }
     val downloadsCount = downloadsMap.size
@@ -121,6 +128,9 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     var group by remember { mutableStateOf<String?>(null) }
     var appearanceDialog by remember { mutableStateOf(false) }
     var wardTimeDialog by remember { mutableStateOf(false) }
+    var quranWardSheet by remember { mutableStateOf(false) }
+    var quranWardTimeDialog by remember { mutableStateOf(false) }
+    var autoTargetSheet by remember { mutableStateOf(false) }
     var goalSheet by remember { mutableStateOf(false) }
     var deleteDialog by remember { mutableStateOf(false) }
     var sectionSheet by remember { mutableStateOf(false) }
@@ -160,16 +170,7 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
         }
     }
 
-    fun wardTimeLabel(): String {
-        if (wardHour < 0) return "—"
-        val hour12 = when {
-            wardHour == 0 -> 12
-            wardHour > 12 -> wardHour - 12
-            else -> wardHour
-        }
-        val period = if (wardHour < 12) "ص" else "م"
-        return "%d:%02d %s".format(Locale.ROOT, hour12, wardMinute, period)
-    }
+    fun wardTimeLabel(): String = clockLabel(wardHour, wardMinute)
 
     val themeLabel = when (themeMode) {
         "light" -> "فاتح"
@@ -285,7 +286,9 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                     SettingsTile(
                         icon = Icons.Filled.DownloadForOffline,
                         title = "التنزيل التلقائي",
-                        subtitle = "يحفظ أحدث الدروس للاستماع دون إنترنت",
+                        // محايدٌ عن الهدف: صارت الأهداف ثلاثة، والسطر التالي
+                        // هو الذي يقول أيَّها اختار.
+                        subtitle = "يحفظ الدروس تلقائياً للاستماع دون إنترنت",
                         trailing = {
                             Switch(
                                 checked = autoDownload,
@@ -304,13 +307,13 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                             title = "ما الذي يُنزّل تلقائياً؟",
                             trailing = {
                                 Text(
-                                    if (autoTarget == "main") "خلاصتك المقترحة" else "أحدث الدروس",
+                                    autoTargetLabel(autoTarget),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             },
-                            onClick = {
-                                vm.setAutoDownloadTarget(if (autoTarget == "main") "recent" else "main")
-                            },
+                            // ⚠️ ورقةٌ لا تبديلٌ بالنقر: صارت الأهداف ثلاثة،
+                            // والتدوير بينها يُخفي الخيارَين اللذين لا يظهران.
+                            onClick = { autoTargetSheet = true },
                         )
                     }
                     item(key = "autodl-wifi") {
@@ -455,6 +458,67 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                                 Text(wardTimeLabel(), style = MaterialTheme.typography.titleMedium)
                             },
                             onClick = { wardTimeDialog = true },
+                        )
+                    }
+                }
+                // 🕌 وِرد المصحف — نظير وِرد الدروس فوقه بالضبط: مفتاحٌ يفتح
+                // وقتَه عند التفعيل، ثم مقدارُه ووقتُه سطرين تحته.
+                item(key = "quran-ward") {
+                    SettingsTile(
+                        icon = Icons.Filled.MenuBook,
+                        title = "وِرد المصحف اليومي",
+                        subtitle = when {
+                            quranWardPages <= 0 -> "مقدار يوميّ من المصحف وتذكير في وقت تختاره"
+                            // مقدارٌ بلا تذكير حالٌ ممكنة (من ألغى منتقي
+                            // الوقت)، فلا نَعِد بتذكيرٍ لن يأتي.
+                            quranWardHour < 0 -> "${quranWardAmountLabel(quranWardPages)} يومياً"
+                            else -> "${quranWardAmountLabel(quranWardPages)} يومياً — " +
+                                "تذكير في ${clockLabel(quranWardHour, quranWardMinute)}"
+                        },
+                        trailing = {
+                            Switch(
+                                checked = quranWardPages > 0,
+                                onCheckedChange = { enabled ->
+                                    if (enabled) {
+                                        // الإذن أوّلاً كوِرد الدروس، ثم صفحةٌ
+                                        // واحدة مبدئياً — أقلُّ مقدارٍ يُداوَم
+                                        // عليه، ورفعُه سطرٌ واحد تحته.
+                                        requestNotifications()
+                                        vm.setQuranWardPages(1)
+                                        quranWardTimeDialog = true
+                                    } else {
+                                        vm.disableQuranWard()
+                                    }
+                                },
+                            )
+                        },
+                    )
+                }
+                if (quranWardPages > 0) {
+                    item(key = "quran-ward-amount") {
+                        SettingsTile(
+                            icon = Icons.Filled.Flag,
+                            title = "مقدار الوِرد",
+                            trailing = {
+                                Text(
+                                    quranWardAmountLabel(quranWardPages),
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                            },
+                            onClick = { quranWardSheet = true },
+                        )
+                    }
+                    item(key = "quran-ward-time") {
+                        SettingsTile(
+                            icon = Icons.Filled.Schedule,
+                            title = "وقت تذكير المصحف",
+                            trailing = {
+                                Text(
+                                    clockLabel(quranWardHour, quranWardMinute),
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                            },
+                            onClick = { quranWardTimeDialog = true },
                         )
                     }
                 }
@@ -632,6 +696,98 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
         )
     }
 
+    // ---- وقت تذكير وِرد المصحف ----
+    if (quranWardTimeDialog) {
+        val timeState = rememberTimePickerState(
+            initialHour = if (quranWardHour >= 0) quranWardHour else 6,
+            initialMinute = if (quranWardHour >= 0) quranWardMinute else 0,
+        )
+        AlertDialog(
+            onDismissRequest = { quranWardTimeDialog = false },
+            title = { Text("وقت تذكير وِرد المصحف") },
+            text = { TimePicker(state = timeState) },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.setQuranWardTime(timeState.hour, timeState.minute)
+                    quranWardTimeDialog = false
+                }) { Text("حفظ") }
+            },
+            dismissButton = {
+                TextButton(onClick = { quranWardTimeDialog = false }) { Text("إلغاء") }
+            },
+        )
+    }
+
+    // ---- مقدار وِرد المصحف ----
+    if (quranWardSheet) {
+        ModalBottomSheet(onDismissRequest = { quranWardSheet = false }) {
+            Text(
+                "مقدار وِرد المصحف",
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            QURAN_WARD_AMOUNTS.forEach { (pages, label) ->
+                ListItem(
+                    modifier = Modifier.clickable {
+                        vm.setQuranWardPages(pages)
+                        quranWardSheet = false
+                    },
+                    headlineContent = { Text(label) },
+                    // مقابلُه بالصفحات لمن لا يعرف كم الحزب — ولا يُكتب لما
+                    // اسمُه صفحةٌ أصلاً فيصير تكراراً.
+                    supportingContent = if (pages > 2) {
+                        { Text("${com.ali.menbaradkshk.util.quranPagesLabel(pages)} يومياً") }
+                    } else {
+                        null
+                    },
+                    trailingContent = if (quranWardPages == pages) {
+                        { Icon(Icons.Filled.Check, null, tint = Teal) }
+                    } else {
+                        null
+                    },
+                )
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+
+    // ---- هدف التنزيل التلقائي ----
+    if (autoTargetSheet) {
+        ModalBottomSheet(onDismissRequest = { autoTargetSheet = false }) {
+            Text(
+                "ما الذي يُنزّل تلقائياً؟",
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            AUTO_TARGETS.forEach { (value, label) ->
+                // وصفٌ لكل هدف — و«الأقسام التي أتابعها» يقول عددها صراحةً كي
+                // لا يبدو معطوباً لمن لم يتابع بعد.
+                val hint = when {
+                    value == "main" -> "ما يُقترح لك بحسب استماعك"
+                    value != "followed" -> "آخر ما نُشر في المنبر"
+                    followedCount > 0 -> "تتابع ${sectionsLabel(followedCount)}"
+                    else -> "لا تتابع أقساماً بعد — تابِع قسماً ليعمل"
+                }
+                ListItem(
+                    modifier = Modifier.clickable {
+                        vm.setAutoDownloadTarget(value)
+                        autoTargetSheet = false
+                    },
+                    headlineContent = { Text(label) },
+                    supportingContent = { Text(hint) },
+                    trailingContent = if (autoTarget == value) {
+                        { Icon(Icons.Filled.Check, null, tint = Teal) }
+                    } else {
+                        null
+                    },
+                )
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+
     // ---- الهدف الأسبوعي ----
     if (goalSheet) {
         ModalBottomSheet(onDismissRequest = { goalSheet = false }) {
@@ -685,6 +841,55 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
             },
         )
     }
+}
+
+/// أهداف التنزيل التلقائي الثلاثة: القيمة المخزَّنة واسمها المعروض. الترتيب
+/// هو ترتيب الورقة، و«recent» أوّلها لأنّه الافتراض.
+private val AUTO_TARGETS = listOf(
+    "recent" to "أحدث الدروس",
+    "main" to "خلاصتك المقترحة",
+    "followed" to "الأقسام التي أتابعها",
+)
+
+private fun autoTargetLabel(value: String): String =
+    AUTO_TARGETS.firstOrNull { it.first == value }?.second ?: AUTO_TARGETS.first().second
+
+/**
+ * مقادير وِرد المصحف الخمسة: عدد الصفحات واسمُه كما يقوله الناس.
+ *
+ * ⚠️ «ربع حزب» ٣ صفحات لا ٢٫٥: الوِرد يُقاس بالصفحة والصفحة لا تتجزّأ في
+ * العدّ، ورفعُ الكسر أَولى من خفضه. وخمسةٌ لا أكثر عمداً — قائمةُ خياراتٍ
+ * طويلة تجعل أبسط قرار عبئاً.
+ */
+private val QURAN_WARD_AMOUNTS = listOf(
+    1 to "صفحة",
+    2 to "صفحتان",
+    3 to "ربع حزب",
+    10 to "حزب",
+    20 to "جزء",
+)
+
+private fun quranWardAmountLabel(pages: Int): String =
+    QURAN_WARD_AMOUNTS.firstOrNull { it.first == pages }?.second
+        ?: com.ali.menbaradkshk.util.quranPagesLabel(pages)
+
+/// عدد الأقسام بصيغة عربيّة صحيحة («قسمين» لا «2 قسم») — بقاعدة
+/// [com.ali.menbaradkshk.util.arabicCountLabel] الواحدة نفسها التي تصوغ
+/// الصفحات، فلا صيغتا جمعٍ تفترقان.
+private fun sectionsLabel(n: Int): String =
+    com.ali.menbaradkshk.util.arabicCountLabel(n, "قسماً واحداً", "قسمين", "أقسام", "قسماً")
+
+/// وقتٌ بصيغة ١٢ ساعة عربيّة — يتقاسمه وِردا الدروس والمصحف، فالساعة السالبة
+/// تعني «بلا تذكير» في كليهما.
+private fun clockLabel(hour: Int, minute: Int): String {
+    if (hour < 0) return "—"
+    val hour12 = when {
+        hour == 0 -> 12
+        hour > 12 -> hour - 12
+        else -> hour
+    }
+    val period = if (hour < 12) "ص" else "م"
+    return "%d:%02d %s".format(Locale.ROOT, hour12, minute, period)
 }
 
 // Locale.ROOT صراحةً: صيغة الجهاز العربية كانت تخلط أرقاماً هندية وفاصلاً

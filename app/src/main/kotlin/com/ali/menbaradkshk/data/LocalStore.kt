@@ -537,6 +537,87 @@ class LocalStore private constructor(context: Context) {
         return added
     }
 
+    // ---- 🕌 وِرد المصحف اليوميّ ----
+
+    /**
+     * ⭐ المقدار اليوميّ **بالصفحات**، و`0` يعني لا وِرد.
+     *
+     * الصفحة وحدة الوِرد عند الناس («وردي صفحتان»)، وهي أيضاً الوحدة الوحيدة
+     * التي يعرفها الفهرس فعلاً (بداية كل صفحة في `index.jz`) — فبها يُقاس
+     * التقدّم من موضع القراءة المحفوظ نفسه بلا عدّادٍ ثانٍ.
+     */
+    fun quranWardPages(): Int = long(KEY_QURAN_WARD_PAGES).toInt()
+
+    fun setQuranWardPages(value: Int) =
+        write { putLong(KEY_QURAN_WARD_PAGES, value.coerceAtLeast(0).toLong()) }
+
+    fun quranWardEnabled(): Boolean = quranWardPages() > 0
+
+    /// وقت التذكير — الساعة `-1` تعني بلا تذكير، كنظيرها في وِرد الدروس
+    /// ([wardHour]) كي لا يتعلّم المستخدم قاعدتين لشيء واحد.
+    fun quranWardHour(): Int = long(KEY_QURAN_WARD_HOUR, -1L).toInt()
+    fun quranWardMinute(): Int = long(KEY_QURAN_WARD_MINUTE, 0L).toInt()
+
+    fun setQuranWardTime(hour: Int, minute: Int) = write {
+        putLong(KEY_QURAN_WARD_HOUR, hour.toLong())
+        putLong(KEY_QURAN_WARD_MINUTE, minute.toLong())
+    }
+
+    /// إيقاف الوِرد يُسقط المقدار والتذكير معاً: مقدارٌ بلا تذكير يبقى يعرض
+    /// سطراً في الفهرس لمن ظنّ أنّه أوقف الميزة كلّها. وبيانات اليوم تُمحى
+    /// معهما كي تبدأ إعادةُ التفعيل يوماً نظيفاً لا ببقايا عدٍّ قديم.
+    fun disableQuranWard() = write {
+        putLong(KEY_QURAN_WARD_PAGES, 0L)
+        putLong(KEY_QURAN_WARD_HOUR, -1L)
+        remove(KEY_QURAN_WARD_DAY)
+        remove(KEY_QURAN_WARD_LAST_PAGE)
+        remove(KEY_QURAN_WARD_COUNT)
+    }
+
+    /**
+     * 🕌 عدّ صفحات الوِرد — يُستدعى من مسار حفظ موضع القراءة نفسه (تمريرٌ
+     * استقرّ أو صفحةٌ ثبتت)، لا من التركيب ولا بمؤقّت.
+     *
+     * يعدّ **الصفحات المقروءة فعلاً**: لا يزيد العدّ إلا حين تتقدّم الصفحة
+     * خطوةً واحدة متّصلة عن آخر صفحة مزورة — ففتحُ سورة بعيدة قفزُ تصفّحٍ لا
+     * قراءة فلا يُحتسب، والعدّ لا ينقص أبداً فالرجوعُ إلى الوراء لا يمحو ما
+     * قُرئ ولا يجمّد التقدّم. (كان التقدّم فرقَ موضعين، فمن فتح سورةً
+     * تصفّحاً «تمّ وِرده» بلا قراءة، ومن رجع يقرأ من أوّل المصحف صار الفرق
+     * سالباً فلا يتحرّك.)
+     */
+    fun recordQuranWardPage(page: Int) {
+        if (page < 0 || quranWardPages() <= 0) return
+        val today = adhkarDayKey()
+        val sameDay = string(KEY_QURAN_WARD_DAY, "") == today
+        val last = if (sameDay) long(KEY_QURAN_WARD_LAST_PAGE, -1L).toInt() else -1
+        // الصفحة نفسها — لا كتابة أصلاً، فلا يُرفَع `revision` عبثاً.
+        if (sameDay && page == last) return
+        val counted = if (sameDay) long(KEY_QURAN_WARD_COUNT).toInt() else 0
+        val advanced = last >= 0 && page == last + 1
+        write {
+            putString(KEY_QURAN_WARD_DAY, today)
+            putLong(KEY_QURAN_WARD_LAST_PAGE, page.toLong())
+            putLong(KEY_QURAN_WARD_COUNT, (counted + if (advanced) 1 else 0).toLong())
+        }
+    }
+
+    /**
+     * ما بقي من وِرد اليوم بالصفحات: `0` تمّ، و`-1` لا وِرد أصلاً.
+     *
+     * ⚠️ **قراءة خالصة بلا أي كتابة**: تُستدعى من `remember` أثناء التركيب،
+     * وكتابةٌ هنا كانت ترفع [revision] فتُبطل كل `remember(revision, …)` في
+     * التطبيق كلّه مع كل إعادة تركيب. التصفير اليومي والعدّ كلاهما في
+     * [recordQuranWardPage] وحدها.
+     */
+    fun quranWardRemaining(): Int {
+        val target = quranWardPages()
+        if (target <= 0) return -1
+        // يوم جديد لم تُقرأ فيه صفحة بعدُ — الوِرد كامل، والمفاتيح تُدوَّر
+        // عند أوّل قراءة لا هنا.
+        if (string(KEY_QURAN_WARD_DAY, "") != adhkarDayKey()) return target
+        return (target - long(KEY_QURAN_WARD_COUNT).toInt()).coerceAtLeast(0)
+    }
+
     fun autoDownloadEnabled(): Boolean = bool(KEY_AUTO_DOWNLOAD)
     fun setAutoDownloadEnabled(value: Boolean) = write { putBoolean(KEY_AUTO_DOWNLOAD, value) }
     fun autoDownloadTarget(): String? = string(KEY_AUTO_TARGET).takeIf { it.isNotBlank() }
@@ -1091,6 +1172,12 @@ class LocalStore private constructor(context: Context) {
         const val KEY_QURAN_IMAGE_MODE = "quran_image_mode"
         const val KEY_QURAN_BOOKMARKS = "quran_bookmarks"
         const val KEY_QURAN_BOLD = "quran_bold"
+        const val KEY_QURAN_WARD_PAGES = "quran_ward_pages"
+        const val KEY_QURAN_WARD_HOUR = "quran_ward_hour"
+        const val KEY_QURAN_WARD_MINUTE = "quran_ward_minute"
+        const val KEY_QURAN_WARD_DAY = "quran_ward_day"
+        const val KEY_QURAN_WARD_LAST_PAGE = "quran_ward_last_page"
+        const val KEY_QURAN_WARD_COUNT = "quran_ward_count"
         const val QURAN_FONT_MIN = 20f
         const val QURAN_FONT_DEFAULT = 26f
         const val QURAN_FONT_MAX = 72f
@@ -1142,6 +1229,12 @@ class LocalStore private constructor(context: Context) {
             // فيبقى «تابع القراءة» وعلاماته بعد وعدٍ صريح بمحو كل شيء.
             KEY_QURAN_BOOKMARKS,
             KEY_QURAN_LAST,
+            // عدّاد صفحات الوِرد اليومي أثرُ قراءةٍ شخصيّ، فبقاؤه بعد «حذف
+            // بياناتي» يجعل «بقي كذا» يحكي يوماً وُعد صاحبه بمحوه. (أمّا
+            // المقدار ووقت التذكير فإعدادٌ لا بيانات — يبقيان كوِرد الدروس.)
+            KEY_QURAN_WARD_DAY,
+            KEY_QURAN_WARD_LAST_PAGE,
+            KEY_QURAN_WARD_COUNT,
             "adhkar_counts",
             "adhkar_day",
             "adhkar_streak",

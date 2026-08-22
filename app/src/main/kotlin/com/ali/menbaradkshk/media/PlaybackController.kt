@@ -41,6 +41,9 @@ data class PlaybackUiState(
     val hasPrevious: Boolean = false,
     val sleepEndsAtMs: Long? = null,
     val autoplay: Boolean = true,
+    /// «تخطّي الصمت» — مطفأ افتراضياً عمداً: تقصير السكتات يغيّر المسموع في
+    /// التلاوة وفي الدروس ذات الوقفات المقصودة، فمن يريده يفتحه بنفسه.
+    val skipSilence: Boolean = false,
     val error: String? = null,
     /// موضع العنصر الحالي في قائمة التشغيل — عليه يقوم **تمييز الآية الجارية**
     /// في المصحف: كل آية عنصرٌ مستقلّ، فالفهرس نفسه هو رقم الآية بلا حاجة
@@ -53,6 +56,45 @@ object AutoplayState {
     @Volatile var enabled: Boolean = true
 }
 
+/// «تخطّي الصمت» — خلافاً لـ[AutoplayState] يبقى بين الجلسات، فله ملفّ تفضيلات
+/// صغير مستقلّ (`LocalStore` ليس من ملفّات هذه الميزة).
+///
+/// **لماذا كائنٌ مشترك لا أمر جلسة عبر `MediaController`؟** لأن `Player` — وهو
+/// كلّ ما يملكه المتحكّم — لا يعرّف `setSkipSilenceEnabled` أصلاً؛ هي على
+/// `ExoPlayer` وحده، أي داخل [PlaybackService]. والخدمة والواجهة في العملية
+/// نفسها (لا `android:process` في البيان)، فبَوْحُ قيمةٍ واحدة أبسط بكثير من
+/// `SessionCommand` مخصّص بترميز وفكّ ترميز — وهو نمط [AutoplayState] نفسه.
+object SkipSilenceState {
+    private const val PREFS = "minbar_playback"
+    private const val KEY = "skip_silence"
+
+    @Volatile
+    var enabled: Boolean = false
+        private set
+
+    /// تسجّلها [PlaybackService] كي يسري التبديل على المشغّل الحيّ فوراً لا عند
+    /// الدرس التالي؛ وتُمسح عند إتلاف الخدمة فلا تُلمس مشغّلاً محرَّراً.
+    @Volatile
+    var onChanged: (() -> Unit)? = null
+
+    private fun prefs(context: Context) =
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    /// القراءة الوحيدة من القرص؛ بعدها كلّ شيء من الذاكرة.
+    fun load(context: Context): Boolean {
+        enabled = prefs(context).getBoolean(KEY, false)
+        return enabled
+    }
+
+    fun set(context: Context, value: Boolean) {
+        if (enabled == value) return
+        enabled = value
+        // apply() لا commit(): المفتاح لا يجوز أن ينتظر القرص تحت الإصبع.
+        prefs(context).edit().putBoolean(KEY, value).apply()
+        onChanged?.invoke()
+    }
+}
+
 class PlaybackController(context: Context) {
     private val appContext = context.applicationContext
     private val store = LocalStore.get(context)
@@ -63,6 +105,7 @@ class PlaybackController(context: Context) {
             speed = store.playbackSpeed().toFloat(),
             // مؤقّت نوم قائم من جلسة سابقة يظهر فور إعادة فتح التطبيق.
             sleepEndsAtMs = store.sleepEndsAtMs().takeIf { it > System.currentTimeMillis() },
+            skipSilence = SkipSilenceState.load(appContext),
         ),
     )
     val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
@@ -357,6 +400,12 @@ class PlaybackController(context: Context) {
         _state.value = _state.value.copy(autoplay = enabled)
     }
 
+    /// الخدمة هي من تُطبّقه على المشغّل (وتحرس المصحف منه)؛ هنا الحفظ والإبلاغ.
+    fun setSkipSilence(enabled: Boolean) {
+        SkipSilenceState.set(appContext, enabled)
+        _state.value = _state.value.copy(skipSilence = enabled)
+    }
+
     fun clearError() {
         _state.value = _state.value.copy(error = null)
     }
@@ -380,6 +429,7 @@ class PlaybackController(context: Context) {
             hasNext = player.hasNextMediaItem(),
             hasPrevious = player.hasPreviousMediaItem(),
             autoplay = AutoplayState.enabled,
+            skipSilence = SkipSilenceState.enabled,
             itemIndex = player.currentMediaItemIndex.coerceAtLeast(0),
         )
     }

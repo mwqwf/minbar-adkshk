@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.MicExternalOn
 import androidx.compose.material.icons.filled.MusicNote
@@ -77,6 +78,8 @@ import com.ali.menbaradkshk.data.Category
 import com.ali.menbaradkshk.data.ContentState
 import com.ali.menbaradkshk.data.Lesson
 import com.ali.menbaradkshk.data.Subcategory
+import com.ali.menbaradkshk.data.transcriptSearchAnchor
+import com.ali.menbaradkshk.data.transcriptSearchWords
 import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.normalizeArabic
 import kotlinx.coroutines.delay
@@ -903,8 +906,61 @@ fun SearchScreen(vm: AppViewModel, initial: String, playback: PlaybackUiState) {
                     .toList()
             }
 
-            if (catRes.isEmpty() && subRes.isEmpty() && lesRes.isEmpty()) {
+            // 📖 «في النص المشروح»: يجد الدرس بكلمةٍ من متنه لا من عنوانه —
+            // فمن كتب «التيمّم» يبلغ الدرس الذي شُرح فيه ولو خلا عنوانه منه.
+            // استعلامٌ واحد على فهرس الكلمات (transcript_index) بعد مهلة كتابة،
+            // وبقيّة الترشيح في الجهاز على ما عاد به. ⛔ لا نصوص تُخزَّن هنا.
+            val transcriptWords = remember(q) { transcriptSearchWords(q) }
+            // المرساة: أندر الكلمات تقديراً — انظر [transcriptSearchAnchor].
+            val transcriptAnchor = remember(transcriptWords) {
+                transcriptSearchAnchor(transcriptWords)
+            }
+            var transcriptHits by remember { mutableStateOf(emptyList<String>()) }
+            var transcriptAsked by remember { mutableStateOf("") }
+            LaunchedEffect(q) {
+                if (transcriptAnchor == null) {
+                    transcriptHits = emptyList()
+                    transcriptAsked = q
+                    return@LaunchedEffect
+                }
+                // مهلة الكتابة: لا يُسأل الخادم عند كل حرف — الكلفة تُحسب.
+                // ٧٥٠ م.ث لا أقلّ: المهلة القصيرة كانت تستعلم في منتصف الكلمة
+                // فتتقلّب النتائج مع كل حرف يلحق بها.
+                delay(750)
+                transcriptHits = vm.transcripts.searchIndex(transcriptAnchor)
+                transcriptAsked = q
+            }
+            // «سُئل عن هذا الاستعلام بالذات وانتهى»: يميّز «لم يُبحث بعد» عن
+            // «بُحث فلم يُوجد»، فلا تظهر «لا نتائج» قبل أن يعود الجواب.
+            val transcriptSearching = transcriptAnchor != null && transcriptAsked != q
+            val lessonById = remember(lessonIndex) {
+                lessonIndex.associateBy({ it.first.id }, { it.first })
+            }
+            // ⚠️ مطابقات المرساة كما هي — **بلا ترشيح ببقيّة الكلمات**: نافذة
+            // الفهرس اعتباطيّة الترتيب (انظر [TranscriptRepository.searchIndex])
+            // وترشيحُ AND فوقها كان يكاد يُفرغ القائمة من دروس مطابقة فعلاً.
+            val transcriptRes = remember(transcriptHits, lessonById, lesRes) {
+                if (transcriptHits.isEmpty()) {
+                    emptyList()
+                } else {
+                    // ما ظهر في النتائج أعلاه لا يُكرَّر هنا.
+                    val shown = lesRes.mapTo(HashSet<String>()) { it.id }
+                    transcriptHits.asSequence()
+                        .filter { it !in shown }
+                        .mapNotNull(lessonById::get)
+                        .take(20)
+                        .toList()
+                }
+            }
+
+            if (catRes.isEmpty() && subRes.isEmpty() && lesRes.isEmpty() &&
+                transcriptRes.isEmpty()
+            ) {
                 // بدل شاشة فارغة: اقتراح «الأكثر استماعاً» ليبقى للمستخدم مخرج.
+                //
+                // ⚠️ بحثُ المتون الجاري لا يُخرج من هذا الفرع: كانت الشاشة
+                // تنقلب كلّها بينه وبين سطر «يُبحث…» مع كل نبضة استعلام،
+                // فيثبت البديل الآن ويتبدّل سطرُ العنوان وحده.
                 val fallback = remember(revision, content.lessons) { vm.content.mostListened() }
                 LazyColumn {
                     item {
@@ -912,10 +968,22 @@ fun SearchScreen(vm: AppViewModel, initial: String, playback: PlaybackUiState) {
                             modifier = Modifier.fillMaxWidth().padding(24.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
-                            Text("لا توجد نتائج لـ«$q»", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                if (transcriptSearching) {
+                                    "يُبحث في النص المشروح…"
+                                } else {
+                                    "لا توجد نتائج لـ«$q»"
+                                },
+                                style = MaterialTheme.typography.titleMedium,
+                            )
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                "جرّب كلمة أقصر أو اسم المتحدّث.",
+                                // لا تُقترح كلمةٌ أقصر وحكمُ البحث لم يصدر بعد.
+                                if (transcriptSearching) {
+                                    " "
+                                } else {
+                                    "جرّب كلمة أقصر أو اسم المتحدّث."
+                                },
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center,
                             )
@@ -974,6 +1042,51 @@ fun SearchScreen(vm: AppViewModel, initial: String, playback: PlaybackUiState) {
                                 textAlign = TextAlign.Center,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            )
+                        }
+                    }
+                    if (transcriptRes.isNotEmpty()) {
+                        item {
+                            Text(
+                                "في النص المشروح",
+                                style = MaterialTheme.typography.titleLarge,
+                                modifier = Modifier.padding(
+                                    start = 16.dp,
+                                    end = 16.dp,
+                                    top = 12.dp,
+                                    bottom = 4.dp,
+                                ),
+                            )
+                        }
+                        items(transcriptRes, key = { "txt-${it.id}" }) { lesson ->
+                            ListItem(
+                                modifier = Modifier.clickable {
+                                    vm.openPlayer(lesson, transcriptRes)
+                                },
+                                leadingContent = {
+                                    Icon(
+                                        Icons.Filled.MenuBook,
+                                        contentDescription = null,
+                                        tint = Teal,
+                                    )
+                                },
+                                headlineContent = { Text(lesson.displayTitle) },
+                                supportingContent = if (lesson.speaker.isNotBlank()) {
+                                    { Text(lesson.speaker) }
+                                } else {
+                                    null
+                                },
+                            )
+                        }
+                    } else if (transcriptSearching) {
+                        // سطرٌ واحد يقول إن الجواب في الطريق — بلا رسالة
+                        // «لا نتائج» ثانية تُناقض ما قد يظهر بعد لحظة.
+                        item {
+                            Text(
+                                "يُبحث في النص المشروح…",
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.fillMaxWidth().padding(16.dp),
                             )
                         }
                     }

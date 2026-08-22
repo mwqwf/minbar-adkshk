@@ -919,6 +919,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             open(if (section != null) Route.AdhkarSection(section) else Route.Adhkar)
             return
         }
+        // وجهة تذكير وِرد المصحف (`minbar://quran`): الفهرس لا آية بعينها —
+        // فيه «تابع القراءة» وسطرُ ما بقي من الوِرد معاً.
+        if (host == "quran") {
+            open(Route.Quran)
+            return
+        }
         // وجهة إشعار التحميل (minbar://downloads) — كان يفتح الرئيسية.
         if (host == "downloads" || uri.path?.contains("downloads") == true) {
             open(Route.Downloads)
@@ -1045,6 +1051,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun disableWard() {
         store.disableWard()
         BackgroundScheduler.scheduleWard(getApplication())
+    }
+
+    // ---- 🕌 وِرد المصحف: نفس ثلاثيّة وِرد الدروس أعلاه، بجدولته الخاصّة ----
+
+    fun setQuranWardPages(pages: Int) {
+        store.setQuranWardPages(pages)
+        BackgroundScheduler.scheduleQuranWard(getApplication())
+    }
+
+    fun setQuranWardTime(hour: Int, minute: Int) {
+        store.setQuranWardTime(hour, minute)
+        BackgroundScheduler.scheduleQuranWard(getApplication())
+    }
+
+    fun disableQuranWard() {
+        store.disableQuranWard()
+        BackgroundScheduler.scheduleQuranWard(getApplication())
     }
 
     fun setAutoDownloadEnabled(enabled: Boolean) {

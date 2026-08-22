@@ -2,6 +2,7 @@ package com.ali.menbaradkshk.data
 
 import android.content.Context
 import android.net.Uri
+import com.ali.menbaradkshk.util.normalizeArabic
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
@@ -32,6 +33,56 @@ data class LessonTranscript(
     val imageUrls: List<String>,
     val contributorName: String,
 )
+
+// كل ما ليس حرفاً عربياً أو لاتينياً أو رقماً فاصلٌ بين الكلمات:
+// المدى الأول همزة→غين والثاني فاء→ياء (وبينهما التطويل، وقد حُذف).
+private val transcriptWordSplit = Regex("[^\\u0621-\\u063A\\u0641-\\u064Aa-z0-9]+")
+
+// أدوات التعريف الملتصقة — تُقشَّر ليجد من كتب «تيمم» درساً ورد فيه
+// «بالتيمم»، ومن كتب «التيمم» درساً ورد فيه «تيمم».
+private val transcriptWordPrefixes = listOf("وال", "فال", "بال", "كال", "لل", "ال")
+
+/**
+ * 🔤 كلمات البحث في المتون.
+ *
+ * ⚠️ نسخة حرفيّة من `transcriptIndexKeywords` في ملف الدوال السحابيّة:
+ * تطبيع عربيّ واحد، ثم تقطيع على القاعدة نفسها، ثم قشر أداة التعريف ما
+ * دام الباقي كلمةً معتبرة. أيّ تغيير هنا بلا نظيره هناك يجعل ما يُسأل
+ * عنه مخالفاً لما كُتب في الفهرس، فلا يُطابَق شيء أبداً.
+ */
+fun transcriptSearchWords(query: String): List<String> = normalizeArabic(query)
+    .split(transcriptWordSplit)
+    .filter { it.length >= TranscriptRepository.MIN_SEARCH_KEYWORD }
+    .map { word ->
+        val prefix = transcriptWordPrefixes.firstOrNull { candidate ->
+            word.startsWith(candidate) &&
+                word.length - candidate.length >= TranscriptRepository.MIN_SEARCH_KEYWORD
+        }
+        if (prefix == null) word else word.substring(prefix.length)
+    }
+    .distinct()
+
+/**
+ * كلماتٌ تكاد لا تخلو منها صفحةٌ من متون الدروس الشرعيّة — بصورتها المطبَّعة
+ * المقشورة كما تدخل الفهرس («النبي» تُفهرس «نبي» مثلاً). المرساةُ بها تعيد
+ * نافذةً شبه عشوائيّة تطابق كل شيء، فتُنحَّى ما وُجد سواها.
+ */
+private val transcriptCommonWords = setOf(
+    "الله", "قال", "قالت", "يقول", "كان", "كانت", "رسول", "نبي", "صلي",
+    "وسلم", "سلم", "عليه", "عليها", "تعالي", "الذي", "ذين", "التي",
+    "هذا", "هذه", "ذلك", "ابن", "شيخ", "حديث", "كتاب", "باب",
+)
+
+/**
+ * مرساة الاستعلام: الكلمة الوحيدة التي يُسأل الفهرس عنها (Firestore لا
+ * يقبل إلا `array-contains` واحداً)، فالأدلّ على المطلوب هي **الأندر**.
+ * ولا إحصاء شيوعٍ عندنا بلا كلفة، فنقرّبها بأمرين: تنحية الشائع المعروف
+ * أعلاه، ثم أطول ما بقي — فالطول قرينة الندرة. وإن لم يبقَ غير الشائع
+ * فأطوله خيرٌ من لا مرساة.
+ */
+fun transcriptSearchAnchor(words: List<String>): String? =
+    (words.filterNot { it in transcriptCommonWords }.ifEmpty { words })
+        .maxByOrNull(String::length)
 
 /** مرفق «النص المشروح» الاختياري داخل مساهمة درس صوتي («شارك درساً»). */
 data class TranscriptExtras(
@@ -89,6 +140,10 @@ class TranscriptRepository private constructor(context: Context) {
     // لأن الكاش كان في الذاكرة فقط ويضيع بموت العملية — فيظهر «جارٍ التحميل»
     // ثم دعوة المساهمة كأن الدرس بلا نص أصلاً.
     private val diskCache = appContext.getSharedPreferences(CACHE_FILE, Context.MODE_PRIVATE)
+
+    // نتائج فهرس البحث لكلمة واحدة، في الذاكرة فقط: البحث زائرٌ عابر ولا
+    // يستحق قرصاً، لكن حذف حرفٍ وإعادته لا يصحّ أن يُعيد الاستعلام.
+    private val searchCache = ConcurrentHashMap<String, List<String>>()
 
     /** النص المعتمد للدرس أو null. force=true بعد إرسال اقتراح مقبول مثلاً. */
     suspend fun fetch(lessonId: String, force: Boolean = false): LessonTranscript? {
@@ -374,6 +429,45 @@ class TranscriptRepository private constructor(context: Context) {
             .call(mapOf("submissionId" to item.id)).await()
     }
 
+    /**
+     * 🔎 بحث في متون «النص المشروح» — يعيد معرّفات دروسٍ وردت المرساة في
+     * متونها.
+     *
+     * استعلام **واحد** بـ`array-contains` على كلمة المرساة (انظر
+     * [transcriptSearchAnchor])، فلا تُجلب مجموعة المتون ولا يُخزَّن نصّ منها
+     * في الجهاز لأجل البحث — الوثيقة المفهرسة كلمات لا نصّ.
+     *
+     * ⚠️ **النتيجة نافذةٌ لا استيعاب**: الاستعلام بلا ترتيب، فيُرجع Firestore
+     * أوّل [SEARCH_LIMIT] وثيقة بترتيب المعرّف — عيّنةً من المطابقات لا
+     * كلَّها. ولهذا عمداً لا ترشيح محلّيّاً ببقيّة كلمات السؤال: شرطُ AND فوق
+     * نافذةٍ اعتباطيّة كان يُسقط دروساً مطابقة فعلاً ويكاد يُفرغ القائمة.
+     *
+     * الفشل (بلا اتصال مثلاً) يعود بلا نتائج لا باستثناء: هذا القسم زيادةٌ
+     * على البحث القائم، ولا يصحّ أن يُسقط شاشة البحث كلّها.
+     */
+    suspend fun searchIndex(keyword: String): List<String> {
+        if (keyword.length < MIN_SEARCH_KEYWORD) return emptyList()
+        searchCache[keyword]?.let { return it }
+        return withContext(Dispatchers.IO) {
+            val documents = runCatching {
+                db.collection(SEARCH_INDEX)
+                    .whereArrayContains("keywords", keyword)
+                    .limit(SEARCH_LIMIT)
+                    .get()
+                    .await()
+                    .documents
+            }.getOrNull() ?: return@withContext emptyList<String>()
+            val hits = documents.map { document ->
+                document.getString("lessonId")?.takeIf(String::isNotBlank) ?: document.id
+            }
+            // سقف بسيط بدل إخراج الأقدم: جلسة بحثٍ واحدة لا تبلغه غالباً،
+            // وبلوغه يعني أن ما قبله لم يعد يُسأل عنه أصلاً.
+            if (searchCache.size >= MAX_SEARCH_CACHE) searchCache.clear()
+            searchCache[keyword] = hits
+            hits
+        }
+    }
+
     /** تفريغ كاش درس — الطبقتين معاً (بعد اعتماد اقتراح مثلاً ليظهر فوراً). */
     fun invalidate(lessonId: String) {
         cache.remove(lessonId)
@@ -387,6 +481,14 @@ class TranscriptRepository private constructor(context: Context) {
         const val MAX_IMAGES = 4
         const val MAX_IMAGE_BYTES = 10L * 1_024L * 1_024L
         const val MAX_TEXT_CHARS = 20_000
+
+        /** أقصر كلمة تدخل الفهرس ويُسأل بها — بنفس حدّ الخادم في بنائه. */
+        const val MIN_SEARCH_KEYWORD = 3
+        private const val SEARCH_INDEX = "transcript_index"
+
+        // 25 لا 20: ما ظهر في نتائج العناوين يُحذف من قسم المتون، والعرض 20.
+        private const val SEARCH_LIMIT = 25L
+        private const val MAX_SEARCH_CACHE = 24
         private const val TEXT_TTL_MS = 7L * 24 * 60 * 60 * 1000L
         private const val EMPTY_TTL_MS = 24L * 60 * 60 * 1000L
         private const val MAX_DISK_ENTRIES = 200

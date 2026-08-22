@@ -8,13 +8,16 @@ import android.content.Context
 import android.content.Intent
 import android.view.KeyEvent
 import android.widget.RemoteViews
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.session.MediaButtonReceiver
 import com.ali.menbaradkshk.MainActivity
 import com.ali.menbaradkshk.R
 import com.ali.menbaradkshk.data.LocalStore
-import com.ali.menbaradkshk.media.PlaybackService
+import java.util.concurrent.Executors
 
 /// ودجت الشاشة الرئيسية: يعرض آخر درس مُشغَّل ويفتح التطبيق عليه،
 /// وزرّه يرسل أمر تشغيل/إيقاف إلى جلسة الوسائط مباشرة.
+@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 class NowPlayingWidget : AppWidgetProvider() {
 
     override fun onUpdate(
@@ -22,7 +25,18 @@ class NowPlayingWidget : AppWidgetProvider() {
         appWidgetManager: AppWidgetManager,
         appWidgetIds: IntArray,
     ) {
-        appWidgetIds.forEach { id -> render(context, appWidgetManager, id) }
+        // ⚠️ الرسم يقرأ فهرس الدروس كاملاً ويحلّله (LocalStore.lessons)؛
+        // تنفيذه على خيط البثّ الرئيسي كان يعلّق الواجهة عند كل تحديث ودجت.
+        // goAsync يُبقي العملية حيّة حتى ينتهي الرسم على خيط خلفيّ.
+        val pending = goAsync()
+        val appContext = context.applicationContext
+        worker.execute {
+            try {
+                appWidgetIds.forEach { id -> render(appContext, appWidgetManager, id) }
+            } finally {
+                pending.finish()
+            }
+        }
     }
 
     private fun render(context: Context, manager: AppWidgetManager, widgetId: Int) {
@@ -67,9 +81,15 @@ class NowPlayingWidget : AppWidgetProvider() {
                 ),
             )
 
-            // زر التشغيل/الإيقاف: أمر وسائط إلى خدمة التشغيل.
+            // زر التشغيل/الإيقاف: أمر وسائط إلى مستقبل أزرار الوسائط المعلن
+            // في المانيفست — وهو مسار media3 الرسميّ نفسه الذي تسلكه أزرار
+            // السمّاعة.
+            // ⛔ لا تُعِده إلى PendingIntent.getService: بدء خدمة والتطبيق في
+            // الخلفية ممنوع منذ أندرويد 8 (ويرمي استثناءً في 12+)، فكان نقر
+            // الودجت بعد موت العملية لا يبلغ الخدمة أبداً — أي أن استئناف
+            // التشغيل (onPlaybackResumption) لا يُشتغل، وهو غرضه الوحيد.
             val toggleIntent = Intent(Intent.ACTION_MEDIA_BUTTON).apply {
-                component = ComponentName(context, PlaybackService::class.java)
+                component = ComponentName(context, MediaButtonReceiver::class.java)
                 putExtra(
                     Intent.EXTRA_KEY_EVENT,
                     KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE),
@@ -77,7 +97,7 @@ class NowPlayingWidget : AppWidgetProvider() {
             }
             setOnClickPendingIntent(
                 R.id.widget_play,
-                PendingIntent.getService(
+                PendingIntent.getBroadcast(
                     context,
                     widgetId + 1_000,
                     toggleIntent,
@@ -89,6 +109,11 @@ class NowPlayingWidget : AppWidgetProvider() {
     }
 
     companion object {
+        /// خيط واحد لكل الرسم الخلفيّ — الودجت نادر التحديث فلا داعي لمجمّع.
+        private val worker = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "widget-render").apply { isDaemon = true }
+        }
+
         /// يُحدِّث كل النسخ المثبّتة من الودجت (يُستدعى عند تغيّر الدرس المُشغَّل).
         fun refresh(context: Context) {
             val manager = AppWidgetManager.getInstance(context) ?: return

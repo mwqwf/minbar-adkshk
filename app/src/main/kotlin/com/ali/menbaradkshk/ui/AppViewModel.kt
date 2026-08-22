@@ -294,12 +294,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             kotlinx.coroutines.delay(2_000L)
             downloads.clearCancel(lessonId)
+            // المهلة تضمن أنّ نقلاً جارياً حذف جزئيّه بنفسه، فلا يتنازع
+            // الكنسُ معه؛ والمنتظِر في الطابور لا يحذفه أحدٌ غيرُ هذا السطر.
+            downloads.discardPartials(listOf(lessonId))
         }
     }
 
     /// إلغاء الطابور كلّه — لا يمسّ ما اكتمل تحميله من قبل.
     fun cancelAllDownloads() {
-        store.downloadQueue().forEach { downloads.requestCancel(it) }
+        // نسخة قبل الإفراغ: بعده يصير الطابور فارغاً فلا نعرف ما نكنس أجزاءه.
+        val cancelled = store.downloadQueue()
+        cancelled.forEach { downloads.requestCancel(it) }
         store.clearDownloadQueue()
         downloads.setPaused(false)
         // لا عامل يعمل الآن إن كان الطابور موقوفاً، فلا أحد يمسح الحالة.
@@ -313,6 +318,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             kotlinx.coroutines.delay(2_000L)
             downloads.clearAllCancels()
+            // وعدُ الحوار «تُحذف الأجزاء المحمَّلة» يُنفَّذ هنا فعلاً.
+            downloads.discardPartials(cancelled)
         }
         showMessage("أُلغي تحميل ما تبقّى في الطابور.")
     }
@@ -528,6 +535,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // فإبقاء إحداثيات رواية عند تبديلها يعني إطاراً على آية أخرى.
         val riwaya = _riwaya.value
         if (_mushafRiwaya.value == riwaya && _mushafPages.value.isNotEmpty()) return
+        // ⚠️ تُفرَّغ الإحداثيات **قبل** التحميل: الصورة تتبع الرواية الجديدة
+        // فوراً، بينما فكّ الضغط وتحليل التخطيط يستغرقان مئات الميلي ثانية —
+        // فكان الإطار يقع على صفحة رواية تحت إحداثيات أخرى، أي على آية غيرها.
+        // الفراغ يُظهر مؤشّر التحميل حتى يجهز تخطيط الرواية الصحيحة.
+        if (_mushafRiwaya.value != riwaya) {
+            _mushafPages.value = emptyList()
+            _mushafRiwaya.value = ""
+        }
         viewModelScope.launch {
             runCatching {
                 val layout = mushaf.layout(riwaya)
@@ -535,7 +550,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 _mushafFlatNumbering.value = layout.isFlat
                 _mushafAspect.value = layout.aspect
                 _mushafRiwaya.value = riwaya
-            }.onFailure { _message.value = "تعذّر فتح المصحف المصوَّر." }
+            }.onFailure {
+                // وعند الفشل يبقى الفراغ: تخطيطٌ نصف محمَّل أسوأ من لا تخطيط.
+                _mushafPages.value = emptyList()
+                _mushafRiwaya.value = ""
+                _message.value = "تعذّر فتح المصحف المصوَّر."
+            }
         }
     }
 
@@ -635,15 +655,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             )
             return
         }
-        val items = (1..surah.ayahs).map { ayah ->
-            com.ali.menbaradkshk.media.PlaybackController.quranItem(
-                id = "${surah.number}:$ayah",
-                url = source(ayah, reciter.ayahUrl(surah.number, ayah)),
-                title = "${surah.name} — الآية $ayah",
-                artist = reciter.name,
-            )
+        viewModelScope.launch {
+            // بناء القائمة يلمس القرص لكل آية (٢٨٦ نداءً في البقرة) بحثاً عن
+            // الملفّ المنزَّل، فلا يجوز أن يقع على خيط الواجهة من نقرة الآية.
+            val items = withContext(Dispatchers.IO) {
+                (1..surah.ayahs).map { ayah ->
+                    com.ali.menbaradkshk.media.PlaybackController.quranItem(
+                        id = "${surah.number}:$ayah",
+                        url = source(ayah, reciter.ayahUrl(surah.number, ayah)),
+                        title = "${surah.name} — الآية $ayah",
+                        artist = reciter.name,
+                    )
+                }
+            }
+            playback.playQuran(items, (fromAyah - 1).coerceIn(0, items.lastIndex))
         }
-        playback.playQuran(items, (fromAyah - 1).coerceIn(0, items.lastIndex))
     }
 
     /**
@@ -704,9 +730,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val index = _quranIndex.value ?: return
         quranDownloadJob = viewModelScope.launch {
             runCatching {
-                for (surah in index.surahs) {
-                    if (quranDownloads.isSurahDownloaded(reciter, surah.number, surah.ayahs)) continue
-                    quranDownloads.downloadSurah(reciter, surah.number, surah.ayahs)
+                // فحص «هل نُزّلت؟» يلمس القرص لكل آية، فهو مع التنزيل نفسه على
+                // خيط الإدخال/الإخراج لا على خيط الواجهة.
+                withContext(Dispatchers.IO) {
+                    for (surah in index.surahs) {
+                        val done = quranDownloads
+                            .isSurahDownloaded(reciter, surah.number, surah.ayahs)
+                        if (done) continue
+                        quranDownloads.downloadSurah(reciter, surah.number, surah.ayahs)
+                    }
                 }
             }
                 .onSuccess { _message.value = "اكتمل تنزيل المصحف بصوت ${reciter.name}." }
@@ -887,8 +919,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleFavorite(id: String) {
+        // نبضة `revision` من المخزن وحدها كافية: كلّ قارئي المفضّلة مفاتيحهم
+        // تتضمّنها. أمّا `refreshPersonalization` فلا صلة لها بالمفضّلة، وكانت
+        // تُعيد دمج المدد على القائمة كاملة وتُنشئ حالةً بهويّة جديدة — أي
+        // إعادة تركيب لكل شاشة تقرأ المحتوى عند كلّ نقرة قلب.
         store.toggleFavorite(id)
-        content.refreshPersonalization()
     }
 
     fun toggleFollow(id: String) {

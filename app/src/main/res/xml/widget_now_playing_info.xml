@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- صفر لا نصف ساعة: التحديث مضمون عند التغيّر عبر NowPlayingWidget.refresh
+     من خدمة التشغيل، فأي دورية هنا مجرّد إيقاظ للجهاز بلا فائدة. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:initialLayout="@layout/widget_now_playing"
     android:minWidth="180dp"
     android:minHeight="60dp"
     android:resizeMode="horizontal|vertical"
-    android:updatePeriodMillis="1800000"
+    android:updatePeriodMillis="0"
     android:widgetCategory="home_screen" />

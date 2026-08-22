@@ -155,20 +155,33 @@ fun TranscriptContributeScreen(vm: AppViewModel) {
                     .map { normalizeArabic(it) }
                     .filter { it.isNotEmpty() }
             }
-            val matches = remember(tokens, content.lessons) {
+            // ⚠️ فهرس مطبَّع يُبنى مرّة لكل تغيّر محتوى لا مع كل ضغطة مفتاح:
+            // كان normalizeArabic يمرّ على كل الدروس عند كل حرف يُكتب (نفس
+            // العيب الذي أُصلح في بحث المكتبة — لا تُعِده).
+            val lessonIndex = remember(
+                content.lessons,
+                content.categoryById,
+                content.subcategoryById,
+            ) {
+                content.lessons.map { item ->
+                    item to normalizeArabic(
+                        listOfNotNull(
+                            item.displayTitle,
+                            content.subcategoryById[item.subcategoryId]?.name,
+                            content.categoryById[item.categoryId]?.name,
+                        ).joinToString(" "),
+                    )
+                }
+            }
+            val matches = remember(tokens, lessonIndex) {
                 if (tokens.isEmpty()) {
                     emptyList()
                 } else {
-                    content.lessons.filter { item ->
-                        val haystack = normalizeArabic(
-                            listOfNotNull(
-                                item.displayTitle,
-                                content.subcategoryById[item.subcategoryId]?.name,
-                                content.categoryById[item.categoryId]?.name,
-                            ).joinToString(" "),
-                        )
-                        tokens.all { haystack.contains(it) }
-                    }.take(20)
+                    lessonIndex.asSequence()
+                        .filter { (_, haystack) -> tokens.all { haystack.contains(it) } }
+                        .map { it.first }
+                        .take(20)
+                        .toList()
                 }
             }
             if (tokens.isNotEmpty() && matches.isEmpty()) {

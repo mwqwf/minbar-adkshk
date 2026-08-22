@@ -47,10 +47,8 @@ import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
@@ -65,7 +63,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -83,7 +80,6 @@ import com.ali.menbaradkshk.data.Subcategory
 import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.normalizeArabic
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 // ----------------------------------------------------------------------------
 // الرئيسية
@@ -137,7 +133,9 @@ fun HomeScreen(
         onRefresh = { vm.content.requestDeepRefresh() },
         modifier = Modifier.fillMaxSize(),
     ) {
-        LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+        // ٨٨dp أسفل القائمة: زرّ «شارك درساً» العائم (٥٦dp + ١٦dp هامشه) كان
+        // يغطّي آخر بطاقة، والحشوة تُبقيها كاملةً فوقه.
+        LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
             if (state.offline && state.error != null) {
                 item { OfflineBanner(state.error) { vm.content.requestDeepRefresh() } }
             }
@@ -210,7 +208,9 @@ fun HomeScreen(
 
             if (visibleFeed.isNotEmpty()) {
                 item { RailHeader(feedTitle) }
-                items(visibleFeed, key = { "feed-${it.id}-$revision" }) { lesson ->
+                // ⛔ لا يدخل `revision` في المفتاح: كان تبدّله (نبضتان كل خمس
+                // ثوانٍ أثناء التشغيل) يُتلف تركيبة كل صفّ ويعيد بناءها.
+                items(visibleFeed, key = { "feed-${it.id}" }) { lesson ->
                     AudioItem(vm, lesson, visibleFeed, playback, showActions = false)
                 }
             }
@@ -371,13 +371,18 @@ private fun DailyWardCard(vm: AppViewModel, ward: Lesson, feed: List<Lesson>) {
 
 @Composable
 fun LibraryScreen(vm: AppViewModel, state: ContentState) {
+    // عدّ الفروع مرّة لكل تغيّر محتوى: المسح داخل الصفّ كان يعيد مسح كل
+    // الفروع لكل بطاقة قسم في كل إعادة تركيب.
+    val counts = remember(state.subcategories) {
+        state.subcategories.groupingBy(Subcategory::categoryId).eachCount()
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         items(state.categories, key = Category::id) { category ->
-            val count = state.subcategories.count { it.categoryId == category.id }
+            val count = counts[category.id] ?: 0
             SectionCard(
                 categoryId = category.id,
                 name = category.name,
@@ -385,8 +390,18 @@ fun LibraryScreen(vm: AppViewModel, state: ContentState) {
                 onClick = { vm.open(Route.Category(category.id)) },
             )
         }
-        if (!state.loading && state.categories.isEmpty()) {
-            item { EmptyState("لا توجد أقسام", "اسحب للتحديث أو تحقق من الاتصال.") }
+        // كانت الشاشة تبقى بيضاء أثناء التحميل، ورسالة الفراغ تطلب سحباً
+        // للتحديث لا وجود له في هذا التبويب — فوُحِّدت مع الشاشتين الشقيقتين.
+        if (state.categories.isEmpty()) {
+            item {
+                EmptyOrLoadingState(
+                    loading = state.loading,
+                    offline = state.offline,
+                    offlineMessage = "يجب الاتصال بالإنترنت أول مرة لتحميل الأقسام. بعد ذلك يمكنك التصفّح دون إنترنت.",
+                    emptyMessage = "لا توجد أقسام.",
+                    onRetry = { vm.content.requestDeepRefresh() },
+                )
+            }
         }
     }
 }
@@ -416,6 +431,13 @@ fun CategoryScreen(vm: AppViewModel, categoryId: String, state: ContentState) {
 
     val accent = colorForCategory(categoryId)
     val bulk by vm.bulkDownload.collectAsState()
+    // تقدّم السلاسل وحالة المتابعة تُحسب مرّة واحدة للقسم كلّه: كانت تُستدعى
+    // داخل كل عنصر بلا `remember`، و`seriesProgress` يرشّح الدروس ويفكّ
+    // «المكتملة» من JSON في كل نداء — أي n مرّة مع كل إعادة تركيب.
+    val progressBySub = remember(revision, state.lessons, subs) {
+        subs.associate { it.id to vm.content.seriesProgress(it.id) }
+    }
+    val followedSubs = remember(revision) { vm.store.followedSubcategories().toSet() }
     LazyColumn(
         contentPadding = PaddingValues(vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -473,11 +495,12 @@ fun CategoryScreen(vm: AppViewModel, categoryId: String, state: ContentState) {
                 }
             }
         }
-        items(subs, key = { "${it.id}-$revision" }) { sub ->
-            val (done, total) = vm.content.seriesProgress(sub.id)
+        // ⛔ لا `revision` في المفتاح — تبدّله كان يهدم تركيبة كل عنصر.
+        items(subs, key = { it.id }) { sub ->
+            val (done, total) = progressBySub[sub.id] ?: (0 to 0)
             val complete = total > 0 && done >= total
             val ratio = if (total > 0) done.toFloat() / total else 0f
-            val following = vm.store.isFollowingSubcategory(sub.id)
+            val following = sub.id in followedSubs
             Box(
                 modifier = Modifier
                     .padding(horizontal = 12.dp)
@@ -618,9 +641,17 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
     val sub = content.subcategoryById[subcategoryId]
     val lessons = remember(revision, content.lessons) { vm.content.lessonsForSubcategory(subcategoryId) }
     val bulk by vm.bulkDownload.collectAsState()
-    var newestFirst by remember { mutableStateOf(false) }
+    var newestFirst by rememberSaveable(subcategoryId) { mutableStateOf(false) }
     val ordered = remember(lessons, newestFirst) { if (newestFirst) lessons.reversed() else lessons }
-    val downloadedCount = remember(revision, lessons) { lessons.count { vm.downloads.isDownloaded(it.id) } }
+    // قراءة خريطة التنزيلات مرّة واحدة: `isDownloaded` لكل درس كان يفكّ خريطة
+    // JSON كاملةً من التفضيلات، أي n تحليلاً كاملاً على خيط الواجهة.
+    val downloadedCount = remember(revision, lessons) {
+        val map = vm.downloads.all()
+        lessons.count { l -> map[l.id]?.let { java.io.File(it).isFile } == true }
+    }
+    // القسم الرئيسي قد لا يكون قد وصل بعد (رابط عميق/إشعار قبل اكتمال
+    // المزامنة)، فالزرّ يُعطَّل بدل أن يبتلع الضغطة صامتاً.
+    val parentId = sub?.categoryId?.takeIf { it.isNotBlank() }
 
     LazyColumn(contentPadding = PaddingValues(vertical = 10.dp)) {
         item {
@@ -698,9 +729,10 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
                     )
                     Spacer(Modifier.weight(1f))
                 }
-                IconButton(onClick = {
-                    sub?.categoryId?.takeIf { it.isNotBlank() }?.let { vm.open(Route.Category(it)) }
-                }) {
+                IconButton(
+                    onClick = { parentId?.let { vm.open(Route.Category(it)) } },
+                    enabled = parentId != null,
+                ) {
                     Icon(Icons.AutoMirrored.Filled.DriveFileMove, contentDescription = "القسم الرئيسي")
                 }
             }
@@ -717,7 +749,9 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
                 )
             }
         } else {
-            items(ordered, key = { "${it.id}-$revision" }) { lesson ->
+            // ⛔ لا `revision` في المفتاح — يهدم تركيبة الصفّ ويغلق قائمة
+            // «إيقاف/إلغاء» المفتوحة. `AudioItem` يقرأ `revision` بنفسه.
+            items(ordered, key = { it.id }) { lesson ->
                 AudioItem(vm, lesson, ordered, playback)
             }
         }
@@ -736,13 +770,14 @@ fun LessonListScreen(
     emptyTitle: String,
     emptyDetail: String = "لم تُضف عناصر هنا بعد.",
 ) {
-    val revision by vm.store.revision.collectAsState()
     if (lessons.isEmpty()) {
         EmptyState(emptyTitle, emptyDetail)
         return
     }
+    // ⛔ لا `revision` في المفتاح ولا اشتراك به هنا: `AudioItem` يقرأه بنفسه،
+    // وإقحامه في المفتاح كان يهدم تركيبة كل صفّ مع كل كتابة في المخزن.
     LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
-        items(lessons, key = { "${it.id}-$revision" }) { lesson ->
+        items(lessons, key = { it.id }) { lesson ->
             AudioItem(vm, lesson, lessons, playback)
         }
     }
@@ -838,7 +873,9 @@ fun SearchScreen(vm: AppViewModel, initial: String, playback: PlaybackUiState) {
             val lessonIndex = remember(content.lessons, categories, subcategories) {
                 val categoryNames = categories.associate { it.id to it.name }
                 val subcategoryNames = subcategories.associate { it.id to it.name }
-                content.lessons.map { lesson ->
+                // الترتيب هنا مرّة واحدة لا مع كل ضغطة مفتاح: قصّ النتائج عند 80
+                // كان يقتطع بترتيب معرّف الوثيقة (عشوائي) لا بالأحدث.
+                content.lessons.sortedByDescending(Lesson::createdAtMs).map { lesson ->
                     lesson to normalizeArabic(
                         buildString {
                             append(lesson.displayTitle)

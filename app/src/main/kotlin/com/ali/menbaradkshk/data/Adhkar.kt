@@ -558,3 +558,23 @@ object Adhkar {
         else -> groups.firstOrNull { it.id == sectionId }?.title ?: "الأذكار"
     }
 }
+
+/**
+ * مواعيد تذكيرات الأذكار الافتراضيّة — **مصدر واحد** تقرأ منه شاشة التذكيرات
+ * والمجدوِل معاً.
+ *
+ * ⚠️ كانت مكتوبةً مرّتين (الشاشة ومجدوِل الخلفيّة) بنفس القيم. تغيير موعدٍ في
+ * أحدهما وحده يجعل ما يُعرض للمستخدم غير ما يُجدوَل فعلاً، وهو انحرافٌ صامت
+ * لا يشكو منه شيء — فلا يجوز أن تعود القيم إلى موضعين.
+ */
+object AdhkarReminders {
+    val DEFAULTS: Map<String, Pair<Int, Int>> = mapOf(
+        "morning" to (6 to 30),
+        "evening" to (17 to 30),
+        "sleep" to (22 to 0),
+        "wake" to (5 to 30),
+    )
+
+    /// موعد نوعٍ بعينه، مع احتياطٍ آمن لو طُلب نوعٌ غير معروف.
+    fun defaultFor(kind: String): Pair<Int, Int> = DEFAULTS[kind] ?: (6 to 30)
+}

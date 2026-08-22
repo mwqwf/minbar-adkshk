@@ -1,11 +1,8 @@
 package com.ali.menbaradkshk.ui
 
 import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,16 +13,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.AddPhotoAlternate
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Button
@@ -33,9 +27,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -62,6 +54,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil3.compose.AsyncImage
 import com.ali.menbaradkshk.data.Lesson
 import com.ali.menbaradkshk.data.LessonTranscript
@@ -100,18 +93,25 @@ fun TranscriptSection(vm: AppViewModel, lesson: Lesson) {
     }
 
     if (viewingImage.isNotEmpty()) {
-        Dialog(onDismissRequest = { viewingImage = "" }) {
+        // ⚠️ كان الحوار بعرض النافذة الافتراضي وبلا تمرير، فتُصغَّر الصفحة
+        // الطويلة لتدخل الشاشة كاملةً — أي أن «التكبير» يعرضها أصغر ممّا في
+        // البطاقة. الآن بعرض الشاشة كاملاً مع تمرير رأسي (كما في حوار الأذكار).
+        Dialog(
+            onDismissRequest = { viewingImage = "" },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
             Box(
                 Modifier
-                    .fillMaxWidth()
-                    .background(Color.Black, RoundedCornerShape(12.dp))
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .verticalScroll(rememberScrollState())
                     .clickable { viewingImage = "" },
                 contentAlignment = Alignment.Center,
             ) {
                 AsyncImage(
                     model = viewingImage,
                     contentDescription = "صورة صفحة الكتاب",
-                    contentScale = ContentScale.Fit,
+                    contentScale = ContentScale.FillWidth,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -355,7 +355,10 @@ private fun TranscriptContributeSheet(
     }
     var message by rememberSaveable(lesson.id) { mutableStateOf("") }
     val ownsSubmission = submission.lessonId == lesson.id
-    val sending = submission.submitting
+    // ⚠️ كان `sending` يتبع أي إرسال جارٍ ولو كان لدرسٍ آخر (فتُفتح الورقة من
+    // إشعار على درس مختلف)، فتُقفل الورقة: لا زرّ رجوع ولا إخفاء حتى ينتهي
+    // رفع لا يخصّها. الملكيّة شرطٌ للقفل كما في بقيّة حقول الحالة أدناه.
+    val sending = ownsSubmission && submission.submitting
     val progress = if (ownsSubmission) submission.progress else 0
     val done = ownsSubmission && submission.done
     val visibleMessage = message.ifBlank { if (ownsSubmission) submission.error else "" }
@@ -489,6 +492,12 @@ private fun TranscriptContributeSheet(
             Spacer(Modifier.height(16.dp))
             Button(
                 onClick = {
+                    // مساهمة أخرى تُرفع الآن: الـViewModel يتجاهل الطلب صامتاً،
+                    // فلا يُترك المستخدم أمام زرٍّ لا يفعل شيئاً بلا تفسير.
+                    if (submission.submitting) {
+                        message = "هناك مساهمة قيد الإرسال — انتظر انتهاءها."
+                        return@Button
+                    }
                     // الزر لا يُعطَّل؛ النقص يُشرح بعينه (نفس نهج «شارك درساً»).
                     if (text.trim().length < 10 && images.isEmpty()) {
                         message = if (text.isBlank()) {

@@ -29,17 +29,17 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Copyright
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.GppMaybe
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircleOutline
-import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Report
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SkipNext
@@ -98,6 +98,7 @@ import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.formatDuration
 import com.ali.menbaradkshk.util.lessonShareLink
 import com.ali.menbaradkshk.util.lessonShareText
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /// «الآن يُشغَّل» — النقل الأمين لـ player_screen.dart.
@@ -118,13 +119,14 @@ fun PlayerScreen(
     val sub = content.subcategoryById[current.subcategoryId]
     val cat = content.categoryById[current.categoryId]
     val similar = remember(current.id, content.lessons) { vm.content.similarTo(current) }
-    val downloaded = remember(revision, current.id) { vm.downloads.isDownloaded(current.id) }
     val favorite = remember(revision, current.id) { vm.store.isFavorite(current.id) }
     val accent = colorForCategory(current.categoryId)
     val active = playback.mediaId == current.id
+    // ⚠️ لا تشترك هنا في vm.downloads.progress: `DownloadButton` يجمع تقدّمه
+    // بنفسه، والاشتراك هنا كان يعيد تركيب الشاشة كلها مع كل حزمة بايتات.
+    // قراءات التفضيلات تُلفّ بـ revision لأن الشاشة تُعاد مرّتين في الثانية.
+    val dark = isDarkTheme(remember(revision) { vm.store.themeMode() })
 
-    var downloading by remember { mutableStateOf(false) }
-    val progressMap by vm.downloads.progress.collectAsState()
     var momentsSheet by remember { mutableStateOf(false) }
     var playlistSheet by remember { mutableStateOf(false) }
     var feedbackMenu by remember { mutableStateOf(false) }
@@ -134,17 +136,21 @@ fun PlayerScreen(
     // بدء التشغيل عند فتح درس من رابط «لحظة» أو حين لا يكون الدرس فعّالاً.
     // موضع «اللحظة» يُستهلك مرة واحدة ثم يُزال من المسار، كي لا يعيد الرجوع
     // أو التدوير التشغيل من الثانية المشارَكة.
-    // المفتاح يشمل startAtMs: رابط «لحظة» ثانٍ لنفس الدرس كان يُتجاهل بصمت
-    // لأن startConsumed المحفوظ بقي true من الرابط الأول.
-    var startConsumed by rememberSaveable(lesson.id, startAtMs) { mutableStateOf(false) }
+    // ⛔ ما نحفظه هو **قيمة** اللحظة لا مجرّد «استُهلكت»، والمفتاح lesson.id
+    // وحده: كان المفتاح يشمل startAtMs فيصفّر العلامة فور replaceRoute (الذي
+    // يجعل startAtMs=null)، فيُعاد النداء بلا موضع ويدهس pendingPlay المفرد
+    // في PlaybackController — فتضيع اللحظة كلّها في الإقلاع البارد.
+    // وحفظ القيمة يُبقي رابط لحظة ثانياً لنفس الدرس عاملاً (قيمة مختلفة).
+    var handledStart by rememberSaveable(lesson.id) { mutableStateOf(Long.MIN_VALUE) }
     LaunchedEffect(lesson.id, startAtMs) {
         if (startAtMs != null) {
-            if (!startConsumed) {
-                startConsumed = true
+            if (handledStart != startAtMs) {
+                handledStart = startAtMs
                 vm.playback.play(lesson, listOf(lesson) + vm.content.similarTo(lesson), startAtMs, restart = true)
                 vm.replaceRoute(Route.Lesson(lesson.id))
             }
-        } else if (!startConsumed && playback.mediaId != lesson.id) {
+        } else if (handledStart == Long.MIN_VALUE && playback.mediaId != lesson.id) {
+            handledStart = 0L
             vm.playback.play(lesson, listOf(lesson) + vm.content.similarTo(lesson))
         }
     }
@@ -172,7 +178,7 @@ fun PlayerScreen(
             TopAppBar(
                 title = { Text("الآن يُشغَّل") },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = if (isDarkTheme(vm.store.themeMode())) AppBarBackgroundDark else AppBarBackgroundLight,
+                    containerColor = if (dark) AppBarBackgroundDark else AppBarBackgroundLight,
                     titleContentColor = AppBarForeground,
                     navigationIconContentColor = AppBarForeground,
                     actionIconContentColor = AppBarForeground,
@@ -308,6 +314,18 @@ fun PlayerScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            // 🎧 عدد مرّات الاستماع — هنا حيث يقرأه من فتح الدرس فعلاً، بخطٍّ
+            // أصغر من اسم الشيخ: خبرٌ يُطمئن لا عنوانٌ ينافس.
+            com.ali.menbaradkshk.util.listenCountLabel(current.views)?.let { listens ->
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    listens,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Spacer(Modifier.height(12.dp))
 
             // 📖 «النص المشروح» في أعلى الشاشة عمداً — تحت العنوان مباشرة
@@ -326,9 +344,17 @@ fun PlayerScreen(
                 activeTrackColor = GreenBrand,
                 inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant,
             )
+            // ⚠️ لا تُصدر seekTo من onValueChange: كل بكسل سحب كان يُجهض طلب
+            // الشبكة الجاري ويفتح طلب Range جديداً، والمقبض كان يتخلّف عن
+            // الإصبع لأن الموضع لا ينبض إلا كل نصف ثانية. القفزة عند الإفلات.
+            var dragging by remember { mutableStateOf<Float?>(null) }
             Slider(
-                value = position.toFloat().coerceIn(0f, duration.toFloat().coerceAtLeast(1f)),
-                onValueChange = { vm.playback.seekTo(it.toLong()) },
+                value = dragging ?: position.toFloat().coerceIn(0f, duration.toFloat().coerceAtLeast(1f)),
+                onValueChange = { dragging = it },
+                onValueChangeFinished = {
+                    dragging?.let { vm.playback.seekTo(it.toLong()) }
+                    dragging = null
+                },
                 valueRange = 0f..duration.toFloat().coerceAtLeast(1f),
                 colors = sliderColors,
                 thumb = {
@@ -353,20 +379,25 @@ fun PlayerScreen(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(formatDuration(position), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // المنقضي عند الصفر: formatDuration تُعيد فراغاً عمداً للمدّة
+                // المجهولة، لكن «مضى صفر» معلوم — فيُعرض 0:00 لا خانة فارغة.
+                // (يمين الصفّ يبقى بلا حماية: مدّة مجهولة = فراغ مقصود.)
+                Text(formatDuration(position).ifBlank { "0:00" }, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(formatDuration(duration), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(Modifier.height(6.dp))
 
             // صفّ القفز + مؤقّت النوم.
-            val skipSec = vm.store.skipSeconds()
+            val skipSec = remember(revision) { vm.store.skipSeconds() }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                // ⚠️ أيقونتان بلا أرقام: Replay10/Forward10 كانتا تعرضان «10»
+                // والقفز فعلياً skipSec (١٥ ثانية) — الرقم المكتوب هو الحقيقة.
                 TextButton(onClick = vm.playback::skipBackward) {
-                    Icon(Icons.Filled.Replay10, contentDescription = null, tint = BlueBrand)
+                    Icon(Icons.Filled.Replay, contentDescription = null, tint = BlueBrand)
                     Text("${skipSec}ث")
                 }
                 TextButton(onClick = vm.playback::skipForward) {
-                    Icon(Icons.Filled.Forward10, contentDescription = null, tint = BlueBrand)
+                    Icon(Icons.Filled.FastForward, contentDescription = null, tint = BlueBrand)
                     Text("${skipSec}ث")
                 }
                 TextButton(onClick = { sleepSheet = true }) {
@@ -401,7 +432,9 @@ fun PlayerScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 DownloadButton(vm, current, size = 44.dp)
-                IconButton(onClick = vm.playback::previous, modifier = Modifier.size(56.dp)) {
+                // طرفا القائمة: الزرّان كانا بكامل التباين ولا يفعلان شيئاً —
+                // نوحّدهما مع المشغّل المصغّر الذي يعتمد hasPrevious/hasNext.
+                IconButton(onClick = vm.playback::previous, enabled = playback.hasPrevious, modifier = Modifier.size(56.dp)) {
                     Icon(Icons.Filled.SkipPrevious, contentDescription = "السابق", tint = BlueBrand, modifier = Modifier.size(40.dp))
                 }
                 val playing = active && playback.playing
@@ -427,7 +460,7 @@ fun PlayerScreen(
                         )
                     }
                 }
-                IconButton(onClick = vm.playback::next, modifier = Modifier.size(56.dp)) {
+                IconButton(onClick = vm.playback::next, enabled = playback.hasNext, modifier = Modifier.size(56.dp)) {
                     Icon(Icons.Filled.SkipNext, contentDescription = "التالي", tint = BlueBrand, modifier = Modifier.size(40.dp))
                 }
                 IconButton(onClick = { share(current) }) {
@@ -452,9 +485,20 @@ fun PlayerScreen(
                 Switch(checked = playback.autoplay, onCheckedChange = vm.playback::setAutoplay)
             }
             playback.sleepEndsAtMs?.let { ends ->
-                val remaining = (ends - System.currentTimeMillis()).coerceAtLeast(0L)
+                // ⚠️ العدّاد يحتاج مجدوله الخاص: كان يُحسب أثناء التركيب فقط،
+                // ونبض المشغّل مشروط بالتشغيل — فيتجمّد الرقم عند الإيقاف
+                // المؤقّت بينما تواصل الخدمة العدّ فعلاً حتى الإيقاف.
+                var remaining by remember(ends) {
+                    mutableStateOf((ends - System.currentTimeMillis()).coerceAtLeast(0L))
+                }
+                LaunchedEffect(ends) {
+                    while (remaining > 0L) {
+                        delay(1_000L)
+                        remaining = (ends - System.currentTimeMillis()).coerceAtLeast(0L)
+                    }
+                }
                 Text(
-                    "مؤقّت النوم: ${formatDuration(remaining)}",
+                    "مؤقّت النوم: ${formatDuration(remaining).ifBlank { "0:00" }}",
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     textAlign = TextAlign.Center,
                     color = OrangeBrand,
@@ -565,7 +609,9 @@ fun PlayerScreen(
                 leadingContent = { Icon(Icons.Filled.Add, null, tint = Teal) },
                 headlineContent = { Text("قائمة جديدة") },
             )
-            vm.store.playlists().forEach { playlist ->
+            // قراءة/تحليل JSON مرّة لكل تغيّر فعليّ لا مع كل نبضة موضع.
+            val playlists = remember(revision) { vm.store.playlists() }
+            playlists.forEach { playlist ->
                 ListItem(
                     modifier = Modifier.clickable {
                         vm.store.addToPlaylist(playlist.id, current.id)
@@ -630,7 +676,7 @@ fun PlayerScreen(
                 Text(" احفظ اللحظة الحالية")
             }
             Spacer(Modifier.height(8.dp))
-            val moments = vm.store.bookmarks(current.id)
+            val moments = remember(revision, current.id) { vm.store.bookmarks(current.id) }
             if (moments.isEmpty()) {
                 Text(
                     "لا لحظات محفوظة بعد.",
@@ -650,7 +696,9 @@ fun PlayerScreen(
                             momentsSheet = false
                         },
                         leadingContent = { Icon(Icons.Filled.PlayCircleOutline, null, tint = Teal) },
-                        headlineContent = { Text(formatDuration(bookmark.positionMs)) },
+                        // لحظة عند الصفر ممكنة فعلاً (تُحفظ 0 حين لا يكون الدرس
+                        // فعّالاً) — فلا يجوز أن يظهر عنوانها خانةً فارغة.
+                        headlineContent = { Text(formatDuration(bookmark.positionMs).ifBlank { "0:00" }) },
                         supportingContent = bookmark.note.takeIf(String::isNotBlank)?.let { { Text(it) } },
                         trailingContent = {
                             Row {

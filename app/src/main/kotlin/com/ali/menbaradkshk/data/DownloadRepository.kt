@@ -201,6 +201,12 @@ class DownloadRepository private constructor(context: Context) {
                 FileOutputStream(partial, resuming).use { output ->
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                     var received = alreadyHave
+                    // ⚠️ الإصدار كان يقع مع كل قراءة (~8 ك.ب): خريطة جديدة
+                    // عشرات المرّات في الثانية تُعيد تركيب كل صفّ ظاهر يقرأ
+                    // التقدّم. المستهلك الحقيقي يقرأ آخر قيمة كل ثانية، فلا
+                    // يجوز أن يعود الإصدار بلا خنق: نسبة جديدة أو ربع ميغابايت.
+                    var lastEmittedBytes = alreadyHave
+                    var lastEmittedPercent = -2
                     while (true) {
                         // إلغاء الكوروتين لا يقاطع خيط Dispatchers.IO: بلا هذا
                         // الفحص يستمرّ النقل حتى EOF بعد onStopJob، ثم يرمي
@@ -219,9 +225,16 @@ class DownloadRepository private constructor(context: Context) {
                         output.write(buffer, 0, count)
                         received += count
                         val percent = if (total > 0L) ((received * 100L) / total).toInt() else -1
-                        _progress.value = _progress.value + (
-                            lesson.id to DownloadProgress(lesson.id, percent, received, total)
-                        )
+                        if (
+                            percent != lastEmittedPercent ||
+                            received - lastEmittedBytes >= PROGRESS_EMIT_BYTES
+                        ) {
+                            lastEmittedPercent = percent
+                            lastEmittedBytes = received
+                            _progress.value = _progress.value + (
+                                lesson.id to DownloadProgress(lesson.id, percent, received, total)
+                            )
+                        }
                     }
                     output.fd.sync()
                 }
@@ -249,6 +262,14 @@ class DownloadRepository private constructor(context: Context) {
             partial.delete()
             throw cancelled
         } catch (failure: java.io.IOException) {
+            // ⛔ امتلاء التخزين ليس انقطاع شبكة: كان يُصنَّف «قابلاً للإعادة»
+            // فيوقظ الوظيفة بلا نهاية ويعرض «بانتظار عودة الاتصال…» وهي رسالة
+            // كاذبة. لا يجوز أن يعود: خطأ دائم يُخرج الدرس من الطابور.
+            val reason = "${failure.message} ${failure.cause?.message}"
+            if (reason.contains("ENOSPC") || reason.contains("No space left")) {
+                partial.delete()
+                throw IllegalStateException("لا تكفي المساحة على الجهاز لإكمال التنزيل.")
+            }
             // انقطاع شبكة: نُبقي الملف الجزئي للاستئناف لاحقاً ونعلن قابلية الإعادة.
             throw RetryableDownloadException(failure)
         } catch (failure: Throwable) {
@@ -263,16 +284,45 @@ class DownloadRepository private constructor(context: Context) {
         }
     }
 
+    /**
+     * يكنس الملفّات الجزئيّة لدروسٍ أُلغيت.
+     *
+     * ⚠️ الإلغاء لا يحذف الجزئيّ إلا حين يكون النقل **جارياً** (المعالج
+     * `DownloadCancelledException` هناك)؛ أمّا المنتظِر في الطابور فلا يمرّ
+     * بذلك المسار أصلاً، وقد يكون خلّف جزئيّاً من محاولة سابقة انقطعت. فكان
+     * حوار «إلغاء الكل» يَعِد بحذف الأجزاء ووعده غير منفَّذ، وتبقى ميغابايتات
+     * محجوزة بلا أن يراها المستخدم في «تنزيلاتي».
+     */
+    suspend fun discardPartials(ids: Collection<String>) = withContext(Dispatchers.IO) {
+        if (ids.isEmpty()) return@withContext
+        val directory = File(appContext.filesDir, "lessons")
+        val files = directory.listFiles() ?: return@withContext
+        // قاعدة التسمية نفسها المستعملة في التنزيل: `<safeId>.<ext>.part`.
+        val prefixes = ids.map { "${it.replace(Regex("[^A-Za-z0-9_-]"), "_")}." }
+        files.forEach { file ->
+            val name = file.name
+            if (name.endsWith(".part") && prefixes.any { name.startsWith(it) }) file.delete()
+        }
+    }
+
     suspend fun delete(lessonId: String) = withContext(Dispatchers.IO) {
         store.localAudioPath(lessonId)?.let { File(it).delete() }
         store.removeDownload(lessonId)
     }
 
-    suspend fun deleteAll() = withContext(Dispatchers.IO) {
-        store.downloads().keys.toList().forEach { delete(it) }
+    suspend fun deleteAll() {
+        // ⚠️ كان يُنادى `delete` لكل درس على حدة: قراءةٌ كاملة للتفضيلات
+        // وتحليل JSON وكتابةٌ ونبضة `revision` لكلّ واحد — أي مئات الكتابات
+        // وإعادات التركيب لأمرٍ واحد. تمرير مجموعة فارغة يعني «لا صالح يبقى»
+        // فتُحذف الملفّات كلّها ويُكتب الفهرس مرّة واحدة.
+        withContext(Dispatchers.IO) { store.pruneDownloads(emptySet()) }
     }
 
     companion object {
+        /// أدنى قدر من البايتات بين إصدارَي تقدّم حين لا تتغيّر النسبة
+        /// (ملفّ بلا حجم معلن، أو ملفّ ضخم تبقى نسبته ثابتة طويلاً).
+        private const val PROGRESS_EMIT_BYTES = 256L * 1024L
+
         @Volatile private var instance: DownloadRepository? = null
         fun get(context: Context): DownloadRepository = instance ?: synchronized(this) {
             instance ?: DownloadRepository(context).also { instance = it }

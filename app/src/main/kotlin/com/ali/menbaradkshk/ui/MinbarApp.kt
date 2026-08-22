@@ -5,6 +5,7 @@ package com.ali.menbaradkshk.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -79,6 +80,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -151,22 +153,20 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
     // دائماً)، ولا تتكرّر للنسخة الاختياريّة أكثر من مرّة كل ٢٤ ساعة.
     var updateDeferred by rememberSaveable { mutableStateOf(false) }
     val pendingUpdate = updateStatus.takeIf { it !is AppConfigRepository.Status.None }
-    if (pendingUpdate != null && !updateDeferred && vm.shouldPromptUpdate(pendingUpdate)) {
-        UpdateScreen(
-            status = pendingUpdate,
-            onUpdate = { vm.openStoreFor(pendingUpdate) },
-            onLater = {
-                updateDeferred = true
-                vm.noteUpdatePromptShown(pendingUpdate)
-            },
-        )
-        return
-    }
+    // ⚠️ كانت تُعرض بـ`return` مبكر قبل بقيّة الدالة، فيخرج حافظ حالة المسارات
+    // من التركيب وتضيع حالة كل الشاشات — ومنها نموذج «شارك درساً» قيد التعبئة،
+    // وهو ما وُضع الحافظ أصلاً ليحميه. والفحص يقع في كل عودة إلى التطبيق، فقد
+    // كان يظهر والمستخدم يكتب. صارت طبقةً **فوق** الهيكل (كما LessonUpdateNudge)
+    // فلا يُهدم تحتها شيء.
+    val blockingUpdate = pendingUpdate != null && !updateDeferred &&
+        vm.shouldPromptUpdate(pendingUpdate)
 
     // 📣 التذكير عند فتح درس — يعمل فوق الشاشة لا بدلاً منها، ويُقيَّم مرّة
     // واحدة لكل درس يُفتَح (مفتاح الدرس)، فالتنقّل داخل المشغّل لا يعيده.
-    var nudgeShownFor by remember { mutableStateOf<String?>(null) }
-    var nudgeVisible by remember { mutableStateOf(false) }
+    // ورقم الدرس محفوظ (rememberSaveable) لا مجرّد remember: التدوير يعيد
+    // إنشاء النشاط، فكان التذكير يختفي ثم يعود للدرس نفسه.
+    var nudgeShownFor by rememberSaveable { mutableStateOf<String?>(null) }
+    var nudgeVisible by rememberSaveable { mutableStateOf(false) }
     val lessonRoute = route as? Route.Lesson
     LaunchedEffect(lessonRoute?.id, updateStatus) {
         val lessonId = lessonRoute?.id
@@ -256,7 +256,11 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         )
         if (result == SnackbarResult.ActionPerformed) vm.playback.retry()
     }
-    BackHandler(enabled = !isRoot && !navigationBlocked) { vm.back() }
+    // ⚠️ `back()` تُرجع false على مكدّس فارغ ولا تفعل شيئاً — فكان الزرّ
+    // يُبتلع ويعلق المستخدم في شاشة غير جذرية. الرجوع إلى الرئيسية مخرج مضمون.
+    BackHandler(enabled = !isRoot && !navigationBlocked) {
+        if (!vm.back()) vm.openRoot(Route.Home)
+    }
     BackHandler(enabled = navigationBlocked) {
         vm.showMessage("انتظر اكتمال إرسال المساهمة قبل الرجوع.")
     }
@@ -295,7 +299,8 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         // السحب لفتح الدرج متاح في التبويبات الجذرية فقط (كتلجرام في شاشته
         // الرئيسية)؛ داخل المشغّل والشاشات الفرعية تبقى الإيماءات لأصحابها،
         // ويظلّ السحب للإغلاق متاحاً دائماً ما دام الدرج مفتوحاً.
-        gesturesEnabled = showSettings || (isRoot && !fullScreen),
+        // (الشاشات الملء ليست جذرية أصلاً، فلا حاجة إلى استثنائها مرّتين.)
+        gesturesEnabled = showSettings || isRoot,
         drawerContent = { SettingsDrawerContent(vm, requestNotifications) },
     ) {
     Scaffold(
@@ -312,7 +317,8 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                     navigationIcon = {
                         if (!isRoot) {
                             IconButton(
-                                onClick = { vm.back() },
+                                // كسهم النظام: مكدّس فارغ ⇒ الرئيسية لا لا-شيء.
+                                onClick = { if (!vm.back()) vm.openRoot(Route.Home) },
                                 enabled = !navigationBlocked,
                             ) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, "رجوع")
@@ -462,7 +468,7 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                 Route.MyLists -> MyListsScreen(vm, playback)
                 Route.Adhkar -> AdhkarScreen(vm)
                 is Route.AdhkarSection -> AdhkarSectionScreen(vm, current.id)
-                Route.AdhkarReminders -> AdhkarRemindersScreen(vm)
+                Route.AdhkarReminders -> AdhkarRemindersScreen(vm, requestNotifications)
                 Route.Downloads -> DownloadsScreen(vm)
                 Route.Quran -> QuranIndexScreen(vm)
                 is Route.QuranSurah -> QuranSurahScreen(vm, current.number, current.ayah, playback)
@@ -495,6 +501,29 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         }
         }
     }
+    }
+
+    // 🔔 شاشة التحديث فوق كل شيء — لا بديلاً عن الهيكل (انظر التعليق أعلاه).
+    // تبتلع اللمس كي لا يصل إلى ما تحتها، و«رجوع» فيها = «لاحقاً» نفسها: لا
+    // تنقّل خفيّ تحت الطبقة، ولا حبس بلا مخرج.
+    if (blockingUpdate && pendingUpdate != null) {
+        val deferUpdate: () -> Unit = {
+            updateDeferred = true
+            vm.noteUpdatePromptShown(pendingUpdate)
+        }
+        BackHandler(onBack = deferUpdate)
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .pointerInput(Unit) { detectTapGestures { } },
+        ) {
+            UpdateScreen(
+                status = pendingUpdate,
+                onUpdate = { vm.openStoreFor(pendingUpdate) },
+                onLater = deferUpdate,
+            )
+        }
     }
 }
 

@@ -49,7 +49,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
@@ -75,8 +74,23 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.menbaradkshk.data.Adhkar
+import com.ali.menbaradkshk.data.AdhkarReminders
 import com.ali.menbaradkshk.data.Dhikr
 import com.ali.menbaradkshk.data.LocalStore
+
+/**
+ * تمييز «يوم» بالعربيّة — دالّة واحدة لكل مواضع السلاسل في التطبيق.
+ *
+ * ⚠️ كانت كل شاشة تجتهد بقاعدة: بطاقة الأذكار تكتب «يومان» للاثنين و«أيام»
+ * لما سواه، ودرج الإعدادات «يوم» للواحد و«أيام» لما سواه — فتقرأ في شاشتين
+ * صيغتين لعددٍ واحد، وكلتاهما تقول «١٥ أيام» والصواب «١٥ يومًا».
+ */
+fun daysLabel(n: Int): String = when {
+    n == 1 -> "يوم"
+    n == 2 -> "يومان"
+    n in 3..10 -> "أيام"
+    else -> "يومًا"
+}
 
 /// أيقونة ولون لكل قسم — تمييز بصري سريع بلا صور (خفّة).
 private fun iconFor(id: String): ImageVector = when (id) {
@@ -104,7 +118,9 @@ private fun iconFor(id: String): ImageVector = when (id) {
 @Composable
 fun AdhkarScreen(vm: AppViewModel) {
     val revision by vm.store.revision.collectAsState()
-    val streak = remember(revision) { vm.store.adhkarStreak() }
+    // السلسلة الحيّة لا المخزَّنة: المخزَّنة تبقى على قيمتها بعد انقطاع يوم،
+    // فكانت البطاقة تُهنّئ على مداومة منقطعة.
+    val streak = remember(revision) { vm.store.adhkarStreakLive() }
 
     val sections = remember {
         buildList {
@@ -130,7 +146,7 @@ fun AdhkarScreen(vm: AppViewModel) {
                         Icon(Icons.Filled.LocalFireDepartment, null, tint = OrangeBrand)
                         Spacer(Modifier.width(10.dp))
                         Text(
-                            "مداومتك على الأذكار: $streak ${if (streak == 2) "يومان" else "أيام"}",
+                            "مداومتك على الأذكار: $streak ${daysLabel(streak)}",
                             style = MaterialTheme.typography.titleSmall,
                         )
                     }
@@ -182,8 +198,11 @@ fun AdhkarScreen(vm: AppViewModel) {
                         },
                     )
                     if (progress > 0f) {
-                        LinearProgressIndicator(
-                            progress = { progress },
+                        // المُغلِّف المشترك لا المؤشّر الخام: الخام يرسم فجوة
+                        // المقبض ونقطة النهاية في M3 الجديد، فتفترق شرائط
+                        // الأذكار شكلاً عن بقيّة شرائط التطبيق بلا سبب.
+                        ClassicLinearProgress(
+                            progress = progress,
                             modifier = Modifier.fillMaxWidth().height(4.dp),
                             color = Teal,
                         )
@@ -223,7 +242,12 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
     val fontSp = remember(revision) { vm.store.adhkarFontSp() }
     val bold = remember(revision) { vm.store.adhkarBold() }
     // الذكر المفتوح مكبَّراً بملء الشاشة (فهرسه في القائمة).
-    var zoomed by remember { mutableStateOf<Int?>(null) }
+    // ⚠️ محفوظ لا مُتذكَّر فقط: النشاط بلا `configChanges`، فتدوير الشاشة أو
+    // تغيير حجم خطّ النظام كان يُغلق الشاشة المكبَّرة على من يقرأ فيها.
+    var zoomed by rememberSaveable { mutableStateOf<Int?>(null) }
+    // ⛔ «إعادة من البداية» تمحو عدّ اليوم بلا رجعة، وقاعدة التطبيق أن لا حذف
+    // بنقرة واحدة — فيسبقه تأكيد كما في حذف القائمة وحذف البيانات.
+    var confirmReset by rememberSaveable { mutableStateOf(false) }
 
     /// عدُّ ذكرٍ بفهرسه — يستعمله الصفّ العاديّ والشاشة المكبَّرة معاً، فلا
     /// يفترق سلوك العدّاد بينهما ولا يُنسى تحديث السلسلة في أحدهما.
@@ -265,6 +289,23 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
         )
     }
 
+    if (confirmReset) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmReset = false },
+            title = { Text("إعادة العدّ") },
+            text = { Text("إعادة عدّ هذا القسم من الصفر؟") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.store.resetAdhkarSection(sectionId, items.size)
+                    confirmReset = false
+                }) { Text("إعادة") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmReset = false }) { Text("إلغاء") }
+            },
+        )
+    }
+
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
@@ -276,24 +317,20 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.width(12.dp))
-            LinearProgressIndicator(
-                progress = {
-                    if (items.isEmpty()) 0f else completed / items.size.toFloat()
-                },
+            ClassicLinearProgress(
+                progress = if (items.isEmpty()) 0f else completed / items.size.toFloat(),
                 modifier = Modifier.weight(1f).height(6.dp),
                 color = Teal,
             )
-            IconButton(onClick = {
-                vm.store.resetAdhkarSection(sectionId, items.size)
-            }) {
+            IconButton(onClick = { confirmReset = true }) {
                 Icon(Icons.Filled.Refresh, "إعادة من البداية", tint = Teal)
             }
         }
 
         // 🔎 مكبّر خطّ الأذكار — في متناول اليد داخل الشاشة نفسها لا مدفوناً
         // في الإعدادات: مَن يحتاجه (كبير السنّ) هو أقلّ الناس بحثاً في
-        // القوائم. زرّان كبيران بحرفَي «أ» بحجمين مختلفين — رمز مفهوم بلا
-        // قراءة، وهذا مقصود: كثير من المستخدمين لا يقرأ العربية جيّداً.
+        // القوائم. زرّان كبيران بـ«−» و«+» ورقمُ الحجم بينهما — رموز مفهومة
+        // بلا قراءة، وهذا مقصود: كثير من المستخدمين لا يقرأ العربية جيّداً.
         AdhkarFontControls(vm, fontSp, bold)
 
         if (allDone) {
@@ -331,12 +368,7 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
                     done = done,
                     fontSp = fontSp,
                     bold = bold,
-                    onCopy = {
-                        copyToClipboard(
-                            context,
-                            items[index].text + "\n\n" + items[index].source,
-                        )
-                    },
+                    onCopy = { copyToClipboard(context, dhikrText(items[index])) },
                     onTap = { count(index) },
                     onZoom = { zoomed = index },
                     onShare = {
@@ -345,8 +377,7 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
                                 .setType("text/plain")
                                 .putExtra(
                                     android.content.Intent.EXTRA_TEXT,
-                                    items[index].text + "\n\n" + items[index].source +
-                                        "\n— من تطبيق منبر ادكصهك",
+                                    dhikrText(items[index]) + "\n— من تطبيق منبر ادكصهك",
                                 )
                             context.startActivity(
                                 android.content.Intent.createChooser(send, "مشاركة الذكر"),
@@ -363,72 +394,32 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
  * 🔎 شريط تكبير خطّ الأذكار — يصل إلى **أقصى حجم ممكن** (١٢٠ نقطة).
  *
  * ثلاثة أزرار فقط: تصغير، الحجم الحالي (نقرة تُعيده إلى الافتراضي)، تكبير.
- * والضغط المطوّل على «أ» الكبيرة يقفز إلى الحدّ الأقصى دفعةً واحدة، وعلى
- * الصغيرة يعود إلى الأصغر — كي لا يضطرّ كبير السنّ (وهو المقصود بالميزة)
- * إلى عشرات الضغطات ليبلغ مقاسه.
+ * وإبقاء الإصبع على زرّ التكبير يواصل الخطوات متسارعةً حتى يبلغ مقاسه، كي لا
+ * يضطرّ كبير السنّ (وهو المقصود بالميزة) إلى عشرات الضغطات.
  *
- * والخطوة **نسبيّة لا ثابتة**: ١٥٪ من الحجم الحالي. الخطوة الثابتة تكون
- * قفزةً فجّة عند ١٦ نقطة وزحفاً لا يُحسّ عند ١٠٠ — والنسبة تُبقي الإحساس
- * بالفرق واحداً على المدى كلّه.
+ * والخطوة **نسبيّة لا ثابتة**: [FONT_STEP_RATIO] من الحجم الحالي. الخطوة
+ * الثابتة تكون قفزةً فجّة عند ١٦ نقطة وزحفاً لا يُحسّ عند ١٠٠ — والنسبة تُبقي
+ * الإحساس بالفرق واحداً على المدى كلّه.
  */
 @Composable
 private fun AdhkarFontControls(vm: AppViewModel, current: Float, bold: Boolean) {
-    val atMin = current <= LocalStore.ADHKAR_FONT_MIN
-    val atMax = current >= LocalStore.ADHKAR_FONT_MAX
     // ⚠️ لا دالّة خطوة هنا: الزرّان يحسبان خطوتهما من **آخر قيمة في المخزن**
     // لا من القيمة التي رُكِّبت بها الدالّة، وإلّا تجمّد التكبير عند خطوة
-    // واحدة أثناء الضغط المستمرّ. (كانت هنا `step()` لا يناديها أحد.)
-    // زرّان كبيران بعلامتَي − و + بجانب كلمة «حجم الخطّ» صريحة. الشكل
-    // السابق (حرفا «أ» صغيران بلا مسمّى في طرف صفّ) كان غير مرئيّ عملياً:
-    // من يحتاج التكبير هو أقلّ الناس قدرةً على تمييز أيقونة خافتة صغيرة.
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            "حجم الخطّ",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.width(10.dp))
-        FontStepButton(
-            label = "−",
-            enabled = !atMin,
-            onStep = { vm.store.setAdhkarFontSp(vm.store.adhkarFontSp().let { it - (it * 0.12f).coerceAtLeast(1f) }) },
-        )
-        // النقر على الرقم يُرجع الحجم الافتراضي — مخرج آمن لمن كبّر أكثر
-        // ممّا ينبغي ولا يعرف كيف يعود.
-        TextButton(onClick = { vm.store.setAdhkarFontSp(LocalStore.ADHKAR_FONT_DEFAULT) }) {
-            Text(
-                "${current.toInt()}",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = Teal,
-            )
-        }
-        FontStepButton(
-            label = "+",
-            enabled = !atMax,
-            onStep = { vm.store.setAdhkarFontSp(vm.store.adhkarFontSp().let { it + (it * 0.12f).coerceAtLeast(1f) }) },
-        )
-        Spacer(Modifier.weight(1f))
-        // ⭐ «عريض» — كلمةً لا أيقونة، ومكتوبةً بالوزن الذي تصفه فيراها
-        // المستخدم قبل أن يقرأها. والحجم وحده لا يكفي لضعيف البصر: الثخانة
-        // هي ما يفصل الحرف عن الخلفيّة.
-        TextButton(onClick = { vm.store.setAdhkarBold(!bold) }) {
-            Text(
-                "عريض",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
-                color = if (bold) Teal else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
+    // واحدة أثناء الضغط المستمرّ.
+    //
+    // والصفّ نفسه [ReadingFontRow] المشترك مع المصحف: شاشتا قراءة تضبطان
+    // الشيء نفسه، فاختلاف شكلهما كان تعليماً للمستخدم مرّتين بلا فائدة.
+    ReadingFontRow(
+        current = { vm.store.adhkarFontSp() },
+        value = current,
+        min = LocalStore.ADHKAR_FONT_MIN,
+        max = LocalStore.ADHKAR_FONT_MAX,
+        default = LocalStore.ADHKAR_FONT_DEFAULT,
+        onChange = { vm.store.setAdhkarFontSp(it) },
+        bold = bold,
+        onBold = { vm.store.setAdhkarBold(!bold) },
+    )
 }
-
-/// أصغر حجم تبدأ به الشاشة المكبَّرة — من فتحها يريد الكبير لا المعتاد.
-private const val ZOOM_MIN_SP = 60f
 
 /**
  * 🔍 «ذكرٌ واحد بملء الشاشة» — تكبير كل ذكر على حدة إلى أقصى حجم ممكن.
@@ -439,8 +430,8 @@ private const val ZOOM_MIN_SP = 60f
  * العدّاد بلا أن يبحث عن زرّ صغير. وهذا هو المقصود بالميزة أصلاً: من لا
  * يبصر جيّداً لا يجب أن يُطالَب بإصابة هدفٍ صغير.
  *
- * الحجم يبدأ كبيراً بلا ضبط (٦٠ نقطة على الأقلّ)، ويبقى قابلاً للزيادة إلى
- * ١٢٠ — وهو محفوظ فيعود كما تركه صاحبه.
+ * الحجم يبدأ كبيراً بلا ضبط ([LocalStore.ZOOM_FONT_DEFAULT] = ٩٠ نقطة)، ولا
+ * ينزل عن ٤٠ ولا يتجاوز ١٦٠ — وهو محفوظ فيعود كما تركه صاحبه.
  */
 @Composable
 private fun DhikrZoomDialog(
@@ -486,13 +477,13 @@ private fun DhikrZoomDialog(
                     FontStepButton(
                         label = "−",
                         enabled = fontSp > LocalStore.ZOOM_FONT_MIN,
-                        onStep = { onFont(currentFont() - (currentFont() * 0.12f).coerceAtLeast(2f)) },
+                        onStep = { onFont(currentFont() - (currentFont() * FONT_STEP_RATIO).coerceAtLeast(2f)) },
                     )
                     Spacer(Modifier.width(8.dp))
                     FontStepButton(
                         label = "+",
                         enabled = fontSp < LocalStore.ZOOM_FONT_MAX,
-                        onStep = { onFont(currentFont() + (currentFont() * 0.12f).coerceAtLeast(2f)) },
+                        onStep = { onFont(currentFont() + (currentFont() * FONT_STEP_RATIO).coerceAtLeast(2f)) },
                     )
                 }
                 // الشاشة كلّها منطقة عدّ: لا هدف صغير يُصاب.
@@ -538,6 +529,11 @@ private fun DhikrZoomDialog(
 
 // زرّ الخطوة مشترك بين الأذكار والمصحف — انظر [FontStepButton] في ملفّه.
 
+/// صيغة نصّ الذكر عند إخراجه من التطبيق — **واحدة** للنسخ بالزرّ والنسخ
+/// بالضغط المطوّل والمشاركة. ⚠️ كان الضغط المطوّل يخرج بالنصّ عارياً بلا
+/// تخريج، فيجد الناسخ التخريج مرّةً ويفقده أخرى بلا أن يدري لماذا.
+private fun dhikrText(d: Dhikr) = d.text + "\n\n" + d.source
+
 @Composable
 private fun DhikrCard(
     dhikr: Dhikr,
@@ -580,8 +576,9 @@ private fun DhikrCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .graphicsLayer { this.alpha = alpha }
-                    // ضغطة مطوّلة على نصّ الذكر تنسخه — بلا زرّ إضافي.
-                    .copyableOnLongPress(text = { dhikr.text }, onClick = onTap),
+                    // ضغطة مطوّلة على نصّ الذكر تنسخه — بلا زرّ إضافي، وبنفس
+                    // صيغة زرّ النسخ: النسخ واحد وإن اختلف طريقه.
+                    .copyableOnLongPress(text = { dhikrText(dhikr) }, onClick = onTap),
                 textAlign = TextAlign.Justify,
             )
             if (dhikr.note.isNotBlank()) {
@@ -678,13 +675,15 @@ private fun CounterBadge(done: Long, target: Long, finished: Boolean) {
  * تذكير مفعَّل، فلا أثر يُذكر على البطارية.
  */
 @Composable
-fun AdhkarRemindersScreen(vm: AppViewModel) {
+fun AdhkarRemindersScreen(vm: AppViewModel, requestNotifications: () -> Unit) {
     val revision by vm.store.revision.collectAsState()
+    // العناوين والأيقونات هنا، أمّا **المواعيد** فمن [AdhkarReminders] وحده —
+    // المجدوِل يقرأ منه أيضاً، فلا يفترق المعروض عمّا يُجدوَل.
     val kinds = listOf(
-        Quad("morning", "تذكير أذكار الصباح", Icons.Filled.WbSunny, 6 to 30),
-        Quad("evening", "تذكير أذكار المساء", Icons.Filled.WbTwilight, 17 to 30),
-        Quad("sleep", "تذكير أذكار النوم", Icons.Filled.Bedtime, 22 to 0),
-        Quad("wake", "تذكير أذكار الاستيقاظ", Icons.Filled.LightMode, 5 to 30),
+        Triple("morning", "تذكير أذكار الصباح", Icons.Filled.WbSunny),
+        Triple("evening", "تذكير أذكار المساء", Icons.Filled.WbTwilight),
+        Triple("sleep", "تذكير أذكار النوم", Icons.Filled.Bedtime),
+        Triple("wake", "تذكير أذكار الاستيقاظ", Icons.Filled.LightMode),
     )
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -694,7 +693,8 @@ fun AdhkarRemindersScreen(vm: AppViewModel) {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        kinds.forEach { (kind, title, icon, default) ->
+        kinds.forEach { (kind, title, icon) ->
+            val default = AdhkarReminders.defaultFor(kind)
             val enabled = remember(revision, kind) { vm.store.adhkarReminder(kind) }
             val hour = remember(revision, kind) {
                 vm.store.adhkarReminderHour(kind, default.first)
@@ -716,7 +716,13 @@ fun AdhkarRemindersScreen(vm: AppViewModel) {
                 trailingContent = {
                     androidx.compose.material3.Switch(
                         checked = enabled,
-                        onCheckedChange = { vm.setAdhkarReminder(kind, it) },
+                        // ⚠️ الإذن يُطلب عند التفعيل كما في مفتاح الإشعارات
+                        // بالدرج: تذكيرٌ «مفعَّل» بلا إذنٍ يُجدوَل ثم يُبتلع
+                        // صامتاً عند العرض، فيظنّ المستخدم أنّ الميزة معطوبة.
+                        onCheckedChange = {
+                            if (it) requestNotifications()
+                            vm.setAdhkarReminder(kind, it)
+                        },
                     )
                 },
                 modifier = Modifier.clickable(enabled = enabled) { picking = 1 },
@@ -747,13 +753,6 @@ fun AdhkarRemindersScreen(vm: AppViewModel) {
         Spacer(Modifier.height(24.dp))
     }
 }
-
-private data class Quad(
-    val kind: String,
-    val title: String,
-    val icon: ImageVector,
-    val default: Pair<Int, Int>,
-)
 
 private fun timeLabel(hour: Int, minute: Int): String {
     val h12 = when {

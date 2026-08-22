@@ -97,11 +97,17 @@ class QuranRepository private constructor(context: Context) {
                 textAsset = item.getString("text"),
                 reciters = (0 until reciterArray.length()).map { j ->
                     val reciter = reciterArray.getJSONObject(j)
+                    val fileArray = reciter.optJSONArray("files")
                     Reciter(
                         id = reciter.getString("id"),
                         name = reciter.getString("name"),
                         base = reciter.getString("base"),
                         perAyah = reciter.optString("mode", "ayah") == "ayah",
+                        files = if (fileArray == null) {
+                            emptyList()
+                        } else {
+                            (0 until fileArray.length()).map { k -> fileArray.getString(k) }
+                        },
                     )
                 },
             )
@@ -212,13 +218,27 @@ data class Reciter(
     /// `true` ⇒ ملفّ لكل آية (يسمح بتمييز الآية الجارية بلا توقيتات).
     /// `false` ⇒ ملفّ لكل سورة (لا تمييز آية بآية).
     val perAyah: Boolean,
+    /**
+     * أسماء ملفّات السور الـ١١٤ بترتيب المصحف — **حين لا يتبع المضيف ترقيماً
+     * قياسياً**.
+     *
+     * بعض التلاوات لا توجد إلا على مضيفٍ يسمّي ملفّاته بالعربية («٠٠١ سورة
+     * الفاتحة…»)، ومنها التلاوة الوحيدة المنشورة للشيخ محمد لغظف الشنقيطي
+     * بورش. فبدل حرمان القارئ منها، نحمل أسماءها في الفهرس.
+     *
+     * ⚠️ والأسماء **مرمَّزة مسبقاً** (percent-encoded) في ملفّ الفهرس نفسه:
+     * الترميز في الشيفرة كان يعني اعتماداً على `Uri` في طبقة البيانات وسلوكاً
+     * يختلف بين إصدارات أندرويد. البايتات جاهزةً تصل كما هي دائماً.
+     */
+    val files: List<String> = emptyList(),
 ) {
     /** رابط آية بعينها: `base + SSSAAA.mp3` (أرقام بثلاث خانات). */
     fun ayahUrl(surah: Int, ayah: Int): String =
         base + pad(surah) + pad(ayah) + ".mp3"
 
-    /** رابط سورة كاملة: `base + SSS.mp3`. */
-    fun surahUrl(surah: Int): String = base + pad(surah) + ".mp3"
+    /** رابط سورة كاملة: `base + SSS.mp3`، أو اسم الملفّ المحفوظ إن وُجد. */
+    fun surahUrl(surah: Int): String =
+        files.getOrNull(surah - 1)?.let { base + it } ?: (base + pad(surah) + ".mp3")
 
     private fun pad(value: Int): String = value.toString().padStart(3, '0')
 }

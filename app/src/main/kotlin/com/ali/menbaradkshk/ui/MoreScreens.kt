@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -37,11 +38,11 @@ import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FiberNew
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.Forward30
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.HistoryEdu
 import androidx.compose.material.icons.filled.HourglassTop
@@ -54,7 +55,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.PublishedWithChanges
-import androidx.compose.material.icons.filled.Replay30
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
@@ -79,7 +80,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -196,7 +197,14 @@ fun RadioScreen(vm: AppViewModel) {
 
 @Composable
 fun CarScreen(vm: AppViewModel, playback: PlaybackUiState) {
-    LaunchedEffect(Unit) { vm.playback.setAutoplay(true) }
+    // ⚠️ وضع القيادة يفرض التوالي ما دام مفتوحاً ثم **يعيد ما كان**: كان
+    // يكتب `true` في حالة الجلسة العامّة بلا استرجاع، فيمحو اختيار من أوقف
+    // التوالي صراحةً من شاشة المشغّل بمجرّد دخوله هنا ثم خروجه.
+    DisposableEffect(Unit) {
+        val previous = com.ali.menbaradkshk.media.AutoplayState.enabled
+        vm.playback.setAutoplay(true)
+        onDispose { vm.playback.setAutoplay(previous) }
+    }
     Column(
         modifier = Modifier.fillMaxSize().background(Color.Black),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -241,7 +249,7 @@ fun CarScreen(vm: AppViewModel, playback: PlaybackUiState) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = vm.playback::skipBackward, modifier = Modifier.size(88.dp)) {
-                Icon(Icons.Filled.Replay30, "رجوع", tint = Color.White, modifier = Modifier.size(64.dp))
+                Icon(Icons.Filled.Replay, "رجوع", tint = Color.White, modifier = Modifier.size(64.dp))
             }
             Box(
                 modifier = Modifier
@@ -258,7 +266,7 @@ fun CarScreen(vm: AppViewModel, playback: PlaybackUiState) {
                 )
             }
             IconButton(onClick = vm.playback::skipForward, modifier = Modifier.size(88.dp)) {
-                Icon(Icons.Filled.Forward30, "تقديم", tint = Color.White, modifier = Modifier.size(64.dp))
+                Icon(Icons.Filled.FastForward, "تقديم", tint = Color.White, modifier = Modifier.size(64.dp))
             }
         }
         Spacer(Modifier.height(30.dp))
@@ -676,7 +684,16 @@ fun NotificationsScreen(vm: AppViewModel) {
                 backgroundContent = {
                     Box(
                         Modifier.fillMaxSize().background(MaterialTheme.colorScheme.error).padding(horizontal = 20.dp),
-                        contentAlignment = Alignment.CenterStart,
+                        // ⚠️ الاتّجاهان مفعَّلان، فتثبيت الأيقونة في طرفٍ واحد
+                        // كان يكشف شريطاً أحمر بلا رمزٍ في نصف السحبات — فعلٌ
+                        // إتلافيّ بلا إشارة بصريّة تدلّ عليه.
+                        contentAlignment = if (
+                            dismissState.dismissDirection == SwipeToDismissBoxValue.StartToEnd
+                        ) {
+                            Alignment.CenterStart
+                        } else {
+                            Alignment.CenterEnd
+                        },
                     ) {
                         Icon(Icons.Filled.Close, contentDescription = "حذف", tint = Color.White)
                     }
@@ -911,8 +928,10 @@ private fun TranscriptSubmissionCard(
             }
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // النسخة المنعكسة كبقيّة شاشات «النص المشروح»: للأيقونة كعبٌ
+                // جانبيّ، فكانت تنقلب اتّجاهاً بين شاشتين لميزة واحدة في RTL.
                 Icon(
-                    Icons.Filled.MenuBook,
+                    Icons.AutoMirrored.Filled.MenuBook,
                     null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(16.dp),

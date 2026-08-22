@@ -22,6 +22,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withTimeoutOrNull
 
 /// نتيجة معالجة طابور التحميل.
 enum class DownloadRunResult { FINISHED, NEEDS_RETRY }
@@ -41,9 +42,15 @@ class DownloadQueueProcessor(private val context: Context) {
     /// المعالجة **مفردة على مستوى العملية**: مسارا التشغيل (وظيفة UIDT وعمل
     /// WorkManager) قد يُطلَقان معاً، وحين يتشابكان يعملان على `queue.first()`
     /// نفسه (المعرّف لا يُحذف إلا بعد الاكتمال) فيكتبان الملف الجزئي نفسه
-    /// بإزاحتين مستقلّتين فيتلف. المتأخّر ينسحب فوراً ويُعاد جدولته.
+    /// بإزاحتين مستقلّتين فيتلف. المتأخّر ينتظر القفل قليلاً، فإن لم يتحرّر
+    /// انسحب ويُعاد جدولته.
     suspend fun run(onProgressNotification: (Notification) -> Unit = {}): DownloadRunResult {
-        if (!runLock.tryLock()) return DownloadRunResult.NEEDS_RETRY
+        // ⚠️ الانسحاب الفوري كان يُفشل مساراً شرعيّاً: إلغاء الوظيفة الجارية
+        // غير متزامن، فالسابق يبقى محجوزاً في `read()` لحظاتٍ بينما ينطلق
+        // اللاحق فينسحب ويُعاد جدولته بمهلة تراجعيّة. ننتظر تحرّر القفل قليلاً.
+        if (withTimeoutOrNull(LOCK_WAIT_MS) { runLock.lock(); true } != true) {
+            return DownloadRunResult.NEEDS_RETRY
+        }
         try {
             return runExclusively(onProgressNotification)
         } finally {
@@ -149,12 +156,18 @@ class DownloadQueueProcessor(private val context: Context) {
                 store.removeFromDownloadQueue(id)
             } catch (retryable: RetryableDownloadException) {
                 // انقطاع اتصال: يبقى الدرس في الطابور ويُستأنف الملف الجزئي لاحقاً.
+                // نسبة الملفّ الجاري تُحفظ كما في «موقوف مؤقّتاً»: إسقاطها كان
+                // يرتدّ بالشريط إلى الوراء رغم أنّ ما نزل باقٍ على القرص.
+                val previous = downloads.queueState.value
                 downloads.queueState.value = DownloadQueueState(
                     label,
                     done,
                     total,
                     lesson.displayTitle,
                     waitingForNetwork = true,
+                    filePercent = previous?.filePercent ?: -1,
+                    fileDownloadedBytes = previous?.fileDownloadedBytes ?: 0L,
+                    fileTotalBytes = previous?.fileTotalBytes ?: 0L,
                 )
                 notify("بانتظار عودة الاتصال للاستئناف…", onProgressNotification)
                 return DownloadRunResult.NEEDS_RETRY
@@ -294,5 +307,9 @@ class DownloadQueueProcessor(private val context: Context) {
 
         /// قفل معالجة الطابور — مفرد على مستوى العملية مهما تعدّد المُطلِقون.
         private val runLock = Mutex()
+
+        /// مهلة انتظار القفل: تكفي لخروج السابق من قراءةٍ جارية، وتبقى أقصر
+        /// من أن تُعطّل مسار الإعادة إن كان السابق عالقاً فعلاً.
+        private const val LOCK_WAIT_MS = 5_000L
     }
 }

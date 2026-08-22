@@ -12,10 +12,12 @@ import com.google.firebase.functions.FirebaseFunctions
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.storage.FirebaseStorage
 import com.google.firebase.storage.StorageMetadata
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -91,47 +93,51 @@ class TranscriptRepository private constructor(context: Context) {
     /** النص المعتمد للدرس أو null. force=true بعد إرسال اقتراح مقبول مثلاً. */
     suspend fun fetch(lessonId: String, force: Boolean = false): LessonTranscript? {
         if (lessonId.isBlank()) return null
-        if (!force) {
-            cache[lessonId]?.let { memory ->
-                if (isFresh(memory)) return memory.second
-            }
-            readDisk(lessonId)?.let { disk ->
-                if (isFresh(disk)) {
-                    cache[lessonId] = disk
-                    return disk.second
+        // ⚠️ تُستدعى من LaunchedEffect أي على مُرسِل الواجهة: قراءة القرص
+        // وتحليل JSON لنصٍّ قد يبلغ 20 ألف حرف كانا يقعان على الخيط الرئيسي.
+        return withContext(Dispatchers.IO) {
+            if (!force) {
+                cache[lessonId]?.let { memory ->
+                    if (isFresh(memory)) return@withContext memory.second
+                }
+                readDisk(lessonId)?.let { disk ->
+                    if (isFresh(disk)) {
+                        cache[lessonId] = disk
+                        return@withContext disk.second
+                    }
                 }
             }
-        }
-        val transcript = try {
-            val document = db.collection(TRANSCRIPTS).document(lessonId).get().await()
-            if (!document.exists()) {
-                null
-            } else {
-                LessonTranscript(
-                    lessonId = lessonId,
-                    text = document.getString("text").orEmpty(),
-                    bookTitle = document.getString("bookTitle").orEmpty(),
-                    sourceRef = document.getString("sourceRef").orEmpty(),
-                    imageUrls = (document.get("images") as? List<*>).orEmpty()
-                        .mapNotNull { item ->
-                            (item as? Map<*, *>)?.get("url")?.toString()
-                                ?.takeIf { it.isNotBlank() }
-                        },
-                    contributorName = document.getString("contributorName").orEmpty(),
-                )
+            val transcript = try {
+                val document = db.collection(TRANSCRIPTS).document(lessonId).get().await()
+                if (!document.exists()) {
+                    null
+                } else {
+                    LessonTranscript(
+                        lessonId = lessonId,
+                        text = document.getString("text").orEmpty(),
+                        bookTitle = document.getString("bookTitle").orEmpty(),
+                        sourceRef = document.getString("sourceRef").orEmpty(),
+                        imageUrls = (document.get("images") as? List<*>).orEmpty()
+                            .mapNotNull { item ->
+                                (item as? Map<*, *>)?.get("url")?.toString()
+                                    ?.takeIf { it.isNotBlank() }
+                            },
+                        contributorName = document.getString("contributorName").orEmpty(),
+                    )
+                }
+            } catch (failure: Throwable) {
+                // بلا اتصال: آخر نسخة محفوظة — ولو انتهت صلاحيتها — خيرٌ من لا شيء.
+                // وإن لم تكن هناك نسخة أصلاً لا نبتلع الفشل، كي تميّز الواجهة بين
+                // «لا نص لهذا الدرس» و«لم يُجلب بعد».
+                val stale = cache[lessonId] ?: readDisk(lessonId)?.also { cache[lessonId] = it }
+                if (stale != null) return@withContext stale.second
+                throw failure
             }
-        } catch (failure: Throwable) {
-            // بلا اتصال: آخر نسخة محفوظة — ولو انتهت صلاحيتها — خيرٌ من لا شيء.
-            // وإن لم تكن هناك نسخة أصلاً لا نبتلع الفشل، كي تميّز الواجهة بين
-            // «لا نص لهذا الدرس» و«لم يُجلب بعد».
-            val stale = cache[lessonId] ?: readDisk(lessonId)?.also { cache[lessonId] = it }
-            if (stale != null) return stale.second
-            throw failure
+            val now = System.currentTimeMillis()
+            cache[lessonId] = now to transcript
+            writeDisk(lessonId, transcript, now)
+            transcript
         }
-        val now = System.currentTimeMillis()
-        cache[lessonId] = now to transcript
-        writeDisk(lessonId, transcript, now)
-        return transcript
     }
 
     /**
@@ -218,6 +224,9 @@ class TranscriptRepository private constructor(context: Context) {
         val validatedImages = draft.images.take(MAX_IMAGES).mapIndexed { index, uri ->
             val size = appContext.contentResolver.openAssetFileDescriptor(uri, "r")
                 ?.use { it.length } ?: -1L
+            // فصل السببين: حجم مجهول (وصول مُنتزَع/ملف حُذف) ليس «تجاوز الحدّ»،
+            // فالرسالة الواحدة كانت تتّهم حجم صورةٍ لم يُقرأ حجمها أصلاً.
+            require(size >= 0) { "تعذّرت قراءة الصورة ${index + 1} — أعد اختيارها." }
             require(size in 1..MAX_IMAGE_BYTES) {
                 "حجم الصورة ${index + 1} يتجاوز 10 ميجابايت."
             }
@@ -235,12 +244,25 @@ class TranscriptRepository private constructor(context: Context) {
         try {
             validatedImages.forEachIndexed { index, (uri, contentType) ->
                 val path = "transcript_submissions/${user.uid}/$id/${index}_page.jpg"
-                storage.reference.child(path).putFile(
+                val task = storage.reference.child(path).putFile(
                     uri,
                     StorageMetadata.Builder().setContentType(contentType).build(),
-                ).await()
+                )
+                // ⚠️ كان التقدّم يُبلَّغ بعد اكتمال كل ملف فقط، فمع صورة واحدة
+                // (الحالة الأشيع) لا تظهر نسبة قطّ لأن القيمة الوحيدة 100،
+                // والواجهة تعرض النسبة في المدى 1..99 فقط.
+                task.addOnProgressListener { snapshot ->
+                    if (snapshot.totalByteCount > 0L) {
+                        val fileShare =
+                            snapshot.bytesTransferred * 100L / snapshot.totalByteCount
+                        onProgress(
+                            ((index * 100L + fileShare) / validatedImages.size).toInt(),
+                        )
+                    }
+                }
+                task.await()
                 uploadedPaths.add(path)
-                onProgress(((index + 1) * 100) / draft.images.size.coerceAtLeast(1))
+                onProgress(((index + 1) * 100) / validatedImages.size.coerceAtLeast(1))
             }
             val fcmToken = if (store.notificationsEnabled()) {
                 runCatching { FirebaseMessaging.getInstance().token.await() }.getOrDefault("")
@@ -261,7 +283,11 @@ class TranscriptRepository private constructor(context: Context) {
             callableStarted = true
             val result = runCatching {
                 functions.getHttpsCallable("createTranscriptSubmission").call(payload).await()
-            }.getOrElse {
+            }.getOrElse { first ->
+                // ⚠️ كانت الإعادة عمياء: الرفض القاطع (حدّ يومي، فاصل أدنى،
+                // تحقّق) يُستدعى مرّتين بلا جدوى ويؤخّر وصول سببه للمستخدم.
+                if (!isTransientFailure(first)) throw first
+                kotlinx.coroutines.delay(1_500)
                 functions.getHttpsCallable("createTranscriptSubmission").call(payload).await()
             }
             val returned = (result.data as? Map<*, *>)?.get("id")?.toString().orEmpty()

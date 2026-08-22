@@ -132,6 +132,9 @@ class MainActivity : ComponentActivity() {
             )
             return null
         }
+        // بشرى اعتماد النص المشروح تفتح الدرس — فيجب أن يسقط كاش «لا نصّ»
+        // أوّلاً، وإلا فُتح الدرس على فراغ الأمس (الشرح في المستقبل نفسه).
+        MinbarMessagingService.invalidateTranscriptCache(this, payload)
         val destination = MinbarMessagingService.destinationFor(payload) ?: return null
         return runCatching { Uri.parse(destination) }.getOrNull()
     }

@@ -6,16 +6,22 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -23,8 +29,12 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import coil3.compose.AsyncImagePainter
 import com.ali.menbaradkshk.data.MushafGeometry
 import com.ali.menbaradkshk.data.MushafRepository
 
@@ -126,10 +136,38 @@ private fun MushafPage(
     // صفحة جديدة فلا يجد القارئ نفسه في زاوية صفحة لم يكبّرها.
     var scale by remember(pageNumber) { mutableFloatStateOf(1f) }
     var offset by remember(pageNumber) { androidx.compose.runtime.mutableStateOf(Offset.Zero) }
+    /// مقاس صندوق الصفحة — يلزم لتقييد السحب، ولا يُعرف إلا بعد القياس.
+    var boxSize by remember(pageNumber) { androidx.compose.runtime.mutableStateOf(IntSize.Zero) }
     val transform = rememberTransformableState { zoomChange, panChange, _ ->
         scale = (scale * zoomChange).coerceIn(1f, 4f)
+        // ⚠️ **السحب مقيَّد بحدود ما زاد عن الصندوق**: كان بلا قيد، فتُدفع
+        // الصفحة كلّها خارج الشاشة ويبقى المستخدم أمام مستطيل فارغ — ولا
+        // مخرج له، لأنّ النقرة المزدوجة للإرجاع تقع على الصندوق المُزاح نفسه
+        // فلا تُصيبه بعد خروجه. والحدّ هو نصف ما فاض عن الصندوق في كل جهة.
+        val maxX = (scale - 1f) * boxSize.width / 2f
+        val maxY = (scale - 1f) * boxSize.height / 2f
         // بلا تكبير لا إزاحة: وإلّا انزلقت الصفحة عن مكانها بلمسة عابرة.
-        offset = if (scale <= 1f) Offset.Zero else offset + panChange
+        offset = if (scale <= 1f) {
+            Offset.Zero
+        } else {
+            Offset(
+                (offset.x + panChange.x).coerceIn(-maxX, maxX),
+                (offset.y + panChange.y).coerceIn(-maxY, maxY),
+            )
+        }
+    }
+
+    // ⚠️ اللامبدا تُقرأ **حيّةً** لا كنسخةٍ ملتقطة: مفاتيح `pointerInput` أدناه
+    // (رقم الصفحة والمستطيلات) لا تتغيّر عند تبديل القارئ، فكان المعالج يبقى
+    // على نسخة `onAyahTap` الأولى فيشغّل النقرُ **القارئ القديم** بعد التبديل.
+    // ولا يجوز إضافتها إلى المفاتيح: لامبدا جديدة في كل تركيب = إعادة ضبط
+    // المعالج في كل إطار.
+    val tap by rememberUpdatedState(onAyahTap)
+
+    /// حالة جلب الصورة — تُصفَّر مع كل صفحة، وبها وحدها نعرف أنعرض دوّارة أم
+    /// رسالة خطأ أم لا شيء.
+    var imageState by remember(pageNumber) {
+        androidx.compose.runtime.mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty)
     }
 
     val highlight = SecondaryGold.copy(alpha = .28f)
@@ -161,6 +199,9 @@ private fun MushafPage(
                 // هوامش، فتبقى الإحداثيات (نسبةٌ من الصورة) منطبقةً عليه.
                 .fillMaxSize()
                 .aspectRatio(pageAspect)
+                // المقاس المقيس هنا هو مرجع تقييد السحب أعلاه — بعد النسبة
+                // وقبل الطبقة المحوَّلة (التحويل لا يمسّ مقاس التخطيط).
+                .onSizeChanged { boxSize = it }
                 .graphicsLayer {
                     scaleX = scale
                     scaleY = scale
@@ -197,7 +238,7 @@ private fun MushafPage(
                             // للمستخدم وسيلةٌ لإظهار الأدوات أصلاً.
                             if (MushafGeometry.hitsAyah(rects, x, y)) {
                                 val ayah = MushafGeometry.ayahAt(rects, x, y)
-                                if (ayah >= 0) onAyahTap(ayah)
+                                if (ayah >= 0) tap(ayah)
                             } else {
                                 onChromeToggle()
                             }
@@ -212,6 +253,7 @@ private fun MushafPage(
                 contentDescription = "صفحة $pageNumber من المصحف",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = androidx.compose.ui.layout.ContentScale.FillBounds,
+                onState = { imageState = it },
                 // ⛔ **بلا صبغ**: صفحات مجمع الملك فهد صورٌ ملوّنة كاملة —
                 // ورقٌ فاتح وحبرٌ داكن وإطارٌ مزخرف وعلامات آيٍ ملوّنة. وكان
                 // هنا `ColorFilter.tint(SrcIn)` وُضع لصورٍ سابقة كانت حبراً
@@ -233,6 +275,30 @@ private fun MushafPage(
                     }
                 }
             }
+        }
+
+        // ⚠️ **الصفحة لا تُترك مستطيلاً فارغاً**: العرض المصوَّر هو الافتراضيّ
+        // والأدوات تبدأ مخفيّة، فمن فتح المصحف بلا إنترنت كان يرى فراغاً بلا
+        // نصّ ولا أيقونة ولا سبيل ظاهر للعودة إلى «مكتوب». فهنا حالتان
+        // صريحتان: دوّارة أثناء الجلب، ورسالة بمخرجٍ عند تعذّره.
+        //
+        // وهما **خارج** الطبقة المحوَّلة كي لا يكبّرهما التكبير ولا يزيحهما
+        // السحب فتخرجا مع الصفحة.
+        when (imageState) {
+            is AsyncImagePainter.State.Loading -> CircularProgressIndicator()
+            is AsyncImagePainter.State.Error -> Column(
+                modifier = Modifier.padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    "تعذّر جلب صفحة $pageNumber — تحقّق من الاتصال",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+                TextButton(onClick = onChromeToggle) { Text("أظهر الأدوات") }
+            }
+            else -> Unit
         }
     }
 }

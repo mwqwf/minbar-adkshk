@@ -185,7 +185,7 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                     AssistChip(
                         onClick = {},
                         leadingIcon = { Icon(Icons.Filled.LocalFireDepartment, null, tint = OrangeBrand) },
-                        label = { Text("سلسلة استماع: $streak ${if (streak == 1) "يوم" else "أيام"}") },
+                        label = { Text("سلسلة استماع: $streak ${daysLabel(streak)}") },
                     )
                 }
             }
@@ -343,7 +343,12 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                         onClick = {
                             group = null
                             vm.closeSettings()
-                            vm.openRoot(Route.Downloads)
+                            // ⛔ `open` لا `openRoot`: «تنزيلاتي» ليست تبويباً
+                            // جذرياً، و`openRoot` يمسح مكدّس الرجوع — فكانت
+                            // الشاشة تُفتح بلا شريط سفليّ ولا سهم رجوع ولا
+                            // زرّ إعدادات، وزرُّ الرجوع النظاميّ يُبتلع.
+                            // المخرج الوحيد كان قتلَ التطبيق.
+                            vm.open(Route.Downloads)
                         },
                     )
                 }
@@ -496,19 +501,18 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                     Slider(
                         value = value,
                         onValueChange = { value = it },
+                        // ⚠️ الحفظ عند رفع الإصبع لا عند زرّ «حفظ»: السمة في
+                        // الحوار نفسه تُطبَّق فور النقر، فكان الحوار الواحد
+                        // يعمل بقاعدتين — يرى المستخدم أثر السمة ولا يرى أثر
+                        // الحجم، فيغلق الحوار ظانّاً أنّ الاثنين حُفِظا.
+                        onValueChangeFinished = { vm.store.setFontScale(value) },
                         valueRange = 0.8f..1.4f,
                         steps = 5,
                     )
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    vm.store.setFontScale(value)
-                    appearanceDialog = false
-                }) { Text("حفظ") }
-            },
-            dismissButton = {
-                TextButton(onClick = { appearanceDialog = false }) { Text("إغلاق") }
+                TextButton(onClick = { appearanceDialog = false }) { Text("تمّ") }
             },
         )
     }
@@ -529,6 +533,11 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
             val lessonsBySubcategory = remember(content.lessons) {
                 content.lessons.groupBy { it.subcategoryId }
             }
+            // والفروع كذلك: كانت تُرشَّح كلّها لكل قسم في كل recomposition —
+            // نفس العلّة التي عُولجت في الدروس أعلاه، وقد سقطت منها سهواً.
+            val subsByCategory = remember(content.subcategories) {
+                content.subcategories.groupBy { it.categoryId }
+            }
             LazyColumn(contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 32.dp)) {
                 content.categories.forEach { category ->
                     val categoryLessons = lessonsByCategory[category.id].orEmpty()
@@ -546,7 +555,7 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                         )
                     }
                     items(
-                        content.subcategories.filter { it.categoryId == category.id },
+                        subsByCategory[category.id].orEmpty(),
                         key = { "sub-${it.id}" },
                     ) { sub ->
                         val subLessons = lessonsBySubcategory[sub.id].orEmpty()

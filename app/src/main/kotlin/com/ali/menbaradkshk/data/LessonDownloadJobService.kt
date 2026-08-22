@@ -34,6 +34,9 @@ class LessonDownloadJobService : JobService() {
             )
         }
         work = scope.launch {
+            // الرفع من **داخل** الكوروتين: لو أُلغي قبل أن يبدأ (إغلاق الخدمة)
+            // لبقيت الراية مرفوعة أبداً فلا تُجدوَل أي تحميل بعدها.
+            running.incrementAndGet()
             val result = try {
                 processor.run { notification ->
                     runCatching {
@@ -52,13 +55,29 @@ class LessonDownloadJobService : JobService() {
                 // بلا أي سجل — الآن يُسجَّل السبب على الأقل قبل إعادة المحاولة.
                 android.util.Log.e("LessonDownloadJob", "download run crashed", e)
                 DownloadRunResult.NEEDS_RETRY
+            } finally {
+                // يُخفَّض **قبل** `jobFinished` وقبل انتهاء الكوروتين: القفل
+                // داخل المعالج يُحرَّر أوّلاً (finally أعمق)، فلا تبقى الراية
+                // مرفوعة على وظيفة لم تعد تعمل ولا تُخفض قبل تحرّر القفل.
+                running.decrementAndGet()
             }
             // الوظيفة أُلغيت من onStopJob: النظام تولّى إعادة الجدولة بنفسه،
             // وإعلان الانتهاء بعدها يخصّ وظيفة لم تعد قائمة.
             if (!isActive) return@launch
             jobFinished(params, result == DownloadRunResult.NEEDS_RETRY)
+            if (result == DownloadRunResult.FINISHED) rescheduleLeftover()
         }
         return true
+    }
+
+    /// ⛔ سباقٌ ضيّق لا يجوز إهماله: عنصر يُضاف بين آخر قراءةٍ للطابور وخفض
+    /// راية «تعمل الآن» كان يُسقَط بصمت — لأنّ [DownloadScheduler] ينسحب ما
+    /// دامت الوظيفة تعمل كي لا يقتلها. ما بقي في الطابور غير موقوفٍ يستحقّ
+    /// جولةً جديدة، وقيد الشبكة يُحسب من جديد فلا دوران على شبكة محدودة.
+    private fun rescheduleLeftover() {
+        if (DownloadRepository.get(applicationContext).paused.value) return
+        if (LocalStore.get(applicationContext).downloadQueue().isEmpty()) return
+        DownloadScheduler.enqueue(applicationContext)
     }
 
     override fun onStopJob(params: JobParameters): Boolean {
@@ -70,5 +89,13 @@ class LessonDownloadJobService : JobService() {
     override fun onDestroy() {
         scope.cancel()
         super.onDestroy()
+    }
+
+    companion object {
+        private val running = java.util.concurrent.atomic.AtomicInteger(0)
+
+        /// هل وظيفة النقل تعمل الآن؟ جدولة المعرّف نفسه توقف الجارية
+        /// وتستبدلها، فيُسأل عنها قبل أيّ إعادة جدولة (انظر DownloadScheduler).
+        val isRunning: Boolean get() = running.get() > 0
     }
 }

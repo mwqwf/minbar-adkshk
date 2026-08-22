@@ -60,7 +60,7 @@ class ContentRepository private constructor(context: Context) {
             ContentState(
                 categories = cachedCategories,
                 subcategories = store.subcategories(),
-                lessons = mergeDurations(cachedLessons).filter(Lesson::isPublished),
+                lessons = mergeDurations(cachedLessons),
                 loading = cachedCategories.isEmpty() && cachedLessons.isEmpty(),
             )
         },
@@ -122,6 +122,8 @@ class ContentRepository private constructor(context: Context) {
                     }
                 }
                 val newest = async { newestUpdatedMs() }
+                val newestCategories = async { newestUpdatedMs("categories") }
+                val newestSubcategories = async { newestUpdatedMs("subcategories") }
 
                 val categories = categoriesJob.await()
                 val subcategories = subcategoriesJob.await()
@@ -143,7 +145,7 @@ class ContentRepository private constructor(context: Context) {
                 val lessons = fetchLessonsPaged { page ->
                     if (!hasCache) {
                         _state.value = _state.value.copy(
-                            lessons = mergeDurations(page.filter(Lesson::isPublished)),
+                            lessons = mergeDurations(page),
                             loading = false,
                             syncing = true,
                         )
@@ -154,24 +156,29 @@ class ContentRepository private constructor(context: Context) {
                     subcategories = subcategories,
                     lessons = lessons,
                     maxUpdatedMs = newest.await(),
+                    categoriesUpdatedMs = newestCategories.await(),
+                    subcategoriesUpdatedMs = newestSubcategories.await(),
                 )
             }
         }.onSuccess { snapshot ->
             val categories = snapshot.categories
             val subcategories = snapshot.subcategories
-            // الترشيح محليّ لأن الخادم يخزّن الدروس المجدولة في نفس المجموعة.
-            val lessons = snapshot.lessons.filter(Lesson::isPublished)
+            // ⛔ لا ترشيح: النشر المجدول أُزيل من المنظومة كلّها (اللوحة
+            // والدوال السحابيّة)، فكلّ ما يصل من الخادم منشور بحكم وجوده.
+            val lessons = snapshot.lessons
             store.setCategories(categories)
             store.setSubcategories(subcategories)
             store.setLessons(lessons)
             store.setLastSyncMs(now)
-            // علامات المسبار تُحفظ بأعداد **الخادم** (قبل الترشيح) كي تُقارن بها.
+            // علامات المسبار تُحفظ بحالة **الخادم** نفسها كي تُقارن بها لاحقاً.
             saveMarks(
                 ProbeMarks(
                     categories = categories.size,
                     subcategories = subcategories.size,
                     lessons = snapshot.lessons.size,
                     maxUpdatedMs = snapshot.maxUpdatedMs,
+                    categoriesUpdatedMs = snapshot.categoriesUpdatedMs,
+                    subcategoriesUpdatedMs = snapshot.subcategoriesUpdatedMs,
                 ),
             )
             setLastProbeMs(now)
@@ -211,20 +218,28 @@ class ContentRepository private constructor(context: Context) {
     // المسبار الرخيص (لا يجلب وثائق: ثلاثة عدّادات + وثيقة واحدة)
     // ------------------------------------------------------------------
 
-    /// نتيجة الجلب الكامل قبل الترشيح — تُشتقّ منها علامات المسبار.
+    /// نتيجة الجلب الكامل — تُشتقّ منها علامات المسبار.
     private data class Snapshot(
         val categories: List<Category>,
         val subcategories: List<Subcategory>,
         val lessons: List<Lesson>,
         val maxUpdatedMs: Long,
+        val categoriesUpdatedMs: Long = 0L,
+        val subcategoriesUpdatedMs: Long = 0L,
     )
 
-    /// بصمة حالة الخادم: أعداد المجموعات الثلاث + أحدث طابع تعديل.
+    /// بصمة حالة الخادم: أعداد المجموعات الثلاث + أحدث طابع تعديل في كلٍّ منها.
+    ///
+    /// ⚠️ طابعا الأقسام والفروع ليسا ترفاً: إعادة تسمية قسم تكتب `updatedAt`
+    /// على وثيقته وحدها — لا عدّاد يتغيّر ولا طابع درس — فكانت البصمة تتطابق
+    /// والاسم القديم يبقى معروضاً حتى يسحب المستخدم للتحديث يدويّاً.
     private data class ProbeMarks(
         val categories: Int,
         val subcategories: Int,
         val lessons: Int,
         val maxUpdatedMs: Long,
+        val categoriesUpdatedMs: Long = 0L,
+        val subcategoriesUpdatedMs: Long = 0L,
     )
 
     /**
@@ -261,11 +276,15 @@ class ContentRepository private constructor(context: Context) {
             val subcategories = async { countOf("subcategories") }
             val lessons = async { countOf("lessons") }
             val newest = async { newestUpdatedMs() }
+            val newestCategories = async { newestUpdatedMs("categories") }
+            val newestSubcategories = async { newestUpdatedMs("subcategories") }
             ProbeMarks(
                 categories = categories.await(),
                 subcategories = subcategories.await(),
                 lessons = lessons.await(),
                 maxUpdatedMs = newest.await(),
+                categoriesUpdatedMs = newestCategories.await(),
+                subcategoriesUpdatedMs = newestSubcategories.await(),
             )
         }
     }.getOrNull()
@@ -273,17 +292,28 @@ class ContentRepository private constructor(context: Context) {
     private suspend fun countOf(collection: String): Int =
         db.collection(collection).count().get(AggregateSource.SERVER).await().count.toInt()
 
-    /// أحدث `updatedAt` في مجموعة الدروس (وثيقة واحدة). الوثائق التي لا تحمل
-    /// الحقل لا تدخل الاستعلام أصلاً، فغيابه كلّياً يعني صفراً ثابتاً ولا يضرّ.
-    private suspend fun newestUpdatedMs(): Long = runCatching {
-        db.collection("lessons")
-            .orderBy("updatedAt", Query.Direction.DESCENDING)
+    /// أحدث `updatedAt` في مجموعة (وثيقة واحدة لكل صيغة). الوثائق التي لا
+    /// تحمل الحقل لا تدخل الاستعلام أصلاً، فغيابه كلّياً يعني صفراً ثابتاً.
+    ///
+    /// ⚠️ صيغتان لا واحدة: الوثائق القديمة المغلَّفة `{data:{…}}` يكتب فيها
+    /// الطابعَ في `data.updatedAt`، فالاكتفاء بالحقل الأعلى يُبقيها خارج
+    /// البصمة فلا يُلتقط تعديلها أبداً.
+    private suspend fun newestUpdatedMs(collection: String = "lessons"): Long =
+        coroutineScope {
+            val plain = async { newestUpdatedBy(collection, "updatedAt") }
+            val wrapped = async { newestUpdatedBy(collection, "data.updatedAt") }
+            max(plain.await(), wrapped.await())
+        }
+
+    private suspend fun newestUpdatedBy(collection: String, field: String): Long = runCatching {
+        db.collection(collection)
+            .orderBy(field, Query.Direction.DESCENDING)
             .limit(1)
             .get()
             .await()
             .documents
             .firstOrNull()
-            ?.get("updatedAt")
+            ?.get(field)
             .timeMillis()
     }.getOrDefault(0L)
 
@@ -294,6 +324,8 @@ class ContentRepository private constructor(context: Context) {
             subcategories = prefs.getInt(KEY_MARK_SUBCATEGORIES, -1),
             lessons = prefs.getInt(KEY_MARK_LESSONS, -1),
             maxUpdatedMs = prefs.getLong(KEY_MARK_UPDATED, 0L),
+            categoriesUpdatedMs = prefs.getLong(KEY_MARK_CATEGORIES_UPDATED, 0L),
+            subcategoriesUpdatedMs = prefs.getLong(KEY_MARK_SUBCATEGORIES_UPDATED, 0L),
         )
     }
 
@@ -302,6 +334,8 @@ class ContentRepository private constructor(context: Context) {
         .putInt(KEY_MARK_SUBCATEGORIES, marks.subcategories)
         .putInt(KEY_MARK_LESSONS, marks.lessons)
         .putLong(KEY_MARK_UPDATED, marks.maxUpdatedMs)
+        .putLong(KEY_MARK_CATEGORIES_UPDATED, marks.categoriesUpdatedMs)
+        .putLong(KEY_MARK_SUBCATEGORIES_UPDATED, marks.subcategoriesUpdatedMs)
         .apply()
 
     private fun lastProbeMs(): Long = prefs.getLong(KEY_LAST_PROBE, 0L)
@@ -515,9 +549,15 @@ class ContentRepository private constructor(context: Context) {
                 lesson.views * 0.05 -
                 if ((playCounts[lesson.id] ?: 0L) > 0L) 2.0 else 0.0 -
                 if (lesson.id in completed) 4.0 else 0.0
-        return pool.sortedWith(
-            compareByDescending<Lesson>(::score).thenByDescending(Lesson::createdAtMs),
-        ).take(limit)
+        // المفتاح يُحسب مرّة لكل درس لا مرّتين لكل مقارنة: الترتيب المباشر
+        // بمحدِّد يستدعيه في كل موازنة، وهذه الدالّة تُحسب على خيط الواجهة.
+        return pool.map { it to score(it) }
+            .sortedWith(
+                compareByDescending<Pair<Lesson, Double>> { it.second }
+                    .thenByDescending { it.first.createdAtMs },
+            )
+            .map { it.first }
+            .take(limit)
     }
 
     fun trending(limit: Int = 15): List<Lesson> {
@@ -526,8 +566,11 @@ class ContentRepository private constructor(context: Context) {
             val ageDays = max(0L, (now - lesson.createdAtMs) / 86_400_000L).coerceAtMost(3_650)
             return lesson.views * (0.5 + 1.0 / (1 + ageDays / 30.0))
         }
+        // كسابقتها: المفتاح مرّة لكل درس لا مع كل موازنة.
         return withAudio().filter { it.views > 0L }
-            .sortedByDescending(::score)
+            .map { it to score(it) }
+            .sortedByDescending { it.second }
+            .map { it.first }
             .take(limit)
     }
 
@@ -566,10 +609,15 @@ class ContentRepository private constructor(context: Context) {
         return pool[(now.year * 1_000 + now.monthValue * 40 + now.dayOfMonth) % pool.size]
     }
 
-    fun shortStation(): List<Lesson> = withAudio().filter {
-        val duration = if (it.durationMs > 0L) it.durationMs else store.duration(it.id)
-        duration in 1L until 10 * 60 * 1_000L
-    }.sortedByDescending(Lesson::createdAtMs)
+    fun shortStation(): List<Lesson> {
+        // خريطة المدد تُقرأ مرّة لا مرّة لكل درس (نفس علّة `mergeDurations`)،
+        // والدالّة تُحسب على خيط الواجهة في الرئيسية مع كل تبدّل للمراجعة.
+        val local = store.durations()
+        return withAudio().filter {
+            val duration = if (it.durationMs > 0L) it.durationMs else (local[it.id] ?: 0L)
+            duration in 1L until 10 * 60 * 1_000L
+        }.sortedByDescending(Lesson::createdAtMs)
+    }
 
     fun randomStation(): List<Lesson> = withAudio().shuffled(Random(System.currentTimeMillis()))
 
@@ -612,11 +660,23 @@ class ContentRepository private constructor(context: Context) {
     }
 
     private fun withAudio(): List<Lesson> =
-        _state.value.lessons.filter { it.audioUrl.isNotBlank() && it.isPublished }
+        _state.value.lessons.filter { it.audioUrl.isNotBlank() }
 
-    private fun mergeDurations(items: List<Lesson>): List<Lesson> = items.map { lesson ->
-        val local = store.duration(lesson.id)
-        if (lesson.durationMs <= 0L && local > 0L) lesson.copy(durationMs = local) else lesson
+    /// ⚠️ قراءة **واحدة** لخريطة المدد لا قراءة لكل درس: `store.duration` تنسخ
+    /// ملفّ التفضيلات كاملاً وتحلّل JSON من جديد في كل استدعاء، وهذه الدالّة
+    /// تُنادى على القائمة كاملة — منها مرّةً في مُنشئ المستودع أي على خيط
+    /// الإقلاع.
+    private fun mergeDurations(items: List<Lesson>): List<Lesson> {
+        val local = store.durations()
+        if (local.isEmpty()) return items
+        return items.map { lesson ->
+            val duration = local[lesson.id] ?: 0L
+            if (lesson.durationMs <= 0L && duration > 0L) {
+                lesson.copy(durationMs = duration)
+            } else {
+                lesson
+            }
+        }
     }
 
     companion object {
@@ -632,6 +692,8 @@ class ContentRepository private constructor(context: Context) {
         private const val KEY_MARK_SUBCATEGORIES = "mark_subcategories"
         private const val KEY_MARK_LESSONS = "mark_lessons"
         private const val KEY_MARK_UPDATED = "mark_updated_ms"
+        private const val KEY_MARK_CATEGORIES_UPDATED = "mark_categories_updated_ms"
+        private const val KEY_MARK_SUBCATEGORIES_UPDATED = "mark_subcategories_updated_ms"
         private const val KEY_LAST_PROBE = "last_probe_ms"
         private const val KEY_HIDDEN_HISTORY = "hidden_history_v1"
         private const val KEY_HISTORY_STAMPS = "history_stamps_v1"

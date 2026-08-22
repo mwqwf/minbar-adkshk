@@ -50,7 +50,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,11 +63,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import androidx.lifecycle.viewModelScope
 import com.ali.menbaradkshk.data.Lesson
 import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.formatDuration
 import com.ali.menbaradkshk.util.lessonShareText
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /// أحمر المفضّلة على السطح الفاتح: النسبة السابقة (0xFFD84343) كانت 4.25
 /// وهي دون حدّ التباين، فرُفعت إلى 6.07 بلا تغيير في هوية اللون.
@@ -85,18 +87,21 @@ fun AudioItem(
     showActions: Boolean = true,
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val revision by vm.store.revision.collectAsState()
-    val progressMap by vm.downloads.progress.collectAsState()
-    var downloading by remember { mutableStateOf(false) }
 
     val active = playback.mediaId == lesson.id && lesson.id.isNotBlank()
     val playing = active && playback.playing
-    val durMs = lesson.durationMs.takeIf { it > 0L } ?: vm.store.duration(lesson.id)
+    // ⚠️ القراءتان أدناه تفكّان خريطة JSON كاملةً من التفضيلات في كل نداء،
+    // فلا يجوز تركهما بلا `remember`: بلا لفّ كان كل صفّ مرئيّ يعيد التحليل
+    // مع كل إعادة تركيب. ولا يشترك هذا الصفّ في تدفّق تقدّم التنزيل أصلاً —
+    // فالتدفّق ينبض مع كل حزمة قراءة، وزرّ التحميل وحده يحتاجه ويشترك فيه.
+    val durMs = remember(revision, lesson.id, lesson.durationMs) {
+        lesson.durationMs.takeIf { it > 0L } ?: vm.store.duration(lesson.id)
+    }
     val favorite = remember(revision, lesson.id) { vm.store.isFavorite(lesson.id) }
-    val downloaded = remember(revision, lesson.id) { vm.downloads.isDownloaded(lesson.id) }
+    val savedPos = remember(revision, lesson.id) { vm.store.position(lesson.id) }
     val savedProgress = if (durMs > 0L) {
-        (vm.store.position(lesson.id).toFloat() / durMs).coerceIn(0f, 1f)
+        (savedPos.toFloat() / durMs).coerceIn(0f, 1f)
     } else {
         0f
     }
@@ -106,7 +111,6 @@ fun AudioItem(
         savedProgress
     }
     val accent = colorForCategory(lesson.categoryId)
-    val percent = progressMap[lesson.id]?.percent ?: 0
 
     Card(
         modifier = Modifier
@@ -149,11 +153,24 @@ fun AudioItem(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    if (durMs > 0L) {
+                    // ⏱️🎧 المدّة وعدد الاستماعات في **سطر واحد** مفصولين بنقطة:
+                    // سطرٌ ثانٍ لأجل رقم يقرؤه المستخدم بطرف عينه يرفع ارتفاع
+                    // كل صفّ في التطبيق كلّه، وارتفاع الصفّ ثمنٌ يُدفع في كل
+                    // قائمة وكل تمريرة.
+                    val listens = remember(lesson.views) {
+                        com.ali.menbaradkshk.util.listenCountLabel(lesson.views)
+                    }
+                    val meta = listOfNotNull(
+                        formatDuration(durMs).takeIf { durMs > 0L },
+                        listens,
+                    ).joinToString(" • ")
+                    if (meta.isNotBlank()) {
                         Text(
-                            formatDuration(durMs),
+                            meta,
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
@@ -194,12 +211,19 @@ fun AudioCard(
     showProgress: Boolean = false,
 ) {
     val accent = colorForCategory(lesson.categoryId)
-    val durMs = lesson.durationMs.takeIf { it > 0L } ?: vm.store.duration(lesson.id)
+    val revision by vm.store.revision.collectAsState()
+    // ⚠️ نفس سبب `AudioItem`: `duration`/`position` تحليل JSON كامل لكل نداء،
+    // فتُلفّان بـ`remember` مفتاحُه `revision` كي تتجدّدا عند الكتابة لا مع كل
+    // إعادة تركيب لبطاقات الريل.
+    val durMs = remember(revision, lesson.id, lesson.durationMs) {
+        lesson.durationMs.takeIf { it > 0L } ?: vm.store.duration(lesson.id)
+    }
+    val savedPos = remember(revision, lesson.id) { vm.store.position(lesson.id) }
     val active = playback.mediaId == lesson.id
     val liveProgress = if (active && playback.durationMs > 0L) {
         (playback.positionMs.toFloat() / playback.durationMs).coerceIn(0f, 1f)
     } else if (durMs > 0L) {
-        (vm.store.position(lesson.id).toFloat() / durMs).coerceIn(0f, 1f)
+        (savedPos.toFloat() / durMs).coerceIn(0f, 1f)
     } else {
         0f
     }
@@ -465,21 +489,33 @@ fun DownloadButton(
         }
     }
 
+    // مساحة اللمس لا تقلّ عن ٤٨dp مهما صغُر الحجم البصريّ: الزرّ في صفوف
+    // الدروس ٣٨dp فقط، وهو دون الحدّ الأدنى الذي تلتقطه الإصبع بثقة بينما
+    // جاراه في الصفّ ٤٨dp. الدائرة والمؤشّر يبقيان بحجمهما البصريّ.
+    val touch = if (size < 48.dp) 48.dp else size
+
     when {
         downloaded -> Box(
-            modifier = Modifier.size(size).background(GreenBrand.copy(alpha = 0.16f), CircleShape),
+            modifier = Modifier.size(touch),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                Icons.Filled.DownloadDone,
-                contentDescription = "تم التحميل",
-                tint = GreenBrand,
-                modifier = Modifier.size(size * 0.55f),
-            )
+            Box(
+                modifier = Modifier
+                    .size(size)
+                    .background(GreenBrand.copy(alpha = 0.16f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.DownloadDone,
+                    contentDescription = "تم التحميل",
+                    tint = GreenBrand,
+                    modifier = Modifier.size(size * 0.55f),
+                )
+            }
         }
         // جارٍ الآن — الضغط يفتح التحكّم (إيقاف/إلغاء) بدل ألّا يفعل شيئاً.
         active != null -> Box(
-            modifier = Modifier.size(size).clickable { menu = true },
+            modifier = Modifier.size(touch).clickable { menu = true },
             contentAlignment = Alignment.Center,
         ) {
             val percent = active.percent.coerceAtLeast(0)
@@ -498,25 +534,28 @@ fun DownloadButton(
             ControlMenu()
         }
         queued -> Box(
-            modifier = Modifier
-                .size(size)
-                .background(OrangeBrand.copy(alpha = 0.1f), CircleShape)
-                .clickable { menu = true },
+            modifier = Modifier.size(touch).clickable { menu = true },
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                // موقوف ⇒ سهم استئناف صريح، وإلّا ساعة الانتظار.
-                if (paused) Icons.Filled.PlayArrow else Icons.Filled.HourglassTop,
-                contentDescription = if (paused) "التحميل موقوف مؤقّتاً" else "بانتظار التحميل",
-                tint = OrangeBrand,
-                modifier = Modifier.size(size * 0.5f),
-            )
+            Box(
+                modifier = Modifier
+                    .size(size)
+                    .background(OrangeBrand.copy(alpha = 0.1f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    // موقوف ⇒ سهم استئناف صريح، وإلّا ساعة الانتظار.
+                    if (paused) Icons.Filled.PlayArrow else Icons.Filled.HourglassTop,
+                    contentDescription = if (paused) "التحميل موقوف مؤقّتاً" else "بانتظار التحميل",
+                    tint = OrangeBrand,
+                    modifier = Modifier.size(size * 0.5f),
+                )
+            }
             ControlMenu()
         }
         else -> Box(
             modifier = Modifier
-                .size(size)
-                .background(OrangeBrand.copy(alpha = 0.14f), CircleShape)
+                .size(touch)
                 .clickable {
                     if (lesson.audioUrl.isBlank()) {
                         vm.showMessage("لا يمكن التحميل: لا يتوفر رابط صوتي.")
@@ -526,12 +565,19 @@ fun DownloadButton(
                 },
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                Icons.Filled.Download,
-                contentDescription = "تحميل للاستماع دون إنترنت",
-                tint = OrangeBrand,
-                modifier = Modifier.size(size * 0.55f),
-            )
+            Box(
+                modifier = Modifier
+                    .size(size)
+                    .background(OrangeBrand.copy(alpha = 0.14f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.Download,
+                    contentDescription = "تحميل للاستماع دون إنترنت",
+                    tint = OrangeBrand,
+                    modifier = Modifier.size(size * 0.55f),
+                )
+            }
         }
     }
 }
@@ -609,8 +655,16 @@ fun ConfirmBulkDownloadDialog(
         text = {
             Text(
                 buildString {
-                    append("سيبدأ تحميل $count ")
-                    append(if (count == 1) "درساً" else "درساً")
+                    append("سيبدأ تحميل ")
+                    // تمييز عربيّ صحيح: المفرد والمثنّى وجمع القلّة والكثرة.
+                    append(
+                        when {
+                            count == 1 -> "درساً واحداً"
+                            count == 2 -> "درسين"
+                            count in 3..10 -> "$count دروس"
+                            else -> "$count درساً"
+                        },
+                    )
                     append(" للاستماع دون إنترنت")
                     // تقدير محافظ (≈8 ميغابايت للدرس) — الغرض تنبيه لا دقّة.
                     append("، بحجم تقريبيّ ${count * 8} ميغابايت.\n")
@@ -881,34 +935,46 @@ fun shareLessonPayload(
         putExtra(Intent.EXTRA_TEXT, text)
     }
 
-    val fileIntent = runCatching {
-        val path = vm.store.localAudioPath(lesson.id) ?: return@runCatching null
-        val file = java.io.File(path)
-        if (!file.isFile || file.length() <= 0L) return@runCatching null
-        // الملفّ المخزَّن اسمه معرّف داخلي بامتداد قد يكون غريباً (`.ogx`
-        // مثلاً، وهو Ogg لكن واتساب لا يعرفه فيعامله ملفّاً عامّاً). نضع نسخةً
-        // للمشاركة باسم الدرس وامتداد قياسيّ — المستقبِل يرى اسماً مفهوماً
-        // ويتعرّف على الصوت.
-        val shared = shareableCopy(context, file, lesson.displayTitle) ?: file
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            shared,
-        )
-        Intent(Intent.ACTION_SEND).apply {
-            type = audioMimeOf(shared.name)
-            putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_TEXT, text)
-            putExtra(Intent.EXTRA_SUBJECT, lesson.displayTitle)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-    }.getOrNull()
-
-    val chooser = Intent.createChooser(fileIntent ?: textIntent(), "مشاركة الدرس")
-    runCatching { context.startActivity(chooser) }.onFailure {
+    fun startChooser(intent: Intent) {
         runCatching {
-            context.startActivity(Intent.createChooser(textIntent(), "مشاركة الدرس"))
+            context.startActivity(Intent.createChooser(intent, "مشاركة الدرس"))
+        }.onFailure {
+            runCatching {
+                context.startActivity(Intent.createChooser(textIntent(), "مشاركة الدرس"))
+            }
         }
+    }
+
+    // ⚠️ تجهيز نسخة المشاركة **نسخُ ملفّ صوتيّ كامل**، وكان يجري على خيط
+    // الواجهة فيجمّد التطبيق (ANR) عند مشاركة درس منزَّل — والدرس قد يبلغ
+    // عشرات الميغابايتات. النسخ في `Dispatchers.IO` وفتح المُختار وحده على
+    // الخيط الرئيسي، ولا يجوز إرجاع النسخ إليه.
+    vm.viewModelScope.launch {
+        val fileIntent = withContext(Dispatchers.IO) {
+            runCatching {
+                val path = vm.store.localAudioPath(lesson.id) ?: return@runCatching null
+                val file = java.io.File(path)
+                if (!file.isFile || file.length() <= 0L) return@runCatching null
+                // الملفّ المخزَّن اسمه معرّف داخلي بامتداد قد يكون غريباً (`.ogx`
+                // مثلاً، وهو Ogg لكن واتساب لا يعرفه فيعامله ملفّاً عامّاً). نضع نسخةً
+                // للمشاركة باسم الدرس وامتداد قياسيّ — المستقبِل يرى اسماً مفهوماً
+                // ويتعرّف على الصوت.
+                val shared = shareableCopy(context, file, lesson.displayTitle) ?: file
+                val uri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    shared,
+                )
+                Intent(Intent.ACTION_SEND).apply {
+                    type = audioMimeOf(shared.name)
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_TEXT, text)
+                    putExtra(Intent.EXTRA_SUBJECT, lesson.displayTitle)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+            }.getOrNull()
+        }
+        startChooser(fileIntent ?: textIntent())
     }
 }
 
@@ -924,7 +990,8 @@ private fun standardAudioExtension(raw: String): String =
     }
 
 /// نسخة للمشاركة باسم الدرس وامتداد قياسيّ داخل `cache/share`.
-/// تُستبدَل في كل مشاركة فلا تتراكم، وتُنظَّف بكاش التطبيق تلقائياً.
+/// لا تتراكم: كل مشاركة تحذف ما مضى عليه عشر دقائق، والباقي يُنظَّف بكاش
+/// التطبيق تلقائياً.
 private fun shareableCopy(
     context: android.content.Context,
     source: java.io.File,
@@ -939,8 +1006,11 @@ private fun shareableCopy(
         .ifBlank { "درس" }
     val directory = java.io.File(context.cacheDir, "share").apply {
         mkdirs()
-        // لا نُراكم نسخاً: كل مشاركة تستبدل ما قبلها.
-        listFiles()?.forEach { it.delete() }
+        // لا نُراكم نسخاً، لكن ⛔ لا نمسح النسخة السابقة فوراً: `FileProvider`
+        // يسلّم رابطاً فقط، والمستقبِل يقرأ الملفّ بعد اختيار المستخدم من
+        // المُختار — فمشاركةٌ ثانية سريعة كانت تحذف ملفّ الأولى قبل قراءته.
+        val cutoff = System.currentTimeMillis() - 10 * 60_000L
+        listFiles()?.forEach { if (it.lastModified() < cutoff) it.delete() }
     }
     val target = java.io.File(directory, "$safeTitle.$extension")
     source.inputStream().use { input ->

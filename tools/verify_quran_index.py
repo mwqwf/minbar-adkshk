@@ -35,6 +35,12 @@ def main():
         chk(all(c["base"].endswith("/") for c in r["reciters"]), "%s: كل base ينتهي بـ/" % r["id"])
         chk(all(c["mode"] in ("ayah", "surah") for c in r["reciters"]), "%s: كل mode صالح" % r["id"])
         chk(all(c["base"].startswith("https://") for c in r["reciters"]), "%s: كل base بـhttps" % r["id"])
+        # الحقل الاختياري files: إمّا غائب وإمّا ١١٤ اسماً مرمَّزاً بترتيب المصحف.
+        withf = [c for c in r["reciters"] if "files" in c]
+        chk(all(len(c["files"]) == 114 for c in withf),
+            "%s: كل files فيه ١١٤ ملفاً (%d قارئاً)" % (r["id"], len(withf)))
+        chk(all("%" in n or n.isascii() for c in withf for n in c["files"]),
+            "%s: أسماء files مرمَّزة" % r["id"])
 
     print("حجم index.jz: %d بايت" % os.path.getsize(IDX))
     print("النتيجة:", "نجح" if not errs else "فشل (%d)" % len(errs))

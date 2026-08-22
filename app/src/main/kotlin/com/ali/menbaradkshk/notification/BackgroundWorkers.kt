@@ -13,11 +13,13 @@ import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequest
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.ali.menbaradkshk.MainActivity
 import com.ali.menbaradkshk.R
+import com.ali.menbaradkshk.data.AdhkarReminders
 import com.ali.menbaradkshk.data.ContentRepository
 import com.ali.menbaradkshk.data.DownloadRepository
 import com.ali.menbaradkshk.data.LocalStore
@@ -183,7 +185,7 @@ class UpdateCheckWorker(
         config.markNotified(latest)
         NotificationPublisher.show(
             applicationContext,
-            id = 950,
+            id = MinbarMessagingService.UPDATE_NOTIFICATION_ID,
             title = "تتوفّر نسخة أحدث من منبر ادكصهك",
             body = message.ifBlank { "حدِّث التطبيق لتصلك المزايا والإصلاحات الجديدة." },
             destination = com.ali.menbaradkshk.data.AppConfigRepository.PLAY_URL,
@@ -209,17 +211,12 @@ object BackgroundScheduler {
     }
 
     /// أربعة تذكيرات مستقلّة، لكلٍّ عملٌ دوريّ يوميّ واحد يُلغى فور إيقافه.
-    /// الافتراضات: الصباح ٦:٣٠، المساء ١٧:٣٠، النوم ٢٢:٠٠، الاستيقاظ ٥:٣٠.
+    /// المواعيد الافتراضيّة من [AdhkarReminders] وحده — كانت مكرَّرة هنا وفي
+    /// شاشة التذكيرات، فأي تعديل في أحدهما يجعل المعروض غير المُجدوَل.
     fun scheduleAdhkar(context: Context) {
         val manager = WorkManager.getInstance(context)
         val store = LocalStore.get(context)
-        val defaults = mapOf(
-            "morning" to (6 to 30),
-            "evening" to (17 to 30),
-            "sleep" to (22 to 0),
-            "wake" to (5 to 30),
-        )
-        defaults.forEach { (kind, default) ->
+        AdhkarReminders.DEFAULTS.forEach { (kind, default) ->
             val work = "adhkar_$kind"
             if (!store.adhkarReminder(kind)) {
                 manager.cancelUniqueWork(work)
@@ -227,8 +224,10 @@ object BackgroundScheduler {
             }
             val hour = store.adhkarReminderHour(kind, default.first)
             val minute = store.adhkarReminderMinute(kind, default.second)
+            val delay = delayUntil(hour, minute)
             val request = PeriodicWorkRequestBuilder<AdhkarReminderWorker>(24, TimeUnit.HOURS)
-                .setInitialDelay(delayUntil(hour, minute), TimeUnit.MILLISECONDS)
+                .setInitialDelay(delay, TimeUnit.MILLISECONDS)
+                .pinNextRun(delay)
                 .setInputData(
                     androidx.work.Data.Builder()
                         .putString(AdhkarReminderWorker.KEY_KIND, kind)
@@ -262,8 +261,10 @@ object BackgroundScheduler {
             manager.cancelUniqueWork(CONTINUE_WORK)
             return
         }
+        val delay = delayUntil(19, 0)
         val request = PeriodicWorkRequestBuilder<ContinueReminderWorker>(24, TimeUnit.HOURS)
-            .setInitialDelay(delayUntil(19, 0), TimeUnit.MILLISECONDS)
+            .setInitialDelay(delay, TimeUnit.MILLISECONDS)
+            .pinNextRun(delay)
             .build()
         manager.enqueueUniquePeriodicWork(
             CONTINUE_WORK,
@@ -279,11 +280,10 @@ object BackgroundScheduler {
             manager.cancelUniqueWork(WARD_WORK)
             return
         }
+        val delay = delayUntil(store.wardHour(), store.wardMinute())
         val request = PeriodicWorkRequestBuilder<WardWorker>(24, TimeUnit.HOURS)
-            .setInitialDelay(
-                delayUntil(store.wardHour(), store.wardMinute()),
-                TimeUnit.MILLISECONDS,
-            )
+            .setInitialDelay(delay, TimeUnit.MILLISECONDS)
+            .pinNextRun(delay)
             .build()
         manager.enqueueUniquePeriodicWork(WARD_WORK, ExistingPeriodicWorkPolicy.UPDATE, request)
     }
@@ -309,6 +309,15 @@ object BackgroundScheduler {
             request,
         )
     }
+
+    /// ⚠️ الموعد التالي يُثبَّت صراحةً في **كل** جدولة ولا يُترك لحساب
+    /// WorkManager: سياسة `UPDATE` تُبقي `lastEnqueueTime` و`periodCount`
+    /// القديمين، و`initialDelay` لا يُحتسب إلا في الدورة الأولى — فكان تغيير
+    /// وقت التذكير لا يُطبَّق أبداً بعد أوّل تشغيل، وكان كل تأخير من وضع
+    /// الغفوة يتراكم في الموعد بلا رجعة. ولا نلجأ إلى
+    /// `CANCEL_AND_REENQUEUE` لأنّها تُلغي تذكيراً معلّقاً لم يُطلق بعد.
+    private fun PeriodicWorkRequest.Builder.pinNextRun(delayMs: Long): PeriodicWorkRequest.Builder =
+        setNextScheduleTimeOverride(System.currentTimeMillis() + delayMs)
 
     private fun delayUntil(hour: Int, minute: Int): Long {
         val now = ZonedDateTime.now()

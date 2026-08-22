@@ -109,7 +109,6 @@ data class Lesson(
     val featured: Boolean = false,
     /** نهاية مدّة التمييز (0 = دائم) — بانقضائها يسقط من «مختارات المنبر». */
     val featuredUntilMs: Long = 0L,
-    val publishAtMs: Long? = null,
 ) {
     /// العنوان كما يُعرض: أي عنوان غير فارغ يُحترم مهما قصر («صوم»، «حج»)،
     /// ولا يُستبدل باسم المتحدّث إلا حين لا عنوان أصلاً.
@@ -118,8 +117,9 @@ data class Lesson(
             ?: speaker.trim().takeIf { it.isNotEmpty() }
             ?: "درس صوتي"
 
-    val isPublished: Boolean
-        get() = publishAtMs == null || publishAtMs <= System.currentTimeMillis()
+    // ⛔ النشر المجدول أُزيل من المنظومة كلّها: لا خيار له في اللوحة، ولا دالّة
+    // سحابيّة تنشره، ولا وثيقة في القاعدة تحمل موعداً. فلا حقل `publishAt`
+    // هنا ولا `isPublished` — كلّ ما يصل من الخادم منشور.
 
     fun toJson(): JSONObject = JSONObject()
         .put("_id", id)
@@ -134,7 +134,6 @@ data class Lesson(
         .put("durationMs", durationMs)
         .put("featured", featured)
         .put("featuredUntilMs", featuredUntilMs)
-        .apply { publishAtMs?.let { put("publishAt", it) } }
 
     companion object {
         private fun subcategoryId(data: Map<String, Any?>): String {
@@ -145,7 +144,6 @@ data class Lesson(
 
         fun fromMap(id: String, raw: Map<String, Any?>): Lesson {
             val data = unwrap(raw)
-            val publishAt = data["publishAt"]?.timeMillis()?.takeIf { it > 0L }
             return Lesson(
                 id = id,
                 title = data["title"].text().ifEmpty { data["name"].text() },
@@ -159,7 +157,6 @@ data class Lesson(
                 durationMs = (data["durationMs"] ?: data["duration"]).longValue(),
                 featured = data["featured"] == true,
                 featuredUntilMs = data["featuredUntil"].timeMillis(),
-                publishAtMs = publishAt,
             )
         }
 
@@ -181,7 +178,6 @@ data class Lesson(
                 ?: json.opt("duration").longValue(),
             featured = json.optBoolean("featured", false),
             featuredUntilMs = json.optLong("featuredUntilMs", 0L),
-            publishAtMs = json.opt("publishAt").timeMillis().takeIf { it > 0L },
         )
     }
 }

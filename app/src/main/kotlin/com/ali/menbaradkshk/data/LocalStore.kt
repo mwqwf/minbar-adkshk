@@ -23,13 +23,33 @@ import java.util.UUID
 class LocalStore private constructor(context: Context) {
     private val appContext = context.applicationContext
     private val preferences = appContext.getSharedPreferences(NATIVE_FILE, Context.MODE_PRIVATE)
+
+    /// ⚠️ كاش المحتوى في **ملفّ مستقلّ**: كان يسكن ملفّ التفضيلات نفسه، فكانت
+    /// كل كتابة شخصيّة صغيرة (الموضع والمدّة تُكتبان كل بضع ثوانٍ أثناء
+    /// التشغيل) تُعيد تسلسل مئات الكيلوبايتات من الدروس معها إلى القرص. لا
+    /// تُعِد مفاتيح `cache_*` إلى `preferences` مهما بدا توحيد الملفّين أبسط.
+    private val cachePrefs = appContext.getSharedPreferences(CACHE_FILE, Context.MODE_PRIVATE)
     private val legacy = appContext.getSharedPreferences(FLUTTER_FILE, Context.MODE_PRIVATE)
+
+    /// لقطة واحدة من ملفّ فلاتر القديم: `getAll()` تنسخ الخريطة كاملةً عند كل
+    /// نداء، وكانت تُنفَّذ في كل قراءة. تُبطَل عند أي كتابة على الملفّ القديم.
+    @Volatile
+    private var legacySnapshot: Map<String, Any?>? = null
     private val _revision = MutableStateFlow(0L)
     val revision: StateFlow<Long> = _revision.asStateFlow()
 
+    /// نبض مستقلّ لما يتغيّر أثناء التشغيل وحده (الموضع والثواني المستمعة):
+    /// من يحتاجه يراقبه، ومن لا يحتاجه لا يُعاد حسابه كل خمس ثوانٍ.
+    private val _positionRevision = MutableStateFlow(0L)
+    val positionRevision: StateFlow<Long> = _positionRevision.asStateFlow()
+
     init {
         migrateFromFlutter()
-        repairDownloadIndex()
+        migrateCacheToOwnFile()
+        // ⛔ `repairDownloadIndex` لا تُنادى هنا: كانت تفحص كل ملفّ منزَّل على
+        // القرص في **كل** إقلاع وعلى الخيط الرئيسي بلا فائدة (كل قارئ للمسار
+        // يتحقّق من الملفّ بنفسه). صارت تُنفَّذ ضمن `pruneDownloads` بعد
+        // المزامنة الناجحة — على خيط خلفيّ.
     }
 
     private fun migrateFromFlutter() {
@@ -61,15 +81,48 @@ class LocalStore private constructor(context: Context) {
             .commit()
     }
 
+    /// ينقل كاش المحتوى مرّةً واحدةً من ملفّ التفضيلات إلى ملفّه الخاصّ، ثم
+    /// يمسحه من القديم. النقل لا الإفراغ: من فتح التطبيق بلا شبكة بعد التحديث
+    /// يجب أن يجد مكتبته كما تركها.
+    private fun migrateCacheToOwnFile() {
+        if (cachePrefs.getBoolean(CACHE_MIGRATED_KEY, false)) return
+        val editor = cachePrefs.edit()
+        val cleanup = preferences.edit()
+        listOf(KEY_CACHE_CATEGORIES, KEY_CACHE_SUBCATEGORIES, KEY_CACHE_LESSONS).forEach { key ->
+            val value = (raw(key) as? String)?.let { decodeFlutterStringList(it) ?: it }
+            if (!value.isNullOrEmpty()) editor.putString(key, value)
+            cleanup.remove(key)
+        }
+        editor.putBoolean(CACHE_MIGRATED_KEY, true).apply()
+        cleanup.apply()
+    }
+
     private fun decodeFlutterStringList(value: String): String? {
         if (!value.startsWith(JSON_LIST_PREFIX)) return null
         val json = value.removePrefix(JSON_LIST_PREFIX)
         return runCatching { JSONArray(json).toString() }.getOrNull()
     }
 
+    /// ⚠️ لا تُعِد `preferences.all[key]` هنا: `getAll()` تبني نسخةً كاملةً من
+    /// خريطة الملفّ عند **كل** قراءة، وصفوف القوائم تقرأ الموضع والمدّة لكل
+    /// درس ظاهر أثناء التشغيل. القراءة النوعيّة لا تنسخ شيئاً.
     private fun raw(key: String): Any? {
-        if (preferences.contains(key)) return preferences.all[key]
-        return legacy.all["$FLUTTER_PREFIX$key"]
+        if (preferences.contains(key)) return prefValue(key)
+        return legacyValue(key)
+    }
+
+    /// نوع المفتاح الواحد قد يختلف بحسب ما هاجر من فلاتر، فتُجرَّب الأنواع
+    /// بالترتيب — والنصّ أوّلاً لأنّ أغلب قيمنا JSON مُسلسل.
+    private fun prefValue(key: String): Any? =
+        runCatching { preferences.getString(key, null) }.getOrNull()
+            ?: runCatching { preferences.getLong(key, 0L) }.getOrNull()
+            ?: runCatching { preferences.getBoolean(key, false) }.getOrNull()
+            ?: runCatching { preferences.getFloat(key, 0f) }.getOrNull()
+            ?: runCatching { preferences.getInt(key, 0) }.getOrNull()
+
+    private fun legacyValue(key: String): Any? {
+        val snapshot = legacySnapshot ?: legacy.all.also { legacySnapshot = it }
+        return snapshot["$FLUTTER_PREFIX$key"]
     }
 
     private fun string(key: String, default: String = ""): String =
@@ -105,6 +158,15 @@ class LocalStore private constructor(context: Context) {
         _revision.value += 1L
     }
 
+    /// ⚠️ كتابة لا تُحرّك [revision]: الموضع والثواني المستمعة تُكتبان كل خمس
+    /// ثوانٍ أثناء التشغيل، وكل رفعة لـ`revision` تُبطل كل `remember(revision,…)`
+    /// في الواجهة فيُعاد حساب الفهرس كلّه مرّتين في كل نبضة. تبقى [write] لكلّ
+    /// ما يراه المستخدم فوراً (مفضّلة/تنزيل/قائمة/إعداد/إتمام درس).
+    private fun writeQuiet(block: SharedPreferences.Editor.() -> Unit) {
+        preferences.edit().apply(block).apply()
+        _positionRevision.value += 1L
+    }
+
     private fun jsonArray(key: String): JSONArray =
         runCatching { JSONArray(string(key, "[]")) }.getOrElse { JSONArray() }
 
@@ -113,17 +175,27 @@ class LocalStore private constructor(context: Context) {
 
     private fun putJson(key: String, value: Any) = write { putString(key, value.toString()) }
 
-    fun categories(): List<Category> = jsonArray(KEY_CACHE_CATEGORIES).objects(Category::fromJson)
+    /// كاش المحتوى يُقرأ ويُكتب من ملفّه وحده — انظر تعليق [cachePrefs].
+    private fun cacheArray(key: String): JSONArray =
+        runCatching { JSONArray(cachePrefs.getString(key, "[]") ?: "[]") }
+            .getOrElse { JSONArray() }
+
+    private fun putCache(key: String, value: JSONArray) {
+        cachePrefs.edit().putString(key, value.toString()).apply()
+        _revision.value += 1L
+    }
+
+    fun categories(): List<Category> = cacheArray(KEY_CACHE_CATEGORIES).objects(Category::fromJson)
     fun subcategories(): List<Subcategory> =
-        jsonArray(KEY_CACHE_SUBCATEGORIES).objects(Subcategory::fromJson)
-    fun lessons(): List<Lesson> = jsonArray(KEY_CACHE_LESSONS).objects(Lesson::fromJson)
+        cacheArray(KEY_CACHE_SUBCATEGORIES).objects(Subcategory::fromJson)
+    fun lessons(): List<Lesson> = cacheArray(KEY_CACHE_LESSONS).objects(Lesson::fromJson)
 
     fun setCategories(items: List<Category>) =
-        putJson(KEY_CACHE_CATEGORIES, JSONArray(items.map(Category::toJson)))
+        putCache(KEY_CACHE_CATEGORIES, JSONArray(items.map(Category::toJson)))
     fun setSubcategories(items: List<Subcategory>) =
-        putJson(KEY_CACHE_SUBCATEGORIES, JSONArray(items.map(Subcategory::toJson)))
+        putCache(KEY_CACHE_SUBCATEGORIES, JSONArray(items.map(Subcategory::toJson)))
     fun setLessons(items: List<Lesson>) =
-        putJson(KEY_CACHE_LESSONS, JSONArray(items.map(Lesson::toJson)))
+        putCache(KEY_CACHE_LESSONS, JSONArray(items.map(Lesson::toJson)))
 
     fun lastSyncMs(): Long = long(KEY_LAST_SYNC)
     fun setLastSyncMs(value: Long) = write { putLong(KEY_LAST_SYNC, value) }
@@ -141,11 +213,16 @@ class LocalStore private constructor(context: Context) {
     /// يحذف تنزيلات دروس لم تعد موجودة في الفهرس (ملفات يتيمة تستهلك المساحة).
     /// يُستدعى بعد مزامنة ناجحة فقط كي لا تُحذف عند فشل الجلب.
     fun pruneDownloads(validIds: Set<String>): Int {
+        // موضع تنظيف الفهرس: هنا (خيط خلفيّ بعد مزامنة) لا في الإقلاع.
+        repairDownloadIndex()
         val orphans = downloads().filterKeys { it !in validIds }
-        orphans.forEach { (id, path) ->
-            runCatching { File(path).delete() }
-            removeDownload(id)
-        }
+        if (orphans.isEmpty()) return 0
+        orphans.values.forEach { runCatching { File(it).delete() } }
+        // ⚠️ كتابة **واحدة** لا واحدة لكل يتيم: كل كتابة تُعيد تسلسل الملفّ
+        // كلّه وترفع `revision` فتُبطل كل `remember(revision, …)` في الواجهة.
+        val json = jsonObject(KEY_DOWNLOADS)
+        orphans.keys.forEach { json.remove(it) }
+        putJson(KEY_DOWNLOADS, json)
         return orphans.size
     }
 
@@ -167,6 +244,10 @@ class LocalStore private constructor(context: Context) {
     fun intMap(key: String): Map<String, Long> = jsonObject(key).longMap()
     private fun setIntMap(key: String, value: Map<String, Long>) =
         putJson(key, JSONObject(value))
+    /// نظيرة [setIntMap] بلا رفع [revision] — للخرائط التي تُكتب دورياً أثناء
+    /// التشغيل وحده (المواضع والثواني اليوميّة). انظر [writeQuiet].
+    private fun setIntMapQuiet(key: String, value: Map<String, Long>) =
+        writeQuiet { putString(key, JSONObject(value).toString()) }
     fun stringList(key: String): List<String> = jsonArray(key).strings()
     private fun setStringList(key: String, value: List<String>) =
         putJson(key, JSONArray(value))
@@ -202,10 +283,12 @@ class LocalStore private constructor(context: Context) {
 
     fun positions(): Map<String, Long> = intMap(KEY_POSITIONS)
     fun position(lessonId: String): Long = positions()[lessonId] ?: 0L
+    /// ⚠️ كتابة صامتة: هذه تُنفَّذ كل خمس ثوانٍ طوال التشغيل، ورفع [revision]
+    /// معها كان يُعيد حساب الفهرس كلّه في كل نبضة. انظر [writeQuiet].
     fun setPosition(lessonId: String, milliseconds: Long) {
         val values = positions().toMutableMap()
         if (milliseconds <= 0L) values.remove(lessonId) else values[lessonId] = milliseconds
-        setIntMap(KEY_POSITIONS, values)
+        setIntMapQuiet(KEY_POSITIONS, values)
     }
 
     fun completedIds(): List<String> = stringList(KEY_COMPLETED)
@@ -215,7 +298,10 @@ class LocalStore private constructor(context: Context) {
             values += lessonId
             setStringList(KEY_COMPLETED, values)
         }
-        setPosition(lessonId, 0L)
+        // ⚠️ تصفير الموضع هنا بكتابة **مرئيّة** لا بـ[setPosition] الصامتة:
+        // إتمام الدرس يراه المستخدم فوراً في شريط تقدّم الصفّ.
+        val remaining = positions().toMutableMap()
+        if (remaining.remove(lessonId) != null) setIntMap(KEY_POSITIONS, remaining)
         recordDailyListen()
     }
 
@@ -551,14 +637,10 @@ class LocalStore private constructor(context: Context) {
         setIntMap("adhkar_counts", values)
     }
 
-    /// سلسلة أيام المداومة على الأذكار (تُحدَّث عند إتمام أي قسم).
-    fun adhkarStreak(): Int = long("adhkar_streak").toInt()
-
-    fun noteAdhkarCompletion() {
-        val today = adhkarDayKey()
-        val last = string("adhkar_streak_day", "")
-        if (last == today) return
-        val yesterday = java.util.Calendar.getInstance().apply {
+    /// مفتاح الأمس — مشترك بين تحديث السلسلة وقراءتها الحيّة كي لا يفترق
+    /// حسابُ «هل السلسلة متّصلة؟» في الموضعين.
+    private fun adhkarYesterdayKey(): String =
+        java.util.Calendar.getInstance().apply {
             add(java.util.Calendar.DAY_OF_YEAR, -1)
         }.let {
             "%04d-%02d-%02d".format(
@@ -567,6 +649,24 @@ class LocalStore private constructor(context: Context) {
                 it.get(java.util.Calendar.DAY_OF_MONTH),
             )
         }
+
+    /// سلسلة أيام المداومة على الأذكار (تُحدَّث عند إتمام أي قسم).
+    fun adhkarStreak(): Int = long("adhkar_streak").toInt()
+
+    /// ⚠️ للعرض تُستعمل هذه لا [adhkarStreak]: القيمة المخزَّنة لا تُصفَّر إلّا
+    /// عند أوّل إتمام بعد الانقطاع، فمن ترك الأذكار أسبوعاً كان يرى «مداومتك…»
+    /// كأنّها متّصلة. السلسلة حيّة فقط إن كان آخر إتمام اليوم أو الأمس.
+    fun adhkarStreakLive(): Int {
+        val last = string("adhkar_streak_day", "")
+        val alive = last == adhkarDayKey() || last == adhkarYesterdayKey()
+        return if (alive) adhkarStreak() else 0
+    }
+
+    fun noteAdhkarCompletion() {
+        val today = adhkarDayKey()
+        val last = string("adhkar_streak_day", "")
+        if (last == today) return
+        val yesterday = adhkarYesterdayKey()
         val next = if (last == yesterday) adhkarStreak() + 1 else 1
         write {
             putString("adhkar_streak_day", today)
@@ -711,6 +811,8 @@ class LocalStore private constructor(context: Context) {
     fun setWeeklyGoalMinutes(value: Int) =
         write { putLong(KEY_WEEKLY_GOAL, value.coerceAtLeast(0).toLong()) }
     fun dailySeconds(): Map<String, Long> = intMap(KEY_DAILY_SECONDS)
+    /// ⚠️ كتابة صامتة كنظيرتها في [setPosition]: تُنادى كل خمس ثوانٍ أثناء
+    /// التشغيل. انظر [writeQuiet].
     fun addListenSeconds(seconds: Long) {
         if (seconds <= 0L) return
         val values = dailySeconds().toMutableMap()
@@ -720,7 +822,7 @@ class LocalStore private constructor(context: Context) {
             .sortedByDescending { parseLegacyDate(it) ?: LocalDate.MIN }
             .drop(120)
             .forEach { values.remove(it) }
-        setIntMap(KEY_DAILY_SECONDS, values)
+        setIntMapQuiet(KEY_DAILY_SECONDS, values)
     }
     fun todaySeconds(): Long = dailySeconds()[todayKey()] ?: 0L
     fun totalSeconds(): Long = dailySeconds().values.sum()
@@ -885,6 +987,8 @@ class LocalStore private constructor(context: Context) {
         val legacyEditor = legacy.edit()
         PERSONAL_KEYS.forEach { legacyEditor.remove("$FLUTTER_PREFIX$it") }
         legacyEditor.apply()
+        // ⛔ اللقطة تُبطَل هنا وإلّا عادت القيم الممحوّة من الملفّ القديم للظهور.
+        legacySnapshot = null
         _revision.value += 1L
     }
 
@@ -917,6 +1021,9 @@ class LocalStore private constructor(context: Context) {
 
     companion object {
         private const val NATIVE_FILE = "minbar_native_preferences"
+        /// ملفّ كاش المحتوى الثقيل — مفصول عن الحالة الساخنة عمداً.
+        private const val CACHE_FILE = "minbar_content_cache"
+        private const val CACHE_MIGRATED_KEY = "_cache_split_v1"
         private const val FLUTTER_FILE = "FlutterSharedPreferences"
         private const val FLUTTER_PREFIX = "flutter."
         private const val MIGRATED_KEY = "_native_migration_v1"
@@ -1030,6 +1137,15 @@ class LocalStore private constructor(context: Context) {
             KEY_WEEKLY_GOAL,
             KEY_KNOWN_SUBMISSION_STATUSES,
             KEY_SUBMITTER_NAME,
+            // ⚠️ علامات المصحف وموضع القراءة وعدّادات الأذكار وسلسلتها بيانات
+            // شخصيّة بحتة يكتبها المستخدم بنفسه؛ كانت تنجو من «حذف بياناتي»
+            // فيبقى «تابع القراءة» وعلاماته بعد وعدٍ صريح بمحو كل شيء.
+            KEY_QURAN_BOOKMARKS,
+            KEY_QURAN_LAST,
+            "adhkar_counts",
+            "adhkar_day",
+            "adhkar_streak",
+            "adhkar_streak_day",
         )
 
         @Volatile

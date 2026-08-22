@@ -93,6 +93,11 @@ object DownloadScheduler {
     @androidx.annotation.RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     private fun scheduleUserInitiated(context: Context, wifiOnly: Boolean): Boolean = runCatching {
         val scheduler = context.getSystemService(JobScheduler::class.java) ?: return false
+        // ⚠️ جدولة المعرّف نفسه **توقف** الوظيفة الجارية وتستبدلها: كانت كل
+        // ضغطة تحميل تقتل تنزيلاً قائماً، ثم يفشل قفل المعالجة في الوظيفة
+        // الجديدة فتُؤجَّل بمهلة تراجعيّة. الطابور يُقرأ من القرص في كل تكرار
+        // فالعنصر الجديد يُلتقط بلا إعادة جدولة — إلا حين يلزم قيد الواي فاي.
+        if (!wifiOnly && LessonDownloadJobService.isRunning) return true
         val network = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)

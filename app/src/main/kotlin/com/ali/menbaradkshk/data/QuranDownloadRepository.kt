@@ -1,11 +1,14 @@
 package com.ali.menbaradkshk.data
 
 import android.content.Context
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.HttpURLConnection
@@ -45,6 +48,20 @@ class QuranDownloadRepository private constructor(context: Context) {
     private val _revision = MutableStateFlow(0L)
     val revision: StateFlow<Long> = _revision.asStateFlow()
 
+    /// ⚠️ نطاق خاصّ بالحذف: `deleteRecursively` على تنزيلات قارئٍ «آية بآية»
+    /// يمرّ على آلاف الملفّات، وكان يقع على خيط الواجهة من نقرة التأكيد
+    /// مباشرةً فتتجمّد الشاشة. والنطاق مستقلّ عن الشاشة كي لا يُقطع حذفٌ بدأ.
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /// يحذف على خيط الإدخال/الإخراج ثمّ يرفع المراجعة — الترتيب مقصود كي
+    /// تُعيد الواجهة حساب الحجم بعد اختفاء الملفّات لا قبله.
+    private fun purge(block: () -> Unit) {
+        ioScope.launch {
+            block()
+            _revision.value++
+        }
+    }
+
     private fun rootFor(reciterId: String): File =
         File(File(app.filesDir, DIR), reciterId)
 
@@ -82,16 +99,26 @@ class QuranDownloadRepository private constructor(context: Context) {
     fun bytesFor(reciterId: String): Long =
         rootFor(reciterId).walkBottomUp().filter { it.isFile }.sumOf { it.length() }
 
-    fun deleteSurah(reciterId: String, surah: Int) {
+    fun deleteSurah(reciterId: String, surah: Int) = purge {
         dirFor(reciterId, surah).deleteRecursively()
         // مجلّد القارئ الفارغ يُزال أيضاً كي لا تتراكم مجلّدات خاوية.
         rootFor(reciterId).takeIf { it.isDirectory && it.list()?.isEmpty() == true }?.delete()
-        _revision.value++
     }
 
-    fun deleteAll() {
+    /**
+     * حذف تنزيلات **قارئ واحد**.
+     *
+     * ⚠️ هذا ما تحتاجه الواجهة عملياً: الحجم المعروض في الحوار محسوبٌ
+     * بـ[bytesFor] لقارئٍ بعينه، فلو حذفنا الجميع لكان الوعد المكتوب مخالفاً
+     * للفعل — يخسر المستخدم تنزيلاتِ قرّاء لم يسأله أحدٌ عنهم.
+     */
+    fun deleteReciter(reciterId: String) = purge {
+        rootFor(reciterId).deleteRecursively()
+    }
+
+    /// حذف تلاوات **كل** القرّاء — لا تستعملها إلا حيث يقول النصّ ذلك صراحةً.
+    fun deleteAll() = purge {
         File(app.filesDir, DIR).deleteRecursively()
-        _revision.value++
     }
 
     /**
@@ -161,9 +188,8 @@ class QuranDownloadRepository private constructor(context: Context) {
     fun pagesBytes(riwayaId: String): Long =
         pagesDir(riwayaId).walkBottomUp().filter { it.isFile }.sumOf { it.length() }
 
-    fun deletePages(riwayaId: String) {
+    fun deletePages(riwayaId: String) = purge {
         pagesDir(riwayaId).deleteRecursively()
-        _revision.value++
     }
 
     /**
@@ -192,7 +218,17 @@ class QuranDownloadRepository private constructor(context: Context) {
         }
     }
 
-    private fun fetch(url: String, target: File) {
+    /**
+     * جلب ملفّ واحد إلى مسار مؤقّت ثم إعادة تسميته.
+     *
+     * ⚠️ **النسخ يدويّ بفحص إلغاء مع كل حزمة** لا `input.copyTo`: إلغاء
+     * الكوروتين لا يقاطع خيطاً محجوزاً في `read()`، وكان الفحص الوحيد **بين**
+     * الملفّات — فمن ضغط «إيقاف» على تنزيل قارئٍ بملفّ سورة كاملة (عشرات
+     * الميغابايتات في ملفّ واحد) تُقال له «أُوقف التنزيل» بينما بياناته تُستهلك
+     * إلى آخر بايت، ثم يُحذف المؤقّت فيذهب كلّه هدراً. (القاعدة نفسها مطبَّقة
+     * في [DownloadRepository].)
+     */
+    private suspend fun fetch(url: String, target: File) {
         val temp = File(target.parentFile, target.name + ".part")
         var connection: HttpURLConnection? = null
         try {
@@ -210,7 +246,15 @@ class QuranDownloadRepository private constructor(context: Context) {
                 throw java.io.IOException("HTTP ${connection.responseCode}")
             }
             connection.inputStream.use { input ->
-                temp.outputStream().use { output -> input.copyTo(output, DEFAULT_BUFFER_SIZE) }
+                temp.outputStream().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        coroutineContext.ensureActive()
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                    }
+                }
             }
             if (temp.length() <= 0L) throw java.io.IOException("ملفّ فارغ")
             if (!temp.renameTo(target)) throw java.io.IOException("تعذّر حفظ الملف")

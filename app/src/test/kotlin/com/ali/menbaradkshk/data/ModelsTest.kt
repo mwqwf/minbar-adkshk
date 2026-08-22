@@ -1,7 +1,6 @@
 package com.ali.menbaradkshk.data
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -27,17 +26,4 @@ class ModelsTest {
         assertTrue(lesson.featured)
     }
 
-    @Test
-    fun futureScheduledLessonIsNotPublished() {
-        val future = Lesson(
-            id = "future",
-            title = "لاحقًا",
-            categoryId = "",
-            subcategoryId = "",
-            audioUrl = "https://example.test/future.mp3",
-            createdAtMs = 1L,
-            publishAtMs = System.currentTimeMillis() + 60_000L,
-        )
-        assertFalse(future.isPublished)
-    }
 }

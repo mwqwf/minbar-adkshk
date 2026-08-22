@@ -286,7 +286,10 @@ private fun HistoryTab(vm: AppViewModel, playback: PlaybackUiState) {
                     modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 2.dp),
                 )
             }
-            items(lessons, key = { "${it.id}-$revision" }) { lesson ->
+            // ⛔ لا `revision` في المفتاح: تبدّله كان يهدم تركيبة الصفّ ومعها
+            // حالة السحب للإخفاء، فينكفئ أيّ سحب جارٍ. القيم الملتقَطة
+            // (`positions`/`completed`) تكفي لتحديث الصفّ.
+            items(lessons, key = { it.id }) { lesson ->
                 val dismissState = rememberSwipeToDismissBoxState(
                     confirmValueChange = { value ->
                         if (value != SwipeToDismissBoxValue.Settled) {
@@ -436,7 +439,8 @@ fun PlaylistDetailScreen(vm: AppViewModel, playlistId: String) {
                 )
             }
         }
-        itemsIndexed(lessons, key = { _, lesson -> "${lesson.id}-$revision" }) { index, lesson ->
+        // ⛔ لا `revision` في المفتاح — يهدم تركيبة الصفّ بلا داعٍ.
+        itemsIndexed(lessons, key = { _, lesson -> lesson.id }) { index, lesson ->
             val duration = lesson.durationMs.takeIf { it > 0L } ?: (durations[lesson.id] ?: 0L)
             Card(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp)) {
                 ListItem(
@@ -513,10 +517,12 @@ fun PlaylistDetailScreen(vm: AppViewModel, playlistId: String) {
     }
 }
 
+// Locale.ROOT صراحةً: صيغة الجهاز العربية كانت تخلط أرقاماً هندية وفاصلاً
+// عشرياً ٫ مع GB اللاتينية في سطر RTL واحد (نفس علّة SettingsSheet).
 private fun formatBytes(bytes: Long): String = when {
-    bytes >= 1_073_741_824L -> "%.1f GB".format(bytes / 1_073_741_824.0)
-    bytes >= 1_048_576L -> "%.0f MB".format(bytes / 1_048_576.0)
-    bytes >= 1_024L -> "%.0f KB".format(bytes / 1_024.0)
+    bytes >= 1_073_741_824L -> "%.1f GB".format(java.util.Locale.ROOT, bytes / 1_073_741_824.0)
+    bytes >= 1_048_576L -> "%.0f MB".format(java.util.Locale.ROOT, bytes / 1_048_576.0)
+    bytes >= 1_024L -> "%.0f KB".format(java.util.Locale.ROOT, bytes / 1_024.0)
     else -> "$bytes B"
 }
 
@@ -683,7 +689,8 @@ fun DownloadsScreen(vm: AppViewModel) {
                         modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 14.dp, bottom = 4.dp),
                     )
                 }
-                items(lessons, key = { "${it.id}-$revision" }) { lesson ->
+                // ⛔ لا `revision` في المفتاح — يهدم تركيبة الصفّ بلا داعٍ.
+                items(lessons, key = { it.id }) { lesson ->
                     val duration = lesson.durationMs.takeIf { it > 0L } ?: (durations[lesson.id] ?: 0L)
                     Card(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp)) {
                         ListItem(
@@ -719,9 +726,20 @@ fun DownloadsScreen(vm: AppViewModel) {
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.titleMedium,
             )
+            // فهارس تُبنى مرّة واحدة: المسح بـfilter كان يتكرّر لكل قسم ولكل
+            // صفّ فرعي في كل إعادة تركيب للورقة.
+            val lessonsByCategory = remember(content.lessons) {
+                content.lessons.groupBy(com.ali.menbaradkshk.data.Lesson::categoryId)
+            }
+            val lessonsBySub = remember(content.lessons) {
+                content.lessons.groupBy(com.ali.menbaradkshk.data.Lesson::subcategoryId)
+            }
+            val subsByCategory = remember(content.subcategories) {
+                content.subcategories.groupBy(com.ali.menbaradkshk.data.Subcategory::categoryId)
+            }
             LazyColumn(contentPadding = PaddingValues(bottom = 32.dp)) {
                 content.categories.forEach { category ->
-                    val categoryLessons = content.lessons.filter { it.categoryId == category.id }
+                    val categoryLessons = lessonsByCategory[category.id].orEmpty()
                     item(key = "cat-${category.id}") {
                         ListItem(
                             modifier = Modifier.clickable {
@@ -738,9 +756,9 @@ fun DownloadsScreen(vm: AppViewModel) {
                             },
                         )
                     }
-                    val subs = content.subcategories.filter { it.categoryId == category.id }
+                    val subs = subsByCategory[category.id].orEmpty()
                     items(subs, key = { "sub-${it.id}" }) { sub ->
-                        val subLessons = content.lessons.filter { it.subcategoryId == sub.id }
+                        val subLessons = lessonsBySub[sub.id].orEmpty()
                         ListItem(
                             modifier = Modifier
                                 .padding(start = 24.dp)
@@ -804,7 +822,8 @@ fun FavoritesScreen(vm: AppViewModel, playback: PlaybackUiState) {
         return
     }
     LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
-        items(items, key = { "${it.id}-$revision" }) { lesson ->
+        // ⛔ لا `revision` في المفتاح — يهدم تركيبة الصفّ، و`AudioItem` يقرأه بنفسه.
+        items(items, key = { it.id }) { lesson ->
             AudioItem(vm, lesson, items, playback)
         }
     }

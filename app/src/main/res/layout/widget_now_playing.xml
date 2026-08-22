@@ -45,10 +45,16 @@
             android:textColor="#CCFFFFFF" />
     </LinearLayout>
 
+    <!-- 48dp مساحة لمسيّة والرسم يبقى 36dp بالحشو؛ كان 36dp صافية أي دون
+         الحدّ الموصى به. والصبغة الذهبيّة تُدخل أيقونة النظام في هوية منبر.
+         ⚠️ لا تستبدل src برسمة متجهية: minSdk=23 وRemoteViews لا تضمن
+         VectorDrawable قبل API 24، فيسقط تضخيم الودجت كلّه على 6.0. -->
     <ImageView
         android:id="@+id/widget_play"
-        android:layout_width="36dp"
-        android:layout_height="36dp"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:padding="6dp"
         android:src="@android:drawable/ic_media_play"
+        android:tint="#FDD459"
         android:contentDescription="@string/widget_play" />
 </LinearLayout>

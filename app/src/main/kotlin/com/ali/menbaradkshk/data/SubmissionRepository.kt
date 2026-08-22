@@ -18,6 +18,23 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.tasks.await
 import java.util.UUID
 
+/// هل الفشل عابر (شبكة/مهلة/عطل خادم لحظي) فيستحقّ محاولة ثانية؟
+/// مشتركة بين مساري المساهمة (الصوت والنص): إعادة استدعاء الدالّة بعد رفضٍ
+/// قاطع (حدّ يومي، فاصل أدنى، تحقّق) لا تُجدي وتؤخّر وصول سبب الرفض للمستخدم.
+internal fun isTransientFailure(failure: Throwable): Boolean {
+    val functionsFailure = failure as? com.google.firebase.functions.FirebaseFunctionsException
+        ?: failure.cause as? com.google.firebase.functions.FirebaseFunctionsException
+    return when (functionsFailure?.code) {
+        com.google.firebase.functions.FirebaseFunctionsException.Code.UNAVAILABLE,
+        com.google.firebase.functions.FirebaseFunctionsException.Code.DEADLINE_EXCEEDED,
+        com.google.firebase.functions.FirebaseFunctionsException.Code.INTERNAL,
+        -> true
+        // ليس خطأ دوالّ أصلاً: عابر فقط إن كان انقطاع إدخال/إخراج.
+        null -> generateSequence(failure) { it.cause }.take(5).any { it is java.io.IOException }
+        else -> false
+    }
+}
+
 data class SubmissionDraft(
     val audioUri: Uri,
     val fileName: String,
@@ -65,6 +82,10 @@ class SubmissionRepository private constructor(context: Context) {
             .mapIndexed { index, imageUri ->
                 val imageSize = appContext.contentResolver
                     .openAssetFileDescriptor(imageUri, "r")?.use { it.length } ?: -1L
+                // فصل السببين هنا أيضاً: حجم مجهول ليس «تجاوز الحدّ».
+                require(imageSize >= 0) {
+                    "تعذّرت قراءة صورة النص ${index + 1} — أعد اختيارها."
+                }
                 require(imageSize in 1..TranscriptRepository.MAX_IMAGE_BYTES) {
                     "حجم صورة النص ${index + 1} يتجاوز 10 ميجابايت."
                 }
@@ -144,7 +165,7 @@ class SubmissionRepository private constructor(context: Context) {
                 // إعادة المحاولة للأعطال العابرة فقط (انقطاع/مهلة/عطل لحظي):
                 // الرفض القاطع (حدّ يومي، فاصل أدنى، تحقّق) كان يُستدعى مرّتين
                 // بلا جدوى ويؤخّر وصول رسالة الرفض للمستخدم.
-                if (!isTransient(first)) throw first
+                if (!isTransientFailure(first)) throw first
                 kotlinx.coroutines.delay(1_500)
                 functions.getHttpsCallable("createSubmission").call(payload).await()
             }
@@ -175,21 +196,6 @@ class SubmissionRepository private constructor(context: Context) {
                 }
             }
             throw failure
-        }
-    }
-
-    /// هل الفشل عابر (شبكة/مهلة/عطل خادم لحظي) فيستحقّ محاولة ثانية؟
-    private fun isTransient(failure: Throwable): Boolean {
-        val functionsFailure = failure as? com.google.firebase.functions.FirebaseFunctionsException
-            ?: failure.cause as? com.google.firebase.functions.FirebaseFunctionsException
-        return when (functionsFailure?.code) {
-            com.google.firebase.functions.FirebaseFunctionsException.Code.UNAVAILABLE,
-            com.google.firebase.functions.FirebaseFunctionsException.Code.DEADLINE_EXCEEDED,
-            com.google.firebase.functions.FirebaseFunctionsException.Code.INTERNAL,
-            -> true
-            // ليس خطأ دوالّ أصلاً: عابر فقط إن كان انقطاع إدخال/إخراج.
-            null -> generateSequence(failure) { it.cause }.take(5).any { it is java.io.IOException }
-            else -> false
         }
     }
 

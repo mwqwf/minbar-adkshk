@@ -2,6 +2,7 @@ package com.ali.menbaradkshk.notification
 
 import android.Manifest
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -11,6 +12,7 @@ import androidx.core.content.ContextCompat
 import com.ali.menbaradkshk.MainActivity
 import com.ali.menbaradkshk.R
 import com.ali.menbaradkshk.data.LocalStore
+import com.ali.menbaradkshk.data.TranscriptRepository
 import com.ali.menbaradkshk.util.StoreRedirectActivity
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
@@ -22,11 +24,13 @@ class MinbarMessagingService : FirebaseMessagingService() {
         val title = message.notification?.title ?: message.data["title"] ?: getString(R.string.app_name)
         val body = message.notification?.body ?: message.data["body"].orEmpty()
         val destination = destinationFor(message.data)
+        invalidateTranscriptCache(this, message.data)
+        val update = isUpdate(message.data)
         // 🛒 إشعار الإصدار الجديد يقفز إلى المتجر مباشرة، لا إلى التطبيق:
         // فتح التطبيق ثم انتظار أن يعثر المستخدم على زرّ التحديث بنفسه هو
         // بالضبط ما يجعل نسخاً قديمة تبقى شهوراً. والرابط يبقى مخفياً في
         // النيّة — لا يراه المستخدم ولا يُطالَب بنسخه.
-        val intent = if (isUpdate(message.data)) {
+        val intent = if (update) {
             StoreRedirectActivity.intent(this, message.data["storeUrl"].orEmpty())
         } else {
             Intent(this, MainActivity::class.java).apply {
@@ -35,9 +39,16 @@ class MinbarMessagingService : FirebaseMessagingService() {
                 flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
         }
+        // ⚠️ إشعار التحديث بمعرّف `UpdateCheckWorker` نفسه: المعرّف المشتقّ من
+        // الزمن كان يجعل الإشعارين يتكدّسان للنسخة الواحدة بدل أن يحلّ أحدهما
+        // محلّ الآخر. وبقيّة الأنواع تبقى فريدة عمداً كي لا يُخفي بعضها بعضاً.
+        // ويلزم تمييز `requestCode` كذلك: وجهة التحديث فارغة، فكان يتصادم مع
+        // حمولة `manual` الفارغة الوجهة (كلتاهما hashCode = 0).
+        val uniqueId = (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
+        val notifId = if (update) UPDATE_NOTIFICATION_ID else uniqueId
         val pendingIntent = PendingIntent.getActivity(
             this,
-            destination.hashCode(),
+            if (update) UPDATE_NOTIFICATION_ID else destination.hashCode(),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -56,8 +67,7 @@ class MinbarMessagingService : FirebaseMessagingService() {
             PackageManager.PERMISSION_GRANTED
         ) return
         runCatching {
-            NotificationManagerCompat.from(this)
-                .notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notification)
+            NotificationManagerCompat.from(this).notify(notifId, notification)
         }
     }
 
@@ -75,6 +85,26 @@ class MinbarMessagingService : FirebaseMessagingService() {
          */
         fun isUpdate(data: Map<String, String>): Boolean =
             data["type"]?.trim() == "update" || data["route"]?.trim() == "store"
+
+        /**
+         * ⚠️ بشرى «اعتُمد نصّك» تُفرغ كاش النصّ المشروح لذلك الدرس.
+         *
+         * الكاش يخزّن النتيجة **الفارغة** أربعاً وعشرين ساعة (في الذاكرة
+         * والقرص معاً)، فكان نقر الإشعار يفتح الدرس فيقرأ فراغَ الأمس ولا
+         * يظهر النص إلا في اليوم التالي — وهي الوصلة التي كانت ناقصة، لا
+         * قرار تصميم. يُستدعى من مسارَي الإشعار كليهما: هذا المستقبل
+         * (التطبيق في المقدّمة) و`MainActivity` (النظام رسم الإشعار).
+         */
+        fun invalidateTranscriptCache(context: Context, data: Map<String, String>) {
+            if (data["type"]?.trim() != "transcript") return
+            val lessonId = (data["lessonId"] ?: data["lesson_id"])?.trim().orEmpty()
+            if (lessonId.isEmpty()) return
+            runCatching { TranscriptRepository.get(context).invalidate(lessonId) }
+        }
+
+        /// معرّف إشعار التحديث — واحد في التطبيق كلّه: يتقاسمه هذا المستقبل
+        /// و`UpdateCheckWorker` كي يحلّ أحدهما محلّ الآخر لا أن يتكدّسا.
+        const val UPDATE_NOTIFICATION_ID = 950
 
         /**
          * «الحمولة ← وجهة» — مصدر الحقيقة الوحيد للتوجيه، يستعمله هذا

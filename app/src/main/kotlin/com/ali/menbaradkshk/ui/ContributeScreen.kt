@@ -54,6 +54,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -66,6 +67,9 @@ import androidx.compose.ui.unit.dp
 import com.ali.menbaradkshk.data.TranscriptExtras
 import com.ali.menbaradkshk.util.AudioMerger
 import com.ali.menbaradkshk.util.smartTitleFromFileName
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class PickedFile(val uri: Uri, val name: String)
 
@@ -101,6 +105,7 @@ internal val uriStateListSaver = listSaver<SnapshotStateList<Uri>, String>(
 @Composable
 fun ContributeScreen(vm: AppViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
     val content by vm.content.state.collectAsState()
     val contribution by vm.contribution.collectAsState()
 
@@ -178,14 +183,20 @@ fun ContributeScreen(vm: AppViewModel) {
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        acceptFiles(
-            uris.map { uri ->
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        // ⚠️ كان استعلام المزوّد عن اسم كل ملف يقع على خيط الواجهة (استعلام
+        // IPC كامل لكل ملف حتى عشرة) — يطول مع المزوّدين السحابيين ويحجب
+        // الرسم. الضمّ نفسه يبقى على خيط الواجهة لأنه يمسّ حالة الشاشة.
+        scope.launch {
+            val named = withContext(Dispatchers.IO) {
+                uris.map { uri ->
+                    runCatching {
+                        context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    PickedFile(uri, displayNameOf(context, uri))
                 }
-                PickedFile(uri, displayNameOf(context, uri))
-            },
-        )
+            }
+            acceptFiles(named)
+        }
     }
 
     // ملفات وصلت من تطبيق خارجي عبر «المشاركة»: تُدرج فور جاهزيتها،
@@ -680,8 +691,11 @@ fun ContributeScreen(vm: AppViewModel) {
 }
 
 /// اسم الملف المعروض (يستعمله أيضاً استقبال «المشاركة» في الـViewModel).
+/// المشروع محصور بعمود الاسم: `null` كان يجلب كل أعمدة المزوّد عبر IPC لكل ملف.
+private val displayNameProjection = arrayOf(android.provider.OpenableColumns.DISPLAY_NAME)
+
 internal fun displayNameOf(context: android.content.Context, uri: Uri): String {
-    context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+    context.contentResolver.query(uri, displayNameProjection, null, null, null)?.use { cursor ->
         val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
         if (index >= 0 && cursor.moveToFirst()) {
             cursor.getString(index)?.let { return it }

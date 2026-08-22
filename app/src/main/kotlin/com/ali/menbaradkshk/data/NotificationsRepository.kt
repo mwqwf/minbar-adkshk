@@ -130,16 +130,26 @@ class NotificationsRepository(
         )
     }
 
-    private fun fromDocument(id: String, document: DocumentSnapshot) = NotificationItem(
+    private fun fromDocument(id: String, document: DocumentSnapshot): NotificationItem {
+        // حمولة الإشعار كما أرسلها الخادم — الوثيقة تحفظها كاملةً في `data`،
+        // وفيها وحدها الوجهة الصريحة التي يقرأها مستقبِل FCM.
+        @Suppress("UNCHECKED_CAST")
+        val payload = document.get("data") as? Map<String, Any?> ?: emptyMap()
+        fun payloadString(key: String): String =
+            (payload[key] as? String)?.trim().orEmpty()
+        return NotificationItem(
         id = id,
         title = document.getString("title").orEmpty(),
         body = document.getString("body").orEmpty(),
         type = document.getString("type").orEmpty(),
+        lessonId = payloadString("lessonId").ifBlank { document.getString("lessonId").orEmpty() },
+        route = payloadString("route"),
         refId = document.getString("refId")
             ?: document.getString("lessonId")
             ?: "",
         createdAtMs = document.getLong("createdAtMs")
             ?: (document.get("createdAt") as? Timestamp)?.toDate()?.time
             ?: 0L,
-    )
+        )
+    }
 }

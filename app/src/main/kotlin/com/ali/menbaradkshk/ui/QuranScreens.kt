@@ -1873,12 +1873,15 @@ private fun QuranReaderBar(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
+                // ⚠️ `weight(1f)` مالئاً بلا فاصلٍ موزون بعده: كان الفاصل
+                // يقتسم الفراغ مناصفةً مع الاسم، فيُقصّ «محمود خليل الحصري»
+                // إلى «محمود خ…» بينما نصف السطر خالٍ.
+                modifier = Modifier.weight(1f),
             )
             // ⚠️ «مكّية • كذا آية» هنا **في العرض المصوَّر وحده**: في المكتوب
             // يقوله رأس السورة بخطّ أكبر وأوضح، وتكراره ضجيجٌ لا يفيد.
             if (imageMode) {
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
                 Text(
                     "${surah.placeLabel} • ${surah.ayahs} آية",
                     style = MaterialTheme.typography.bodySmall,

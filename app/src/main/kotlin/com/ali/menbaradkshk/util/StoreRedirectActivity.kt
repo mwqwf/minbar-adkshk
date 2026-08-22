@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import com.ali.menbaradkshk.data.AppConfigRepository
 
 /**
@@ -23,7 +24,16 @@ import com.ali.menbaradkshk.data.AppConfigRepository
 class StoreRedirectActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        open(this, intent?.getStringExtra(EXTRA_URL).orEmpty())
+        // بلا واجهة: فشل الفتح (لا Play ولا متصفّح) كان لا يُظهر شيئاً
+        // إطلاقاً، فيبدو إشعار «تتوفّر نسخة أحدث» معطوباً. رسالة قصيرة
+        // تدلّه على البديل — كما يفعل المسار المكافئ داخل التطبيق.
+        if (!open(this, intent?.getStringExtra(EXTRA_URL).orEmpty())) {
+            Toast.makeText(
+                this,
+                "تعذّر فتح المتجر — ابحث عن «منبر ادكصهك» في Google Play",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
         finish()
     }
 

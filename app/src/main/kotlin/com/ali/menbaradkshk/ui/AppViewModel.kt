@@ -16,6 +16,7 @@ import com.ali.menbaradkshk.data.TranscriptDraft
 import com.ali.menbaradkshk.data.TranscriptRepository
 import com.ali.menbaradkshk.media.PlaybackController
 import com.ali.menbaradkshk.notification.BackgroundScheduler
+import com.ali.menbaradkshk.notification.MinbarMessagingService
 import com.ali.menbaradkshk.util.AudioMerger
 import com.ali.menbaradkshk.util.AudioTranscodeMerger
 import com.ali.menbaradkshk.util.Mp3FormatException
@@ -125,7 +126,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /// مستمع «قرارات مساهماتي» لا يُفتح أصلاً لمن لم يساهم قطّ — وهم أغلبية
     /// المستخدمين. يوفّر ذلك قراءة أوّليّة كاملة عند كل عودة إلى التطبيق.
     private val notificationsRepository = NotificationsRepository(submissions) {
+        hasContributedBefore()
+    }
+
+    /// «هل ساهم هذا المستخدم من قبل؟» — مؤشّر محلّي رخيص يحكم كل ما يخصّ
+    /// المساهمات (مستمع القرارات وزرّ «مساهماتي»)، فيسقط عن أغلبية
+    /// المستخدمين بلا قراءة واحدة من الشبكة. مصدر حقيقة واحد لا معياران.
+    fun hasContributedBefore(): Boolean =
         store.knownSubmissionStatuses().isNotEmpty() || store.submitterName().isNotBlank()
+
+    /// يسجّل مساهمة أُرسلت للتوّ في الخريطة المحلّية — الاسم اختياريّ فلا
+    /// يصلح وحده مؤشّراً على المساهمة، ومن ساهم بلا اسم كان يبقى في نظر
+    /// التطبيق «لم يساهم قطّ» فتسقط عنه قرارات مساهماته.
+    fun rememberSubmission(id: String, status: String = "pending") {
+        if (id.isBlank()) return
+        store.setKnownSubmissionStatuses(store.knownSubmissionStatuses() + (id to status))
     }
 
     private val backStack = mutableListOf<Route>()
@@ -813,7 +828,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 _notificationsSeenBefore.value = store.notificationLastSeenMs()
                 store.setNotificationLastSeenMs(System.currentTimeMillis())
             }
-            Route.MySubmissions -> store.setSubmissionsLastSeenMs(System.currentTimeMillis())
+            Route.MySubmissions -> {
+                store.setSubmissionsLastSeenMs(System.currentTimeMillis())
+                // فرصة تصحيح الرمز: من تبدّل رمزه بين الإرسال والحسم يظلّ
+                // إشعار النتيجة يذهب إلى رمز ميت ما لم نُحدّثه من هنا.
+                if (store.notificationsEnabled()) MinbarMessagingService.refreshPendingToken()
+            }
             is Route.Category -> store.incrementCategoryVisit(route.id)
             is Route.Subcategory -> store.incrementSubcategoryVisit(route.id)
             else -> Unit
@@ -961,9 +981,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         FirebaseMessaging.getInstance().unsubscribeFromTopic("sec_$it").await()
                     }
                 }
+                // إشعارات نتيجة المساهمة تُرسل إلى رمز الجهاز مباشرة لا إلى
+                // موضوع، فإلغاء الاشتراك وحده لا يوقفها: نمحو الرمز عند
+                // الإيقاف ونعيد كتابته عند التفعيل (وبه يُصلَح الرمز الفارغ
+                // لمن ساهم والإشعارات موقوفة).
+                if (enabled) MinbarMessagingService.refreshPendingToken()
+                else MinbarMessagingService.refreshPendingToken("")
             }.onFailure {
                 store.setNotificationsEnabled(!enabled)
                 showMessage("تعذّر تحديث الإشعارات — تحقّق من الاتصال وحاول مجدداً.")
+            }
+        }
+    }
+
+    /// يعيد بناء اشتراكات مواضيع الأقسام المتابَعة — المتابعة محلّية تعود مع
+    /// النسخة الاحتياطية، أمّا الاشتراك فخادميّ لا تحمله النسخة، فكان
+    /// المستخدم يرى نفسه «متابِعاً» ولا يصله من القسم شيء.
+    fun resubscribeFollowedTopics() {
+        if (!store.notificationsEnabled()) return
+        viewModelScope.launch {
+            runCatching {
+                store.followedSubcategories().forEach {
+                    FirebaseMessaging.getInstance().subscribeToTopic("sec_$it").await()
+                }
             }
         }
     }
@@ -1124,11 +1164,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         )
         viewModelScope.launch {
             try {
-                transcripts.submit(draft) { percent ->
+                val id = transcripts.submit(draft) { percent ->
                     _transcriptContribution.value = _transcriptContribution.value.copy(
                         progress = percent,
                     )
                 }
+                rememberSubmission(id)
                 _transcriptContribution.value = TranscriptContributionState(
                     lessonId = draft.lessonId,
                     done = true,
@@ -1254,7 +1295,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     _contribution.value = _contribution.value.copy(merging = false)
                     Uri.fromFile(mergedTemp) to mergedName
                 }
-                submissions.submit(
+                val id = submissions.submit(
                     SubmissionDraft(
                         audioUri = uploadUri,
                         fileName = uploadName,
@@ -1270,6 +1311,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 ) { percent ->
                     _contribution.value = _contribution.value.copy(progress = percent)
                 }
+                rememberSubmission(id)
                 _contribution.value = ContributionState(done = true)
             } catch (failure: Throwable) {
                 _contribution.value = ContributionState(

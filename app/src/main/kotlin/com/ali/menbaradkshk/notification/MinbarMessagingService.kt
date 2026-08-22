@@ -14,6 +14,9 @@ import com.ali.menbaradkshk.R
 import com.ali.menbaradkshk.data.LocalStore
 import com.ali.menbaradkshk.data.TranscriptRepository
 import com.ali.menbaradkshk.util.StoreRedirectActivity
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
@@ -72,10 +75,52 @@ class MinbarMessagingService : FirebaseMessagingService() {
     }
 
     override fun onNewToken(token: String) {
-        // Pending submissions refresh their token the next time the user opens that screen.
+        // رمز الجهاز يتبدّل (تحديث نسخة، مسح بيانات، استعادة جهاز، دوران
+        // دوريّ) فتبقى المساهمات المعلّقة حاملةً رمزاً ميتاً، ويذهب إشعار
+        // «نُشرت مساهمتك»/«نتيجة المراجعة» إلى العدم بلا أن يعلم صاحبه.
+        refreshPendingToken(token)
     }
 
     companion object {
+        /**
+         * يكتب الرمز المُعطى في كل مساهمة معلّقة للمستخدم (صوتية ونصّاً).
+         *
+         * ⚠️ `fcmToken` وحده لا غير: قواعد Firestore تشترط
+         * `affectedKeys().hasOnly(['fcmToken'])` وحالة `pending`، فأي مفتاح
+         * إضافي يُسقط الكتابة كلّها. والفشل غير حرج — أسوأ أثره بقاء الرمز
+         * القديم كما كان، فيُبتلع بلا إزعاج المستخدم.
+         *
+         * تمرير رمز فارغ = إسكات: من أوقف الإشعارات لا تلاحقه بشرى القرار.
+         */
+        fun refreshPendingToken(token: String) {
+            val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
+            val db = FirebaseFirestore.getInstance()
+            for (collection in PENDING_COLLECTIONS) {
+                runCatching {
+                    db.collection(collection)
+                        .whereEqualTo("uid", uid)
+                        .whereEqualTo("status", "pending")
+                        .get()
+                        .addOnSuccessListener { snapshot ->
+                            snapshot.documents.forEach { document ->
+                                document.reference.update("fcmToken", token)
+                            }
+                        }
+                }
+            }
+        }
+
+        /// نسخة تجلب الرمز الحاليّ بنفسها — للمداخل التي لا تملكه بين يديها
+        /// (فتح «مساهماتي»، وتفعيل الإشعارات بعد إرسالٍ تمّ وهي موقوفة).
+        fun refreshPendingToken() {
+            FirebaseMessaging.getInstance().token
+                .addOnSuccessListener { refreshPendingToken(it) }
+        }
+
+        /// مجموعتا المساهمات: دورتهما واحدة والقواعد عليهما واحدة.
+        private val PENDING_COLLECTIONS =
+            listOf("lesson_submissions", "transcript_submissions")
+
         /**
          * هل هذه حمولة «صدر إصدار جديد»؟ وجهتها المتجر لا التطبيق.
          *

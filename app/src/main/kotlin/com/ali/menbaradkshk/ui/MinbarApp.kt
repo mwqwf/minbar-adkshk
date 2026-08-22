@@ -794,7 +794,7 @@ private fun NotificationBell(vm: AppViewModel) {
     }
 }
 
-/// زر «مساهماتي» بجوار الجرس — يظهر لمن لديه هوية مساهمات فقط،
+/// زر «مساهماتي» بجوار الجرس — يظهر لمن ساهم من قبل فقط،
 /// وعليه نقطة إذا حُسمت مساهمة بعد آخر زيارة للشاشة.
 @Composable
 private fun MySubmissionsButton(vm: AppViewModel) {
@@ -806,13 +806,22 @@ private fun MySubmissionsButton(vm: AppViewModel) {
         onDispose { auth.removeAuthStateListener(listener) }
     }
     if (user == null) return
+    // الدخول المجهول يقع لكل مستخدم عند أوّل إقلاع، فوجود الهوية وحده لا
+    // يعني مساهماً. من لم يساهم قطّ: لا زرّ يزحم الشريط، ولا مستمعا
+    // Firestore يعملان طوال بقاء الرئيسية على مجموعتين فارغتين عنده.
+    val revision by vm.store.revision.collectAsState()
+    val contributed = remember(revision) { vm.hasContributedBefore() }
+    if (!contributed) return
 
     val flow = remember { vm.submissions.mine().catch { emit(emptyList()) } }
     val submissions by flow.collectAsState(initial = emptyList())
-    val revision by vm.store.revision.collectAsState()
-    val hasNewDecision = remember(submissions, revision) {
+    // النقطة كانت تتجاهل «النص المشروح» رغم أن شاشة الوجهة تعرض النوعين معاً.
+    val transcriptsFlow = remember { vm.transcripts.mine().catch { emit(emptyList()) } }
+    val transcriptItems by transcriptsFlow.collectAsState(initial = emptyList())
+    val hasNewDecision = remember(submissions, transcriptItems, revision) {
         val seen = vm.store.submissionsLastSeenMs()
-        submissions.any { it.status != "pending" && it.decidedAtMs > seen }
+        submissions.any { it.status != "pending" && it.decidedAtMs > seen } ||
+            transcriptItems.any { it.status != "pending" && it.decidedAtMs > seen }
     }
     IconButton(onClick = { vm.open(Route.MySubmissions) }) {
         if (hasNewDecision) {

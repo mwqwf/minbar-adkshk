@@ -81,6 +81,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -603,6 +604,17 @@ fun NotificationsScreen(vm: AppViewModel) {
     val seenBefore by vm.notificationsSeenBefore.collectAsState()
 
     fun openTarget(n: NotificationItem) {
+        // 🎯 **الوجهة الصريحة أوّلاً**: إن حملت حمولةُ الإشعار درساً منشوراً
+        // فُتِح هو — تماماً كما يفعل النقر على الإشعار في شريط النظام.
+        // كان الصفّ هنا يتجاهل الحمولة ويكتفي بـ`type`، فيفتح شاشةً غير التي
+        // يفتحها الإشعار نفسه: من مسح إشعار النظام لا يبقى له طريقٌ إلى ما
+        // أُعلم به.
+        val direct = n.lessonId.takeIf { it.isNotBlank() }?.let { content.lessonById[it] }
+        if (direct != null) {
+            val playlist = content.lessons.filter { it.subcategoryId == direct.subcategoryId }
+            vm.openPlayer(direct, playlist.ifEmpty { listOf(direct) })
+            return
+        }
         when (n.type) {
             // 🛒 «صدر إصدار جديد»: نقرة واحدة من هنا تفتح المتجر مباشرة،
             // كما تفعل نقرة الإشعار نفسه. لا رابط يُعرض ولا خطوة وسيطة.
@@ -774,6 +786,17 @@ fun MySubmissionsScreen(vm: AppViewModel) {
     val transcriptSubmissions by transcriptsFlow.collectAsState(initial = emptyList())
     var withdrawTarget by remember { mutableStateOf<LessonSubmission?>(null) }
     var withdrawTranscript by remember { mutableStateOf<TranscriptSubmissionItem?>(null) }
+
+    // خريطة الحالات المحلّية هي بوّابة «هل ساهم من قبل؟» (زرّ «مساهماتي»
+    // ومستمع القرارات معاً)، ولم يكن يكتبها أحد. نكتبها هنا دمجاً لا
+    // استبدالاً — المصدران مجموعتان مختلفتان — وبلا كتابة إن لم تتغيّر.
+    LaunchedEffect(submissions, transcriptSubmissions) {
+        val known = vm.store.knownSubmissionStatuses()
+        val merged = known +
+            submissions.orEmpty().associate { it.id to it.status } +
+            transcriptSubmissions.associate { it.id to it.status }
+        if (merged != known) vm.store.setKnownSubmissionStatuses(merged)
+    }
 
     when {
         submissions == null -> {

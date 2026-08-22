@@ -56,6 +56,17 @@
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="minbar_content" />
 
+        <!-- الأيقونة الأحاديّة إلزاميّة هنا: حين يكون التطبيق في الخلفية
+             (الحالة الغالبة) يرسم النظامُ الإشعارَ بنفسه ولا يمرّ بمستقبلنا،
+             فكان يسقط على أيقونة التطبيق الملوّنة = مربّع أبيض في شريط الحالة.
+             `ic_stat_minbar` هي نفسها المستعملة في مسار المقدّمة. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_minbar" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/notification_accent" />
+
         <!-- ⛔ أندرويد أوتو مُزال عمداً (2026-07-29): رفضت Google النشر بسبب
              «التطبيق لا يشغّل الصوت» على شاشة السيارة، والتطبيق لا يستهدف
              الاستعمال داخل السيارة أصلاً. الحلّ الذي تنصّ عليه رسالة Google

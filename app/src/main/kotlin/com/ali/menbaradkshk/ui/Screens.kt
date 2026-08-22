@@ -537,8 +537,14 @@ fun CategoryScreen(vm: AppViewModel, categoryId: String, state: ContentState) {
                                 IconButton(onClick = {
                                     vm.toggleFollow(sub.id)
                                     vm.showMessage(
-                                        if (following) "أُلغيت متابعة «${sub.name}»"
-                                        else "ستصلك إشعارات دروس «${sub.name}» الجديدة",
+                                        when {
+                                            following -> "أُلغيت متابعة «${sub.name}»"
+                                            // لا اشتراك يقع والإشعارات موقوفة،
+                                            // فالوعد كان يكذب على من أوقفها.
+                                            !vm.store.notificationsEnabled() ->
+                                                "فعِّل الإشعارات لتصلك دروس «${sub.name}» الجديدة"
+                                            else -> "ستصلك إشعارات دروس «${sub.name}» الجديدة"
+                                        },
                                     )
                                 }) {
                                     Icon(

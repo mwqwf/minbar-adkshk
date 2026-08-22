@@ -70,6 +70,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.app.NotificationManagerCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -87,6 +88,13 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
 
     val streak = remember(revision) { vm.store.streakDays() }
     val notifOn = remember(revision) { vm.store.notificationsEnabled() }
+    // حال النظام لا حال المفتاح: من رفض الإذن (أو رُفض له تلقائياً بعد
+    // رفضين على أندرويد 13+) كان يقرأ «تصلك إشعارات المحتوى الجديد» أبداً
+    // ولا يصله شيء، بلا سبب ظاهر ولا مدخل إلى إعدادات النظام.
+    // `areNotificationsEnabled` يغطّي الإذن والحجب اليدوي معاً.
+    val notifBlocked = remember(revision) {
+        !NotificationManagerCompat.from(context).areNotificationsEnabled()
+    }
     val themeMode = remember(revision) { vm.store.themeMode() }
     val fontScale = remember(revision) { vm.store.fontScale() }
     val autoDownload = remember(revision) { vm.store.autoDownloadEnabled() }
@@ -143,6 +151,9 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                 if (restored < 0) vm.showMessage("الملف ليس نسخة احتياطية صالحة للتطبيق.")
                 else {
                     vm.content.refreshPersonalization()
+                    // المتابعات تعود بالاستعادة، أمّا اشتراكات مواضيعها فلا:
+                    // كان المستخدم يرى نفسه «متابِعاً» ولا يصله شيء منها.
+                    vm.resubscribeFollowedTopics()
                     vm.showMessage("استُعيدت بياناتك ($restored عنصراً).")
                 }
             }.onFailure { vm.showMessage("تعذّر قراءة الملف.") }
@@ -211,10 +222,17 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                     onClick = { group = "downloads" },
                 )
                 SettingsTile(
-                    icon = if (notifOn) Icons.Filled.NotificationsActive else Icons.Filled.NotificationsOff,
+                    icon = if (notifOn && !notifBlocked) Icons.Filled.NotificationsActive
+                    else Icons.Filled.NotificationsOff,
                     title = "الإشعارات والوِرد اليومي",
                     subtitle = buildString {
-                        append(if (notifOn) "الإشعارات تعمل" else "الإشعارات موقوفة")
+                        append(
+                            when {
+                                notifBlocked -> "محجوبة من النظام"
+                                notifOn -> "الإشعارات تعمل"
+                                else -> "الإشعارات موقوفة"
+                            },
+                        )
                         if (wardEnabled) append(" · الوِرد في ${wardTimeLabel()}")
                     },
                     onClick = { group = "notifications" },
@@ -367,9 +385,20 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                 item(key = "title") { GroupTitle("الإشعارات والوِرد اليومي") }
                 item(key = "notif") {
                     SettingsTile(
-                        icon = if (notifOn) Icons.Filled.NotificationsActive else Icons.Filled.NotificationsOff,
+                        icon = if (notifOn && !notifBlocked) Icons.Filled.NotificationsActive
+                        else Icons.Filled.NotificationsOff,
                         title = "الإشعارات",
-                        subtitle = if (notifOn) "تصلك إشعارات المحتوى الجديد" else "الإشعارات موقوفة",
+                        subtitle = when {
+                            notifBlocked -> "الإشعارات محجوبة من النظام — اضغط للسماح"
+                            notifOn -> "تصلك إشعارات المحتوى الجديد"
+                            else -> "الإشعارات موقوفة"
+                        },
+                        // المخرج الوحيد لمن حُجبت عنه: حوار الإذن لا يُعاد عرضه.
+                        onClick = if (notifBlocked) {
+                            { openAppNotificationSettings(context) }
+                        } else {
+                            null
+                        },
                         trailing = {
                             Switch(
                                 checked = notifOn,
@@ -403,7 +432,15 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                             Switch(
                                 checked = wardEnabled,
                                 onCheckedChange = { enabled ->
-                                    if (enabled) wardTimeDialog = true else vm.disableWard()
+                                    // الإذن يُطلب عند التفعيل كما في المفتاح
+                                    // العام: وِردٌ مفعَّل بلا إذن يُجدوَل كل
+                                    // يوم ثم يُبتلع صامتاً بلا سبب ظاهر.
+                                    if (enabled) {
+                                        requestNotifications()
+                                        wardTimeDialog = true
+                                    } else {
+                                        vm.disableWard()
+                                    }
                                 },
                             )
                         },
@@ -669,6 +706,24 @@ private fun GroupTitle(title: String) {
         style = MaterialTheme.typography.titleMedium,
         color = Teal,
     )
+}
+
+/// يفتح إعدادات إشعارات التطبيق في النظام — المخرج الوحيد لمن حُجبت عنه
+/// الإشعارات، إذ لا يُعرض حوار الإذن بعد الرفض مرّتين.
+private fun openAppNotificationSettings(context: android.content.Context) {
+    val intent = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+        android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+    } else {
+        // ما قبل أندرويد 8: لا شاشة إشعارات للتطبيق، فصفحة التطبيق نفسها.
+        android.content.Intent(
+            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            android.net.Uri.fromParts("package", context.packageName, null),
+        )
+    }
+    runCatching {
+        context.startActivity(intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
 }
 
 /// بند إعدادات بنمط SettingsTile في نبراس: أيقونة + عنوان (+وصف) + عنصر جانبي.

@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#020E1D</color>
+    <!-- لون تمييز الإشعارات التي يرسمها النظام (التطبيق في الخلفية) —
+         زمرديّ الهوية نفسه، كي لا يخالف الإشعارُ الخادميّ إشعارَ التطبيق. -->
+    <color name="notification_accent">#036E79</color>
 </resources>

@@ -77,8 +77,15 @@ class MinbarApplication : Application(), Configuration.Provider, SingletonImageL
             if (FirebaseAuth.getInstance(app).currentUser == null) {
                 FirebaseAuth.getInstance(app).signInAnonymously()
             }
-            if (LocalStore.get(this).notificationsEnabled()) {
+            val store = LocalStore.get(this)
+            if (store.notificationsEnabled()) {
                 FirebaseMessaging.getInstance().subscribeToTopic("content")
+                // مواضيع الأقسام المتابَعة تُعاد كذلك: كانت تُبنى عند نقر
+                // المتابعة وحده، فأيّ فقد لاشتراكات الرمز (تجديده أو مسح
+                // البيانات) يُسكت قسماً تُظهره الواجهة «متابَعاً».
+                store.followedSubcategories().forEach {
+                    FirebaseMessaging.getInstance().subscribeToTopic("sec_$it")
+                }
             }
         }
     }

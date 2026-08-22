@@ -469,6 +469,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _quranSearchOpen.value = open
     }
 
+    /**
+     * 🎛️ ورقة التحكّم في التلاوة — يرفع رايتَها **المشغّل المصغّر** بالنقر.
+     *
+     * كانت لوحة التحكّم في متن صفحة المصحف تظهر أثناء التلاوة، فتقتطع من
+     * ارتفاع الصفحة بين شريط الأدوات فوقها والمشغّل المصغّر تحتها — ولغةُ
+     * مشغّلٍ ثانية في شاشة واحدة. والمشغّل في هذا التطبيق واحد: نقرةٌ على
+     * الشريط المصغّر تفتح التحكّم الكامل أينما كنت. فهنا مثلها بالضبط.
+     */
+    private val _quranPlayerOpen = MutableStateFlow(false)
+    val quranPlayerOpen: StateFlow<Boolean> = _quranPlayerOpen.asStateFlow()
+
+    fun setQuranPlayerOpen(open: Boolean) {
+        _quranPlayerOpen.value = open
+    }
+
     /// ورقة «علاماتي» — تُفتح من الشريط العلوي كذلك.
     private val _quranBookmarksOpen = MutableStateFlow(false)
     val quranBookmarksOpen: StateFlow<Boolean> = _quranBookmarksOpen.asStateFlow()
@@ -783,6 +798,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val parts = mediaId.removePrefix(prefix).split(":")
         val surahNumber = parts.getOrNull(0)?.toIntOrNull() ?: return
         val ayah = parts.getOrNull(1)?.toIntOrNull() ?: 1
+        // ⚠️ إن كان القارئ **واقفاً على السورة نفسها** فلا وجهة تُفتح: يفتح
+        // المشغّلُ المصغّر ورقةَ التحكّم كما يفتح شاشةَ المشغّل في كل مكان
+        // آخر. وبلا هذا كانت النقرة تدفع الوجهة نفسها إلى مكدّس الرجوع مرّة
+        // بعد مرّة — فعلٌ لا يُرى أثره إلا في زرّ الرجوع.
+        val here = _route.value
+        if (here is Route.QuranSurah && here.number == surahNumber) {
+            _quranPlayerOpen.value = true
+            return
+        }
         val start = _quranIndex.value?.surahs?.firstOrNull { it.number == surahNumber }?.start
         open(Route.QuranSurah(surahNumber, start?.plus(ayah - 1)))
     }

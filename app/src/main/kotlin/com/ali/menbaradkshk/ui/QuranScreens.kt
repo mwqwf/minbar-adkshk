@@ -1132,6 +1132,8 @@ fun QuranSurahScreen(
     }
     val context = androidx.compose.ui.platform.LocalContext.current
     var reciterSheet by remember { mutableStateOf(false) }
+    /// ورقة التحكّم — يرفع رايتَها المشغّلُ المصغّر (انظر [AppViewModel.openNowPlaying]).
+    val quranPlayerOpen by vm.quranPlayerOpen.collectAsState()
 
     // ⚠️ إزاحة الفهارس: عنوان السورة عنصرٌ أوّل **دائماً**، والبسملة عنصرٌ
     // ثانٍ في كل السور عدا الفاتحة والتوبة. وكل حسابات التمرير وحفظ الموضع
@@ -1220,7 +1222,10 @@ fun QuranSurahScreen(
         vm.setQuranImmersive(imageMode && !chromeVisible)
     }
     androidx.compose.runtime.DisposableEffect(Unit) {
-        onDispose { vm.setQuranImmersive(false) }
+        onDispose {
+            vm.setQuranImmersive(false)
+            vm.setQuranPlayerOpen(false)
+        }
     }
 
     // الآية الجارية بفهرسها المسطّح — العرض المصوَّر يتعدّى حدود السورة
@@ -1363,31 +1368,12 @@ fun QuranSurahScreen(
                 }
             },
         )
-        // 🎛️ لوحة التحكّم أثناء التلاوة — **بأزرار مشغّل التطبيق نفسها**:
-        // السابق/تشغيل كبير ملوّن/التالي، بالألوان والأحجام ذاتها التي
-        // يعرفها المستخدم من شاشة الدرس. ولا تظهر إلا أثناء تلاوة هذه
-        // السورة، فتبقى صفحة القراءة نظيفة حين لا تلاوة.
-        if (playingThisSurah && (!imageMode || chromeVisible)) {
-            QuranPlayerControls(
-                playing = playback.playing,
-                loading = playback.loading,
-                onPrevious = { vm.playback.previous() },
-                onToggle = { vm.playback.toggle() },
-                onNext = { vm.playback.next() },
-                onSleep = { vm.playback.setSleepTimer(it) },
-                sleepEndsAtMs = playback.sleepEndsAtMs,
-                onCancelSleep = { vm.playback.cancelSleepTimer() },
-                // شريط الموضع يلزم القارئ بملفّ السورة الكاملة وحده: مع
-                // «آية بآية» يكفي النقر على الآية للانتقال إليها.
-                seek = if (reciter?.perAyah == false) {
-                    Triple(playback.positionMs, playback.durationMs) { ms: Long ->
-                        vm.playback.seekTo(ms)
-                    }
-                } else {
-                    null
-                },
-            )
-        }
+        // 🎛️ **لا لوحة تحكّم في متن الصفحة**: كانت هنا لوحةٌ كاملة تظهر
+        // أثناء التلاوة فتقتطع من ارتفاع المصحف بين الشريط أعلاه والمشغّل
+        // المصغّر أسفله — لغةُ مشغّلٍ ثانية في شاشة واحدة. والمشغّل في هذا
+        // التطبيق واحد: الشريط المصغّر أسفل الشاشة، ونقرةٌ عليه تفتح
+        // التحكّم الكامل. فصارت اللوحة ورقةً يفتحها هو (انظر أدناه)،
+        // والصفحة تأخذ الارتفاع كلّه.
         if (!imageMode || chromeVisible) HorizontalDivider()
 
         if (imageMode) {
@@ -1643,6 +1629,45 @@ fun QuranSurahScreen(
                 },
             )
             Spacer(Modifier.height(16.dp))
+        }
+    }
+
+    // 🎛️ ورقة التحكّم الكامل — يفتحها **المشغّل المصغّر** بالنقر، كما يفتح
+    // شاشةَ المشغّل في كل مكان آخر من التطبيق. فالإيماءة واحدة والمعنى واحد،
+    // والمصحف لا يُزاحَم: الورقة تظهر عند الطلب وتزول.
+    //
+    // ولماذا ورقة لا شاشة؟ لأنّ الصفحة نفسها جزءٌ من المشغّل هنا — الآية
+    // الجارية تُضاء عليها — فإخفاؤها خلف شاشة كاملة يُلغي أنفع ما في التلاوة.
+    if (quranPlayerOpen && playingThisSurah) {
+        ModalBottomSheet(onDismissRequest = { vm.setQuranPlayerOpen(false) }) {
+            Text(
+                "سورة ${surah.name} — ${reciter?.name.orEmpty()}",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+            QuranPlayerControls(
+                playing = playback.playing,
+                loading = playback.loading,
+                onPrevious = { vm.playback.previous() },
+                onToggle = { vm.playback.toggle() },
+                onNext = { vm.playback.next() },
+                onSleep = { vm.playback.setSleepTimer(it) },
+                sleepEndsAtMs = playback.sleepEndsAtMs,
+                onCancelSleep = { vm.playback.cancelSleepTimer() },
+                // شريط الموضع يلزم القارئ بملفّ السورة الكاملة وحده: مع
+                // «آية بآية» يكفي النقر على الآية للانتقال إليها.
+                seek = if (reciter?.perAyah == false) {
+                    Triple(playback.positionMs, playback.durationMs) { ms: Long ->
+                        vm.playback.seekTo(ms)
+                    }
+                } else {
+                    null
+                },
+            )
+            Spacer(Modifier.height(20.dp))
         }
     }
 

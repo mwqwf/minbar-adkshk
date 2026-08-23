@@ -211,7 +211,9 @@ fun CarScreen(vm: AppViewModel, playback: PlaybackUiState) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Row(Modifier.fillMaxWidth().padding(top = 24.dp)) {
-            IconButton(onClick = { vm.back() }) {
+            // كسهم النظام: مكدّس فارغ ⇒ الرئيسية لا لا-شيء. وضع القيادة بملء
+            // الشاشة بلا مخرج آخر، فزرٌّ لا يفعل شيئاً يحبس السائق فيه.
+            IconButton(onClick = { if (!vm.back()) vm.openRoot(Route.Home) }) {
                 Icon(
                     Icons.Filled.Close,
                     contentDescription = "خروج",
@@ -296,7 +298,8 @@ private const val MOMENTS_PREVIEW = 20
 private fun fmtSeconds(seconds: Long): String {
     val h = seconds / 3600
     val m = (seconds % 3600) / 60
-    return if (h > 0) "$h س $m د" else "$m دقيقة"
+    // صيغة العدد العربيّة للدقائق المفردة: «دقيقتان»/«٧ دقائق» لا «2 دقيقة».
+    return if (h > 0) "$h س $m د" else com.ali.menbaradkshk.util.minutesCountLabel(m.toInt())
 }
 
 @Composable
@@ -478,7 +481,10 @@ fun StatsScreen(vm: AppViewModel) {
             }
             if (moments.size > MOMENTS_PREVIEW) {
                 Text(
-                    "و${moments.size - MOMENTS_PREVIEW} لحظة أخرى محفوظة داخل الدروس.",
+                    // صيغة العدد العربيّة: «ولحظتان أخريان…» لا «و2 لحظة».
+                    "و" + com.ali.menbaradkshk.util.momentsCountLabel(
+                        moments.size - MOMENTS_PREVIEW,
+                    ) + " أخرى محفوظة داخل الدروس.",
                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
                     textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.bodySmall,

@@ -23,12 +23,17 @@ import com.google.firebase.messaging.RemoteMessage
 class MinbarMessagingService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
         val store = LocalStore.get(this)
-        if (!store.notificationsEnabled()) return
+        val update = isUpdate(message.data)
+        // ⚠️ تذكير التحديث **غير مشروط** بمفتاح إشعارات المحتوى — هكذا نصّ
+        // عليه مسار العامل (`BackgroundWorkers.UpdateCheckWorker`). وكان
+        // الحارس هنا يسبق فحص النوع، فيصل التذكير لمن أوقف الإشعارات من مسار
+        // العامل ولا يصله من FCM: سلوكان متناقضان لأمرٍ واحد، ونسخةٌ قديمة
+        // تبقى عند من لا يفتح التطبيق كثيراً. فحص النوع يسبق الحارس الآن.
+        if (!update && !store.notificationsEnabled()) return
         val title = message.notification?.title ?: message.data["title"] ?: getString(R.string.app_name)
         val body = message.notification?.body ?: message.data["body"].orEmpty()
         val destination = destinationFor(message.data)
         invalidateTranscriptCache(this, message.data)
-        val update = isUpdate(message.data)
         // 🛒 إشعار الإصدار الجديد يقفز إلى المتجر مباشرة، لا إلى التطبيق:
         // فتح التطبيق ثم انتظار أن يعثر المستخدم على زرّ التحديث بنفسه هو
         // بالضبط ما يجعل نسخاً قديمة تبقى شهوراً. والرابط يبقى مخفياً في

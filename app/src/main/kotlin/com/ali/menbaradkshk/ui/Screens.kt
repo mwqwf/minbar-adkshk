@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DriveFileMove
@@ -71,6 +72,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -805,12 +807,12 @@ fun SearchScreen(vm: AppViewModel, initial: String, playback: PlaybackUiState) {
     val revision by vm.store.revision.collectAsState()
     val q = query.trim()
 
-    // حفظ الاستعلام في السجل بعد تأخير (400ms) إن كان طوله ≥ 2 — كما في الأصل.
-    LaunchedEffect(q) {
-        if (q.length >= 2) {
-            delay(400)
-            vm.store.addSearchQuery(q)
-        }
+    // ⚠️ السجلّ يُكتب عند **تنفيذ** البحث لا أثناء الكتابة: الحفظ بعد مهلة
+    // ٤٠٠ م.ث كان يخزّن كل بادئة يمرّ بها الإصبع («ال»، «الصي»، «الصيا») حتى
+    // يمتلئ «عمليات بحث سابقة» بكلمات لم يقصدها أحد. والتنفيذ الصريح موجود:
+    // زرّ البحث في لوحة المفاتيح، أو فتح نتيجة من النتائج.
+    val commitSearch = {
+        if (q.length >= 2) vm.store.addSearchQuery(q)
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -828,7 +830,8 @@ fun SearchScreen(vm: AppViewModel, initial: String, playback: PlaybackUiState) {
                     }
                 }
             },
-            keyboardOptions = KeyboardOptions.Default,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { commitSearch() }),
         )
 
         if (q.isEmpty()) {
@@ -1013,21 +1016,21 @@ fun SearchScreen(vm: AppViewModel, initial: String, playback: PlaybackUiState) {
                 LazyColumn {
                     items(catRes, key = { "cat-${it.id}" }) { c ->
                         ListItem(
-                            modifier = Modifier.clickable { vm.open(Route.Category(c.id)) },
+                            modifier = Modifier.clickable { commitSearch(); vm.open(Route.Category(c.id)) },
                             leadingContent = { Icon(Icons.Filled.Folder, contentDescription = null, tint = Teal) },
                             headlineContent = { Text(c.name) },
                         )
                     }
                     items(subRes, key = { "sub-${it.id}" }) { s ->
                         ListItem(
-                            modifier = Modifier.clickable { vm.open(Route.Subcategory(s.id)) },
+                            modifier = Modifier.clickable { commitSearch(); vm.open(Route.Subcategory(s.id)) },
                             leadingContent = { Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = BlueBrand) },
                             headlineContent = { Text(s.name) },
                         )
                     }
                     items(lesRes, key = { "les-${it.id}" }) { l ->
                         ListItem(
-                            modifier = Modifier.clickable { vm.openPlayer(l, lesRes) },
+                            modifier = Modifier.clickable { commitSearch(); vm.openPlayer(l, lesRes) },
                             leadingContent = { Icon(Icons.Filled.MusicNote, contentDescription = null, tint = Gold) },
                             headlineContent = { Text(l.displayTitle) },
                             supportingContent = if (l.speaker.isNotBlank()) {
@@ -1063,6 +1066,7 @@ fun SearchScreen(vm: AppViewModel, initial: String, playback: PlaybackUiState) {
                         items(transcriptRes, key = { "txt-${it.id}" }) { lesson ->
                             ListItem(
                                 modifier = Modifier.clickable {
+                                    commitSearch()
                                     vm.openPlayer(lesson, transcriptRes)
                                 },
                                 leadingContent = {

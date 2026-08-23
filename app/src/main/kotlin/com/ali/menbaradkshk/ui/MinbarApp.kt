@@ -208,8 +208,14 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
     }
 
     val isRoot = rootTabs.any { it.route == route }
+    // ⚠️ الحبس مشروطٌ بملكيّة الرفع: كان أيّ رفع جارٍ — ولو بدأ من ورقة درسٍ
+    // آخر — يُعطّل سهم الرجوع في هذه الشاشة، فيحبس المستخدم فيها بلا سبب
+    // ظاهر. لا يُحبس إلّا رفعُ الدرس المختار في الشاشة نفسها.
+    val contributeLessonId by vm.contributeScreenLessonId.collectAsState()
     val navigationBlocked = route == Route.ContributeTranscript &&
-        transcriptContribution.submitting
+        transcriptContribution.submitting &&
+        contributeLessonId.isNotBlank() &&
+        transcriptContribution.lessonId == contributeLessonId
     // المشغّل ووضع القيادة شاشتان بملء الشاشة بلا أشرطة (نمط الأصل).
     // المصحف المصوَّر بملء الشاشة أيضاً حين تُخفى أدواته: الصفحة نسبتها
     // ١:١٫٤٣ فكل شريط يقتطع من ارتفاعها يقتطع من عرضها أضعافه.

@@ -105,6 +105,20 @@ fun imagesCountLabel(count: Int): String =
 fun quranPagesLabel(count: Int): String =
     arabicCountLabel(count, "صفحة واحدة", "صفحتان", "صفحات", "صفحة")
 
+/// عدد الدقائق — «٥ دقائق»/«١٥ دقيقة»/«دقيقة واحدة»: كان مؤقّت النوم وملخّص
+/// «حصادك» يقولان «5 دقيقة» و«2 دقيقة»، وهو لحنٌ يقرؤه المستخدم في كل مرّة
+/// يضبط فيها المؤقّت.
+fun minutesCountLabel(count: Int): String =
+    arabicCountLabel(count, "دقيقة واحدة", "دقيقتان", "دقائق", "دقيقة")
+
+/// عدد «اللحظات» المحفوظة داخل الدروس.
+fun momentsCountLabel(count: Int): String =
+    arabicCountLabel(count, "لحظةٌ واحدة", "لحظتان", "لحظات", "لحظة")
+
+/// عدد الصوتيات في قائمة تشغيل — «صوتيتان» لا «2 صوتية».
+fun audiosCountLabel(count: Int): String =
+    arabicCountLabel(count, "صوتيةٌ واحدة", "صوتيتان", "صوتيات", "صوتية")
+
 fun progress(positionMs: Long, durationMs: Long): Float {
     if (durationMs <= 0L) return 0f
     return (positionMs.toDouble() / max(1L, durationMs)).coerceIn(0.0, 1.0).toFloat()

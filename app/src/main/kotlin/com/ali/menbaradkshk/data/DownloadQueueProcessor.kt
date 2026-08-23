@@ -48,9 +48,22 @@ class DownloadQueueProcessor(private val context: Context) {
         // ⚠️ الانسحاب الفوري كان يُفشل مساراً شرعيّاً: إلغاء الوظيفة الجارية
         // غير متزامن، فالسابق يبقى محجوزاً في `read()` لحظاتٍ بينما ينطلق
         // اللاحق فينسحب ويُعاد جدولته بمهلة تراجعيّة. ننتظر تحرّر القفل قليلاً.
-        if (withTimeoutOrNull(LOCK_WAIT_MS) { runLock.lock(); true } != true) {
-            return DownloadRunResult.NEEDS_RETRY
+        // ⚠️ لا `withTimeoutOrNull { runLock.lock() }`: المهلة قد تُلغي الكتلة
+        // **بعد** نجاح `lock()` وقبل تسليم نتيجتها، فتعود `null` والقفلُ مقفولٌ
+        // بلا مالكٍ يفتحه (`finally` لا يُنفَّذ لأنّ `try` لم يُدخَل أصلاً) —
+        // والقفل ثابتٌ على مستوى العملية، فيتجمّد كل تحميل لاحق إلى أن تُقتل
+        // العملية. `tryLock` لا يُعلَّق أصلاً فلا موضع للإلغاء بين النجاح
+        // والتسليم، والانتظار يصير نوماً قصيراً متكرّراً حتى انقضاء المهلة.
+        var acquired = false
+        val deadline = System.currentTimeMillis() + LOCK_WAIT_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (runLock.tryLock()) {
+                acquired = true
+                break
+            }
+            kotlinx.coroutines.delay(50)
         }
+        if (!acquired) return DownloadRunResult.NEEDS_RETRY
         try {
             return runExclusively(onProgressNotification)
         } finally {

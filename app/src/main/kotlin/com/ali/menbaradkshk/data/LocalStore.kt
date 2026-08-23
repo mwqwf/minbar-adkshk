@@ -672,7 +672,13 @@ class LocalStore private constructor(context: Context) {
     /// يُصفَّر تلقائياً بتغيّر اليوم كي لا يبدأ المستخدم من تقدّم الأمس.
     private fun adhkarDayKey(): String {
         val cal = java.util.Calendar.getInstance()
+        // ⚠️ `Locale.ROOT` إلزاميّ: بلا لغة صريحة تتبع `format` لغةَ الجهاز،
+        // فتُكتب الأرقام **هنديّة** (٢٠٢٦-٠٨-٢٣) على إعدادٍ عربيّ ذي ترقيم
+        // `arab`. والمفتاح مُخزَّن، فتغيير المستخدم للغة أو للترقيم يجعل مفتاح
+        // اليوم لا يطابق المحفوظ ⇒ **تنكسر سلسلة المداومة ويُصفَّر عدّاد الوِرد
+        // ظلماً**. هذه مفاتيح لا نصوص عرض.
         return "%04d-%02d-%02d".format(
+            java.util.Locale.ROOT,
             cal.get(java.util.Calendar.YEAR),
             cal.get(java.util.Calendar.MONTH) + 1,
             cal.get(java.util.Calendar.DAY_OF_MONTH),
@@ -724,7 +730,9 @@ class LocalStore private constructor(context: Context) {
         java.util.Calendar.getInstance().apply {
             add(java.util.Calendar.DAY_OF_YEAR, -1)
         }.let {
+            // نفس علّة [adhkarDayKey]: مفتاح مخزَّن لا نصّ عرض ⇒ `Locale.ROOT`.
             "%04d-%02d-%02d".format(
+                java.util.Locale.ROOT,
                 it.get(java.util.Calendar.YEAR),
                 it.get(java.util.Calendar.MONTH) + 1,
                 it.get(java.util.Calendar.DAY_OF_MONTH),

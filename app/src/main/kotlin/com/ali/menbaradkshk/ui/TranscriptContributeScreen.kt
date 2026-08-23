@@ -36,6 +36,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -79,7 +80,14 @@ fun TranscriptContributeScreen(vm: AppViewModel) {
     }
     var message by rememberSaveable { mutableStateOf("") }
     val ownsSubmission = lessonId.isNotBlank() && submission.lessonId == lessonId
-    val sending = submission.submitting
+    // ⚠️ الملكيّة شرطٌ للقفل: كان `sending` يتبع أيّ إرسال جارٍ ولو كان لدرسٍ
+    // آخر بدأ من ورقة درسٍ مفتوح، فتُقفل هذه الشاشة (لا إرسال ولا رجوع) على
+    // رفعٍ لا يخصّها — كما عولج في `TranscriptSection`.
+    val sending = ownsSubmission && submission.submitting
+    // مَن يملك هذه الشاشة يُعلن درسه للتطبيق كلّه: به وحده يعرف `MinbarApp`
+    // أنّ الرفع الجاري يخصّ الشاشة المفتوحة فيحبس الرجوع، أو لا يخصّها فيدعه.
+    LaunchedEffect(lessonId) { vm.setContributeScreenLesson(lessonId) }
+    DisposableEffect(Unit) { onDispose { vm.setContributeScreenLesson("") } }
     val progress = if (ownsSubmission) submission.progress else 0
     val done = ownsSubmission && submission.done
     val visibleMessage = message.ifBlank {

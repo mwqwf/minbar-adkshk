@@ -58,9 +58,12 @@ fun ClipboardImageSuggestion(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    // ⚠️ تحويلٌ آمن لا صارم: `getSystemService` قد يعيد `null` (سياق مقيَّد أو
+    // جهاز بلا خدمة حافظة)، والتحويل الصارم كان يُسقط الشاشة كلّها لأجل
+    // اقتراحٍ مساعد. وعند غيابها لا يُعرض الاقتراح ولا شيء غيره يتأثّر.
     val clipboard = remember {
-        context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    }
+        context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+    } ?: return
     var refresh by remember { mutableIntStateOf(0) }
     var dismissedFingerprint by remember { mutableStateOf<String?>(null) }
     var candidate by remember { mutableStateOf<ClipboardImageCandidate?>(null) }

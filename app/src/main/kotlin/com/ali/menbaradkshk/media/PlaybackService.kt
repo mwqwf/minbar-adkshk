@@ -18,12 +18,13 @@ import com.ali.menbaradkshk.MainActivity
 import com.ali.menbaradkshk.MinbarApplication
 import com.ali.menbaradkshk.data.ContentRepository
 import com.ali.menbaradkshk.data.LocalStore
-import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -35,6 +36,24 @@ class PlaybackService : MediaSessionService() {
     private lateinit var mediaSession: MediaSession
     private lateinit var store: LocalStore
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /**
+     * ⚠️ خيط واحد للكتابة في المخزن — لا الخيط الرئيسي.
+     *
+     * كل كتابة في [LocalStore] تفكّ JSON كاملاً وتُعيد تسلسله (خرائط المواضع
+     * والثواني اليوميّة تبلغ مئات المداخل)، وحلقة النبض تفعل ذلك **كل خمس
+     * ثوانٍ طوال التشغيل** على `Dispatchers.Main.immediate` — أي على مُرسِل
+     * الواجهة نفسه، فتتقطّع الحركة ويهتزّ التمرير بلا سبب ظاهر.
+     *
+     * والخيط **واحد** لا مجمّع `Dispatchers.IO`: الكتابات متتابعة بطبيعتها
+     * (موضع ثم موضع)، ولو تسابقت على مجمّع لكتب نبضٌ متأخّر موضعاً أقدم فوق
+     * أحدث منه — أي لعاد الدرس إلى الوراء. التسليم على خيط واحد يحفظ الترتيب
+     * كما كان على الخيط الرئيسي تماماً.
+     */
+    private val storeExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val storeScope = CoroutineScope(
+        SupervisorJob() + storeExecutor.asCoroutineDispatcher(),
+    )
     private var trackingJob: Job? = null
     private var sleepJob: Job? = null
     private var trackedLessonId = ""
@@ -172,19 +191,28 @@ class PlaybackService : MediaSessionService() {
                 val wallMs = (nowElapsedMs - lastTickElapsedMs).coerceAtLeast(0L)
                 lastTickElapsedMs = nowElapsedMs
                 if (player.isPlaying) {
+                    // 📖 قراءة المشغّل تبقى على الخيط الرئيسي (شرط ExoPlayer)،
+                    // والكتابات وحدها تنتقل إلى [storeScope] — انظر تعليقه.
                     val current = player.currentPosition.coerceAtLeast(0L)
                     val delta = (current - lastTrackedPositionMs)
                         .coerceIn(0L, TRACK_INTERVAL_MS * 2)
                         .coerceAtMost(wallMs)
-                    if (delta > 0L && isLesson(player.currentMediaItem?.mediaId.orEmpty())) {
-                        store.addListenSeconds(delta / 1_000L)
-                        // سلسلة الاستماع تتقدّم بالاستماع الفعلي لا بإتمام الدرس فقط.
-                        store.recordDailyListen()
+                    val counted = delta > 0L &&
+                        isLesson(player.currentMediaItem?.mediaId.orEmpty())
+                    if (counted) {
                         listenedMs += delta
                         countPlayIfListenedEnough()
                     }
                     lastTrackedPositionMs = current
-                    persistPosition()
+                    val snapshot = positionSnapshot()
+                    storeScope.launch {
+                        if (counted) {
+                            store.addListenSeconds(delta / 1_000L)
+                            // سلسلة الاستماع تتقدّم بالاستماع الفعلي لا بإتمام الدرس فقط.
+                            store.recordDailyListen()
+                        }
+                        snapshot?.let(::applySnapshot)
+                    }
                 }
             }
         }
@@ -233,7 +261,8 @@ class PlaybackService : MediaSessionService() {
         val id = trackedLessonId
         if (playCounted || id.isBlank() || !isLesson(id) || listenedMs < COUNT_AFTER_MS) return
         playCounted = true
-        store.incrementPlayCount(id)
+        // كتابة مخزن ⇒ خارج الخيط الرئيسي كبقيّة كتابات النبضة.
+        storeScope.launch { store.incrementPlayCount(id) }
         scope.launch { ContentRepository.get(this@PlaybackService).incrementView(id) }
     }
 
@@ -243,35 +272,65 @@ class PlaybackService : MediaSessionService() {
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
-            val lessonId = store.recentPlayedIds().firstOrNull().orEmpty()
-            val lesson = store.lessons().firstOrNull { it.id == lessonId }
-            val local = lessonId.takeIf(String::isNotBlank)?.let(store::localAudioPath)
-            if (lesson == null || (local == null && lesson.audioUrl.isBlank())) {
-                return Futures.immediateFailedFuture(
-                    UnsupportedOperationException("لا يوجد درس سابق للاستئناف"),
-                )
+            // ⚠️ `store.lessons()` يفكّ JSON لمئات الدروس، وهذه الدالة تُنادى
+            // على الخيط الرئيسي وهي مطالَبةٌ بردٍّ سريع (زرّ التشغيل في الودجت
+            // أو السمّاعة بعد موت العمليّة). الحجب هنا كان يعني تجمّداً مرئيّاً،
+            // وربّما ANR على جهازٍ بطيء. الردّ **وعدٌ** يُوفى من خيط خلفيّ —
+            // وهو ما تسمح به `ListenableFuture` أصلاً؛ النمط نفسه المستعمل مع
+            // `goAsync` في `NowPlayingWidget`.
+            val future = SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
+            storeScope.launch {
+                runCatching {
+                    val lessonId = store.recentPlayedIds().firstOrNull().orEmpty()
+                    val lesson = store.lessons().firstOrNull { it.id == lessonId }
+                    val local = lessonId.takeIf(String::isNotBlank)?.let(store::localAudioPath)
+                    if (lesson == null || (local == null && lesson.audioUrl.isBlank())) {
+                        future.setException(
+                            UnsupportedOperationException("لا يوجد درس سابق للاستئناف"),
+                        )
+                    } else {
+                        future.set(
+                            MediaSession.MediaItemsWithStartPosition(
+                                listOf(PlaybackController.mediaItemFor(lesson, local)),
+                                0,
+                                store.position(lessonId),
+                            ),
+                        )
+                    }
+                }.onFailure { failure -> future.setException(failure) }
             }
-            return Futures.immediateFuture(
-                MediaSession.MediaItemsWithStartPosition(
-                    listOf(PlaybackController.mediaItemFor(lesson, local)),
-                    0,
-                    store.position(lessonId),
-                ),
-            )
+            return future
         }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession
 
-    private fun persistPosition() {
-        val id = trackedLessonId.takeIf { it.isNotBlank() && isLesson(it) } ?: return
-        val position = player.currentPosition.coerceAtLeast(0L)
-        val duration = player.duration.takeIf { it > 0L } ?: 0L
-        if (duration > 0L && position >= duration - 3_000L) {
-            store.markCompleted(id)
+    /// لقطة موضعٍ تُلتقط من المشغّل (خيط رئيسي) لتُكتب لاحقاً في خيط آخر.
+    private data class PositionSnapshot(val id: String, val position: Long, val duration: Long)
+
+    /// القراءة وحدها — تُنادى على الخيط الرئيسي حصراً (ExoPlayer يشترطه).
+    private fun positionSnapshot(): PositionSnapshot? {
+        val id = trackedLessonId.takeIf { it.isNotBlank() && isLesson(it) } ?: return null
+        return PositionSnapshot(
+            id,
+            player.currentPosition.coerceAtLeast(0L),
+            player.duration.takeIf { it > 0L } ?: 0L,
+        )
+    }
+
+    /// الكتابة وحدها — لا تلمس المشغّل، فتصلح لأي خيط.
+    private fun applySnapshot(snapshot: PositionSnapshot) {
+        if (snapshot.duration > 0L && snapshot.position >= snapshot.duration - 3_000L) {
+            store.markCompleted(snapshot.id)
         } else {
-            store.setPosition(id, position)
+            store.setPosition(snapshot.id, snapshot.position)
         }
+    }
+
+    /// حفظ فوريّ متزامن — للحظات الموت (`onTaskRemoved`/`onDestroy`) حيث لا
+    /// يبقى وقتٌ لخيطٍ آخر أن يُنهي عمله قبل أن تُقتل العمليّة.
+    private fun persistPosition() {
+        positionSnapshot()?.let(::applySnapshot)
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -288,6 +347,10 @@ class PlaybackService : MediaSessionService() {
         mediaSession.release()
         player.release()
         scope.cancel()
+        // ⚠️ الإلغاء يقطع الكتابات المؤجَّلة، ولذلك حُفظ الموضع أعلاه متزامناً
+        // قبله. وإغلاق الخيط واجبٌ وإلا بقي حيّاً بعد موت الخدمة.
+        storeScope.cancel()
+        storeExecutor.shutdown()
         super.onDestroy()
     }
 

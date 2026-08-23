@@ -71,8 +71,36 @@ class DownloadRepository private constructor(context: Context) {
     /// منطق الاستئناف بـRange.
     private val lessonLocks = mutableMapOf<String, Mutex>()
 
-    private fun lockFor(lessonId: String): Mutex = synchronized(lessonLocks) {
+    /// ⚠️ عدّاد المنتظِرين لكل درس. بدونه كانت الخريطة تنمو بلا حدّ: مدخلٌ
+    /// لكل درس نُزّل ولا يُحذف منها شيء قطّ، ومن نزّل قسماً فيه مئات الدروس
+    /// يبقيها كلّها في ذاكرة عمليّةٍ حيّةٍ طول عمرها (المستودع مفرد). والحذف
+    /// بالعدّاد لا بمجرّد انتهاء العمل: لو حُذف القفل ومنتظِرٌ آخر قائمٌ عليه
+    /// لأخذ التالي **قفلاً جديداً** فدخل المسارُ نفسه مرّتين على الملفّ
+    /// الجزئي نفسه — وهو بعينه ما وُضع القفل لمنعه.
+    private val lockWaiters = mutableMapOf<String, Int>()
+
+    private fun acquireLock(lessonId: String): Mutex = synchronized(lessonLocks) {
+        lockWaiters[lessonId] = (lockWaiters[lessonId] ?: 0) + 1
         lessonLocks.getOrPut(lessonId) { Mutex() }
+    }
+
+    private fun releaseLock(lessonId: String) = synchronized(lessonLocks) {
+        val remaining = (lockWaiters[lessonId] ?: 1) - 1
+        if (remaining <= 0) {
+            lockWaiters.remove(lessonId)
+            lessonLocks.remove(lessonId)
+        } else {
+            lockWaiters[lessonId] = remaining
+        }
+    }
+
+    private suspend fun <T> withLessonLock(lessonId: String, block: suspend () -> T): T {
+        val mutex = acquireLock(lessonId)
+        try {
+            return mutex.withLock { block() }
+        } finally {
+            releaseLock(lessonId)
+        }
     }
 
     // ---- تحكّم المستخدم في النقل الجاري ----
@@ -115,7 +143,7 @@ class DownloadRepository private constructor(context: Context) {
 
     suspend fun download(lesson: Lesson): String {
         require(lesson.id.isNotBlank()) { "معرّف الدرس مفقود." }
-        return lockFor(lesson.id).withLock { downloadLocked(lesson) }
+        return withLessonLock(lesson.id) { downloadLocked(lesson) }
     }
 
     private suspend fun downloadLocked(lesson: Lesson): String = withContext(Dispatchers.IO) {

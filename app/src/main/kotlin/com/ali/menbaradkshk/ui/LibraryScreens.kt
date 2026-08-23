@@ -548,12 +548,17 @@ fun DownloadsScreen(vm: AppViewModel) {
     // مدد الدروس تُقرأ مرّة واحدة لكل تركيب بدل تحليل JSON كامل لكل صفّ.
     val durations = remember(revision) { vm.store.durations() }
     // تجميع التنزيلات حسب القسم الفرعي (الأحدث تحميلاً يبقى ترتيبه داخل قسمه).
+    // ⚠️ يُحتفظ بمعرّف القسم مع اسمه: التجميع يقع بالمعرّف، أمّا الاسم فقد
+    // يتكرّر — كل قسم فرعيّ حُذف من الخادم يصير اسمه «دروس أخرى»، وقسمان
+    // مختلفان قد يحملان الاسم نفسه. ومفتاح عنصر `LazyColumn` مبنيّ على الاسم
+    // كان يتكرّر حينها فينهار عرض «تنزيلاتي» كلّه
+    // (`IllegalArgumentException: Key was already used`). المعرّف فريد دائماً.
     val grouped = remember(items, content.subcategories) {
         items.groupBy { it.subcategoryId }
             .map { (subId, lessons) ->
-                (content.subcategoryById[subId]?.name ?: "دروس أخرى") to lessons
+                Triple(subId, content.subcategoryById[subId]?.name ?: "دروس أخرى", lessons)
             }
-            .sortedBy { it.first }
+            .sortedBy { it.second }
     }
     var deleteTarget by remember { mutableStateOf<com.ali.menbaradkshk.data.Lesson?>(null) }
     var deleteAllDialog by remember { mutableStateOf(false) }
@@ -682,8 +687,8 @@ fun DownloadsScreen(vm: AppViewModel) {
                 }
             }
         } else {
-            grouped.forEach { (sectionName, lessons) ->
-                item(key = "header-$sectionName") {
+            grouped.forEach { (sectionId, sectionName, lessons) ->
+                item(key = "header-$sectionId") {
                     Text(
                         sectionName,
                         style = MaterialTheme.typography.titleMedium,

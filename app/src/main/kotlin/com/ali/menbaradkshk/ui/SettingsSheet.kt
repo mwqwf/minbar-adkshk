@@ -58,9 +58,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -94,7 +96,20 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     // رفضين على أندرويد 13+) كان يقرأ «تصلك إشعارات المحتوى الجديد» أبداً
     // ولا يصله شيء، بلا سبب ظاهر ولا مدخل إلى إعدادات النظام.
     // `areNotificationsEnabled` يغطّي الإذن والحجب اليدوي معاً.
-    val notifBlocked = remember(revision) {
+    // ⚠️ `revision` مخزنُنا نحن ولا يتغيّر حين يمنح المستخدمُ الإذنَ من إعدادات
+    // النظام، فكان التحذير يبقى معروضاً بعد رفع الحظر حتى إعادة فتح التطبيق.
+    // القراءة تتجدّد مع كل عودة إلى المقدّمة (ON_RESUME) — نفس نمط
+    // `ClipboardImageSuggestion`.
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    var notifRevision by remember { mutableIntStateOf(0) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) notifRevision++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val notifBlocked = remember(revision, notifRevision) {
         !NotificationManagerCompat.from(context).areNotificationsEnabled()
     }
     val themeMode = remember(revision) { vm.store.themeMode() }

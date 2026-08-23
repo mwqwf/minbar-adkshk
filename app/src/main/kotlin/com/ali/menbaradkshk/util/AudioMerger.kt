@@ -37,13 +37,18 @@ object AudioMerger {
         try {
             FileOutputStream(out).use { sink ->
                 inputs.forEachIndexed { index, input ->
-                    val bytes = input.readBytes()
-                    val (frames, spec) = audioFramesOnly(bytes)
+                    // ⚠️ كان `input.readBytes()` يحمل الملفّ **كاملاً** في
+                    // الذاكرة (وسقفه ٣٢ م.ب للملفّ الواحد): على أجهزة
+                    // minSdk 23 ذات كومةٍ تُقاس بعشرات الميغابايتات يعني هذا
+                    // `OutOfMemoryError` — لا رسالةَ خطأٍ بل انهيار التطبيق
+                    // وضياع الرفع. الآن نقرأ رأس الملفّ فقط لتحديد نطاق
+                    // الإطارات، ثم ننسخ النطاق تدفّقيّاً بصومعة ثابتة.
+                    val (frames, spec) = frameRange(input)
                     if (streamSpec == null) streamSpec = spec
                     if (spec != streamSpec) {
                         throw Mp3FormatException("ملفات MP3 المختارة ليست بترميز صوتي متوافق")
                     }
-                    sink.write(bytes, frames.first, frames.last - frames.first + 1)
+                    copyRange(input, frames.first, frames.last, sink)
                     onProgress?.invoke((index + 1).toDouble() / inputs.size * 100)
                 }
                 sink.fd.sync()
@@ -57,30 +62,79 @@ object AudioMerger {
 
     private fun byteAt(b: ByteArray, i: Int): Int = b[i].toInt() and 0xFF
 
-    /// يقصّ الوسوم ويعيد (نطاق الإطارات، بصمة الترميز).
-    private fun audioFramesOnly(b: ByteArray): Pair<IntRange, Int> {
+    /// حجم صومعة النسخ التدفّقي — ثابتة مهما كبر الملفّ.
+    private const val COPY_BUFFER = 64 * 1024
+
+    /// نافذة الرأس التي يُبحث فيها عن أوّل إطار MPEG بعد وسم ID3v2. أوسع بكثير
+    /// من أيّ حشوٍ واقعيّ بين الوسم وأوّل إطار، وأصغر بكثير من الملفّ نفسه.
+    private const val HEADER_WINDOW = 256 * 1024
+
+    /// يقصّ الوسوم ويعيد (نطاق الإطارات في **الملفّ**، بصمة الترميز) — بقراءة
+    /// الرأس والذيل فقط، بلا تحميل الملفّ في الذاكرة.
+    private fun frameRange(file: File): Pair<LongRange, Int> {
+        java.io.RandomAccessFile(file, "r").use { raf ->
+            var start = 0L
+            var end = raf.length()
+            if (end <= 4L) throw Mp3FormatException("لم يُعثر على صوت MPEG في الملف")
+
+            // ID3v2: "ID3" + إصدار(2) + أعلام(1) + حجم syncsafe(4)
+            val head = ByteArray(10)
+            if (end >= 10L) {
+                raf.seek(0L)
+                raf.readFully(head)
+                if (byteAt(head, 0) == 0x49 && byteAt(head, 1) == 0x44 && byteAt(head, 2) == 0x33) {
+                    val size = ((byteAt(head, 6) and 0x7F) shl 21) or
+                        ((byteAt(head, 7) and 0x7F) shl 14) or
+                        ((byteAt(head, 8) and 0x7F) shl 7) or
+                        (byteAt(head, 9) and 0x7F)
+                    var s = 10L + size
+                    if ((byteAt(head, 5) and 0x10) != 0) s += 10L
+                    if (s < end) start = s
+                }
+            }
+
+            // ID3v1: "TAG" في آخر 128 بايت
+            if (end - start > 128L) {
+                val tag = ByteArray(3)
+                raf.seek(end - 128L)
+                raf.readFully(tag)
+                if (byteAt(tag, 0) == 0x54 && byteAt(tag, 1) == 0x41 && byteAt(tag, 2) == 0x47) {
+                    end -= 128L
+                }
+            }
+
+            // نافذة الرأس وحدها تكفي للعثور على أوّل إطار وقراءة بصمته.
+            val windowSize = minOf((end - start), HEADER_WINDOW.toLong()).toInt()
+            if (windowSize < 4) throw Mp3FormatException("لم يُعثر على صوت MPEG في الملف")
+            val window = ByteArray(windowSize)
+            raf.seek(start)
+            raf.readFully(window)
+            val (offset, spec) = firstFrameInWindow(window)
+            return (start + offset until end) to spec
+        }
+    }
+
+    /// ينسخ [from]..[to] من الملفّ إلى [sink] بصومعة ثابتة (بلا تحميل كامل).
+    private fun copyRange(file: File, from: Long, to: Long, sink: java.io.OutputStream) {
+        var remaining = to - from + 1L
+        if (remaining <= 0L) return
+        java.io.RandomAccessFile(file, "r").use { raf ->
+            raf.seek(from)
+            val buffer = ByteArray(COPY_BUFFER)
+            while (remaining > 0L) {
+                val want = minOf(remaining, buffer.size.toLong()).toInt()
+                val read = raf.read(buffer, 0, want)
+                if (read <= 0) break
+                sink.write(buffer, 0, read)
+                remaining -= read
+            }
+        }
+    }
+
+    /// يعيد (إزاحة أول إطار داخل النافذة، بصمة الترميز).
+    private fun firstFrameInWindow(b: ByteArray): Pair<Int, Int> {
         var start = 0
-        var end = b.size
-
-        // ID3v2: "ID3" + إصدار(2) + أعلام(1) + حجم syncsafe(4)
-        if (end >= 10 && byteAt(b, 0) == 0x49 && byteAt(b, 1) == 0x44 && byteAt(b, 2) == 0x33) {
-            val size = ((byteAt(b, 6) and 0x7F) shl 21) or
-                ((byteAt(b, 7) and 0x7F) shl 14) or
-                ((byteAt(b, 8) and 0x7F) shl 7) or
-                (byteAt(b, 9) and 0x7F)
-            var s = 10 + size
-            if ((byteAt(b, 5) and 0x10) != 0) s += 10
-            if (s < end) start = s
-        }
-
-        // ID3v1: "TAG" في آخر 128 بايت
-        if (end - start > 128 &&
-            byteAt(b, end - 128) == 0x54 &&
-            byteAt(b, end - 127) == 0x41 &&
-            byteAt(b, end - 126) == 0x47
-        ) {
-            end -= 128
-        }
+        val end = b.size
 
         // أول إطار MPEG صالح (مع التحقق أن ما يليه إطار صالح أيضاً).
         var p = start
@@ -118,7 +172,7 @@ object AudioMerger {
             (((h1 shr 1) and 0x03) shl 6) or
             (((h2 shr 2) and 0x03) shl 4) or
             ((h3 shr 6) and 0x03)
-        return (start until end) to spec
+        return start to spec
     }
 
     private fun hasVbrMarker(b: ByteArray, from: Int, to: Int): Boolean {

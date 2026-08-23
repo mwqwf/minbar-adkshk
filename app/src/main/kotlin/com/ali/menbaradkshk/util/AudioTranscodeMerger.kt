@@ -30,6 +30,10 @@ object AudioTranscodeMerger {
     private const val TIMEOUT_US = 10_000L
     private const val BYTES_PER_FRAME = 2 * TARGET_CHANNELS
 
+    /// سقف زمن فكّ **ملفّ واحد**: عشر دقائق تكفي أطول درسٍ على أبطأ جهاز
+    /// بفارقٍ واسع، ولا تترك ملفّاً تالفاً يعلّق العمليّة إلى الأبد.
+    private const val DECODE_TIMEOUT_MS = 10L * 60L * 1_000L
+
     const val OUTPUT_MIME = "audio/mp4"
     const val OUTPUT_EXTENSION = "m4a"
 
@@ -64,8 +68,20 @@ object AudioTranscodeMerger {
             null,
             MediaCodec.CONFIGURE_FLAG_ENCODE,
         )
-        encoder.start()
-        val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        // ⚠️ `start()` و`MediaMuxer(...)` كانا **خارج** الحماية التي تحرّرهما
+        // في `finally`: أيّ استثناء من مُنشئ `MediaMuxer` (مسار غير قابل
+        // للكتابة، مساحة ممتلئة) يترك مرمّز الأجهزة محجوزاً بلا `release()` —
+        // ومرمّزات الأجهزة موردٌ شحيح على مستوى النظام، فتفشل كلّ محاولة دمج
+        // تالية على الجهاز حتى إعادة تشغيله.
+        val muxer = try {
+            encoder.start()
+            MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        } catch (failure: Throwable) {
+            runCatching { encoder.stop() }
+            runCatching { encoder.release() }
+            output.delete()
+            throw failure
+        }
         var trackIndex = -1
         var muxerStarted = false
         var totalFrames = 0L
@@ -87,7 +103,15 @@ object AudioTranscodeMerger {
                     }
 
                     index >= 0 -> {
-                        val encoded = encoder.getOutputBuffer(index) ?: continue
+                        // ⚠️ `?: continue` وحده كان يقفز **قبل**
+                        // `releaseOutputBuffer`، فتُحتجز الصومعة إلى الأبد؛ ومع
+                        // نفادها يعود `dequeueOutputBuffer` بلا شيء أبداً فتدور
+                        // الحلقة بلا نهاية ويتجمّد الدمج. الصومعة تُعاد أوّلاً.
+                        val encoded = encoder.getOutputBuffer(index)
+                        if (encoded == null) {
+                            encoder.releaseOutputBuffer(index, false)
+                            continue
+                        }
                         if (encoderInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
                             encoderInfo.size = 0
                         }
@@ -111,7 +135,14 @@ object AudioTranscodeMerger {
             while (offset < length) {
                 val inIndex = encoder.dequeueInputBuffer(TIMEOUT_US)
                 if (inIndex >= 0) {
-                    val buffer = encoder.getInputBuffer(inIndex) ?: continue
+                    // ⚠️ بالعلّة نفسها في [drainEncoder]: القفز بلا إعادة صومعة
+                    // الدخل يستنزفها فيعود `dequeueInputBuffer` بلا شيء أبداً
+                    // وتدور الحلقة إلى الأبد. نُعيدها بطولٍ صفر ثم نتابع.
+                    val buffer = encoder.getInputBuffer(inIndex)
+                    if (buffer == null) {
+                        encoder.queueInputBuffer(inIndex, 0, 0, 0, 0)
+                        continue
+                    }
                     buffer.clear()
                     val chunk = minOf(buffer.remaining(), length - offset)
                     buffer.put(data, offset, chunk)
@@ -211,7 +242,16 @@ object AudioTranscodeMerger {
             var resampler = Resampler(sampleRate, channels)
             var inputDone = false
             var outputDone = false
+            // ⏱️ مهلة كليّة: الحلقة كانت تدور حتى راية EOS وحدها، وملفٌّ تالف
+            // لا يُصدرها يُعلّق الخيط أبداً — وهو خيط عمل الرفع، فيبقى «جارٍ
+            // الدمج» إلى ما لا نهاية بلا رسالة ولا مخرج.
+            val deadlineMs = System.currentTimeMillis() + DECODE_TIMEOUT_MS
             while (!outputDone) {
+                if (System.currentTimeMillis() > deadlineMs) {
+                    throw UnsupportedAudioException(
+                        "استغرق فكّ «${file.name}» وقتاً طويلاً — الملف تالف أو غير مدعوم.",
+                    )
+                }
                 if (!inputDone) {
                     val inIndex = decoder.dequeueInputBuffer(TIMEOUT_US)
                     if (inIndex >= 0) {

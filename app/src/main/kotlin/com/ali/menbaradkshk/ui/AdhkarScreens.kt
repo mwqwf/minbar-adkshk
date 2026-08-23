@@ -647,6 +647,12 @@ private fun DhikrCard(
 }
 
 /// عدّاد دائري: يعرض المتبقّي ما دام الذكر مكرَّراً، و✓ عند إتمامه.
+///
+/// ⚠️ **كلمة «باقٍ» تحت الرقم**: كان السطر يقول «١٧ من ١٠٠» والشارة في الصفّ
+/// نفسه تقول «٨٣» — رقمان متناقضان ظاهراً لشيء واحد أمام قارئٍ لا يعنيه
+/// التقنية. وأُبقي المتبقّي (لا المُنجَز) لأنّه المعنى المفيد أثناء التسبيح
+/// («كم بقي؟»)، ولأنّ الذكر غير المكرَّر لا سطر له فتبدأ شارته بـ«١» لا «٠».
+/// فكلمةٌ واحدة تُبيّنه أبسطُ للقارئ من تكرار الرقم نفسه مرّتين.
 @Composable
 private fun CounterBadge(done: Long, target: Long, finished: Boolean) {
     Box(
@@ -658,12 +664,19 @@ private fun CounterBadge(done: Long, target: Long, finished: Boolean) {
         if (finished) {
             Icon(Icons.Filled.Check, "تمّ", tint = Color.White)
         } else {
-            Text(
-                "${target - done}",
-                style = MaterialTheme.typography.titleMedium,
-                color = Teal,
-                fontWeight = FontWeight.Bold,
-            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    "${target - done}",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Teal,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    "باقٍ",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Teal.copy(alpha = .8f),
+                )
+            }
         }
     }
 }

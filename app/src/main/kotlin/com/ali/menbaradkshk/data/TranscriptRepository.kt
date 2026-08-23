@@ -21,6 +21,7 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -139,7 +140,28 @@ class TranscriptRepository private constructor(context: Context) {
     // 💾 كاش قرصي مستقلّ بالمستودع: الدرس المنزَّل كان يعمل بلا نت ونصّه لا،
     // لأن الكاش كان في الذاكرة فقط ويضيع بموت العملية — فيظهر «جارٍ التحميل»
     // ثم دعوة المساهمة كأن الدرس بلا نص أصلاً.
-    private val diskCache = appContext.getSharedPreferences(CACHE_FILE, Context.MODE_PRIVATE)
+    //
+    // ⚠️ **ملفّ لكل درس** لا `SharedPreferences` واحد.
+    //
+    // كان الكاش كلّه في تفضيلاتٍ واحدة: مئتا مدخل × عشرين ألف حرف ≈ أربعة
+    // ميغابايت. و`SharedPreferences` تُحمّل ملفّها **كاملاً في الذاكرة** وتبقيه
+    // مقيماً طول عمر العمليّة، وكلّ `apply()` يُعيد كتابة الملفّ كلّه على
+    // القرص، و`pruneDisk` كان ينسخ `all` (الأربعة ميغابايت) مع كل كتابة. أي
+    // أربعة ميغابايت مهدورة دائماً على أجهزةٍ ذاكرتها ضيّقة، وكتابةُ ملفٍّ
+    // كامل لأجل مدخلٍ واحد.
+    //
+    // والملفّات تحت `cacheDir` لا `filesDir`: هذا كاشٌ يصحّ للنظام أن يمحوه
+    // عند ضيق المساحة — وهو ما يوافق قاعدة «لا يضرّ جهاز المستخدم».
+    private val diskDir = File(appContext.cacheDir, CACHE_DIR)
+
+    init {
+        // ترحيل الكاش القديم = حذفه: محتواه يُعاد جلبه عند أوّل فتح، ولا
+        // يستحقّ نصٌّ مؤقَّت شيفرةَ ترحيلٍ تبقى إلى الأبد.
+        runCatching {
+            File(File(appContext.applicationInfo.dataDir, "shared_prefs"), "$CACHE_FILE.xml")
+                .delete()
+        }
+    }
 
     // نتائج فهرس البحث لكلمة واحدة، في الذاكرة فقط: البحث زائرٌ عابر ولا
     // يستحق قرصاً، لكن حذف حرفٍ وإعادته لا يصحّ أن يُعيد الاستعلام.
@@ -206,16 +228,23 @@ class TranscriptRepository private constructor(context: Context) {
         return age < if (entry.second == null) EMPTY_TTL_MS else TEXT_TTL_MS
     }
 
-    private fun entryKey(lessonId: String) = ENTRY_PREFIX + lessonId
-
-    private fun stampKey(lessonId: String) = STAMP_PREFIX + lessonId
+    /// اسم ملفّ آمن ومستقرّ للمعرّف (المعرّفات قد تحمل ما لا يصلح في اسم ملفّ).
+    private fun entryFile(lessonId: String): File {
+        val digest = java.security.MessageDigest.getInstance("SHA-1")
+            .digest(lessonId.toByteArray())
+            .joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
+        return File(diskDir, "$digest.json")
+    }
 
     /** قراءة مدخل القرص كما هو (بلا فحص صلاحية) أو null إن غاب أو تلف. */
     private fun readDisk(lessonId: String): Pair<Long, LessonTranscript?>? {
-        val savedAtMs = diskCache.getLong(stampKey(lessonId), 0L)
-        if (savedAtMs <= 0L) return null
-        val raw = diskCache.getString(entryKey(lessonId), null) ?: return null
+        val file = entryFile(lessonId)
+        if (!file.isFile) return null
+        val raw = runCatching { file.readText() }.getOrNull() ?: return null
         val json = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+        // الختم داخل الملفّ نفسه: مدخلٌ واحد = ملفٌّ واحد، فلا مفتاحان يفترقان.
+        val savedAtMs = json.optLong("savedAtMs", 0L)
+        if (savedAtMs <= 0L) return null
         if (!json.optBoolean("found", false)) return savedAtMs to null
         val images = json.optJSONArray("images")
         val urls = (0 until (images?.length() ?: 0)).mapNotNull { index ->
@@ -234,6 +263,7 @@ class TranscriptRepository private constructor(context: Context) {
     private fun writeDisk(lessonId: String, transcript: LessonTranscript?, savedAtMs: Long) {
         val json = JSONObject()
         json.put("found", transcript != null)
+        json.put("savedAtMs", savedAtMs)
         if (transcript != null) {
             json.put("text", transcript.text)
             json.put("bookTitle", transcript.bookTitle)
@@ -241,28 +271,29 @@ class TranscriptRepository private constructor(context: Context) {
             json.put("contributorName", transcript.contributorName)
             json.put("images", JSONArray(transcript.imageUrls))
         }
-        diskCache.edit()
-            .putString(entryKey(lessonId), json.toString())
-            .putLong(stampKey(lessonId), savedAtMs)
-            .apply()
+        runCatching {
+            diskDir.mkdirs()
+            val file = entryFile(lessonId)
+            file.writeText(json.toString())
+            file.setLastModified(savedAtMs)
+        }
         pruneDisk()
     }
 
-    /** سقف 200 مدخل: يُسقط الأقدم أولاً (الأختام وحدها تُقرأ للترتيب). */
+    /**
+     * سقف [MAX_DISK_ENTRIES] مدخلاً: يُسقط الأقدم أولاً.
+     *
+     * الترتيب بتاريخ تعديل الملفّ لا بقراءة محتوياته: كان التقليم يفكّ الكاش
+     * كلّه في الذاكرة مع **كل** كتابة لمجرّد معرفة الأقدم.
+     */
     private fun pruneDisk() {
-        val stamps = diskCache.all.entries.mapNotNull { entry ->
-            val value = entry.value
-            if (entry.key.startsWith(STAMP_PREFIX) && value is Long) entry.key to value else null
+        runCatching {
+            val files = diskDir.listFiles()?.filter { it.isFile } ?: return
+            if (files.size <= MAX_DISK_ENTRIES) return
+            files.sortedBy { it.lastModified() }
+                .take(files.size - MAX_DISK_ENTRIES)
+                .forEach { it.delete() }
         }
-        if (stamps.size <= MAX_DISK_ENTRIES) return
-        val editor = diskCache.edit()
-        stamps.sortedBy { it.second }
-            .take(stamps.size - MAX_DISK_ENTRIES)
-            .forEach { (key, _) ->
-                editor.remove(key)
-                editor.remove(ENTRY_PREFIX + key.removePrefix(STAMP_PREFIX))
-            }
-        editor.apply()
     }
 
     /**
@@ -471,10 +502,7 @@ class TranscriptRepository private constructor(context: Context) {
     /** تفريغ كاش درس — الطبقتين معاً (بعد اعتماد اقتراح مثلاً ليظهر فوراً). */
     fun invalidate(lessonId: String) {
         cache.remove(lessonId)
-        diskCache.edit()
-            .remove(entryKey(lessonId))
-            .remove(stampKey(lessonId))
-            .apply()
+        runCatching { entryFile(lessonId).delete() }
     }
 
     companion object {
@@ -492,9 +520,11 @@ class TranscriptRepository private constructor(context: Context) {
         private const val TEXT_TTL_MS = 7L * 24 * 60 * 60 * 1000L
         private const val EMPTY_TTL_MS = 24L * 60 * 60 * 1000L
         private const val MAX_DISK_ENTRIES = 200
+        /// مجلَّد الكاش الجديد (ملفّ لكل درس) تحت `cacheDir`.
+        private const val CACHE_DIR = "transcripts"
+
+        /// اسم تفضيلات الكاش القديم — يُحذف مرّةً في [init] لا غير.
         private const val CACHE_FILE = "minbar_transcript_cache"
-        private const val ENTRY_PREFIX = "t_"
-        private const val STAMP_PREFIX = "ts_"
         private const val COLLECTION = "transcript_submissions"
         private const val TRANSCRIPTS = "lesson_transcripts"
         @Volatile private var instance: TranscriptRepository? = null

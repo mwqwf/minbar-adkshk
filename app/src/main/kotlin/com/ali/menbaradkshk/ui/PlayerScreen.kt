@@ -185,7 +185,10 @@ fun PlayerScreen(
                     actionIconContentColor = AppBarForeground,
                 ),
                 navigationIcon = {
-                    IconButton(onClick = { vm.back() }) {
+                    // كسهم النظام: مكدّس فارغ ⇒ الرئيسية لا لا-شيء. الشاشة
+                    // بملء الشاشة بلا شريط سفليّ، فزرٌّ لا يفعل شيئاً يحبس
+                    // المستخدم فيها (تُفتح من إشعار أو رابط عميق بلا مكدّس).
+                    IconButton(onClick = { if (!vm.back()) vm.openRoot(Route.Home) }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "رجوع")
                     }
                 },
@@ -335,9 +338,14 @@ fun PlayerScreen(
             Spacer(Modifier.height(14.dp))
 
             // شريط التقدّم.
+            // ⚠️ قراءتا المخزن تفكّان JSON كاملاً، وهذه الشاشة تُعاد مرّتين في
+            // الثانية مع نبض الموضع — فكانتا تُنفَّذان في كل نبضة بلا داعٍ.
+            // المفتاح: الدرس + `revision` (لا يتغيّر المحفوظ إلّا بكتابة).
+            val savedDuration = remember(current.id, revision) { vm.store.duration(current.id) }
+            val savedPosition = remember(current.id, revision) { vm.store.position(current.id) }
             val duration = if (active && playback.durationMs > 0L) playback.durationMs
-            else current.durationMs.takeIf { it > 0L } ?: vm.store.duration(current.id)
-            val position = if (active) playback.positionMs else vm.store.position(current.id)
+            else current.durationMs.takeIf { it > 0L } ?: savedDuration
+            val position = if (active) playback.positionMs else savedPosition
             // شريط سحب كلاسيكي كما في الأصل: خط رفيع مستمر ومقبض دائري أخضر
             // (بدل مقبض M3 العمودي الجديد وفجوة المسار).
             val sliderColors = SliderDefaults.colors(
@@ -593,9 +601,15 @@ fun PlayerScreen(
                     modifier = Modifier.clickable {
                         vm.playback.setSleepTimer(minutes)
                         sleepSheet = false
-                        vm.showMessage("سيتوقف التشغيل بعد $minutes دقيقة")
+                        vm.showMessage(
+                            "سيتوقف التشغيل بعد " +
+                                com.ali.menbaradkshk.util.minutesCountLabel(minutes),
+                        )
                     },
-                    headlineContent = { Text("$minutes دقيقة") },
+                    headlineContent = {
+                        // صيغة العدد العربيّة: «٥ دقائق» لا «5 دقيقة».
+                        Text(com.ali.menbaradkshk.util.minutesCountLabel(minutes))
+                    },
                 )
             }
             if (playback.sleepEndsAtMs != null) {
@@ -639,7 +653,10 @@ fun PlayerScreen(
                     },
                     leadingContent = { Icon(Icons.AutoMirrored.Filled.QueueMusic, null) },
                     headlineContent = { Text(playlist.name) },
-                    supportingContent = { Text("${playlist.lessonIds.size} صوتية") },
+                    supportingContent = {
+                        // صيغة العدد العربيّة: «صوتيتان» لا «2 صوتية».
+                        Text(com.ali.menbaradkshk.util.audiosCountLabel(playlist.lessonIds.size))
+                    },
                 )
             }
             Spacer(Modifier.height(24.dp))

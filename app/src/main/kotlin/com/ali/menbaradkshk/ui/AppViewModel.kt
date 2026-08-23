@@ -198,6 +198,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val transcriptContribution: StateFlow<TranscriptContributionState> =
         _transcriptContribution.asStateFlow()
 
+    /// الدرس المختار في شاشة «ساهم بالنص» ما دامت مفتوحة (وفراغٌ إن أُغلقت).
+    /// ⚠️ يلزم لتمييز الرفع الذي يخصّ الشاشة المفتوحة عن رفعٍ بدأ من ورقة درسٍ
+    /// آخر: بدونه كان حبسُ زرّ الرجوع يشمل الحالتين.
+    private val _contributeScreenLessonId = MutableStateFlow("")
+    val contributeScreenLessonId: StateFlow<String> = _contributeScreenLessonId.asStateFlow()
+
+    fun setContributeScreenLesson(lessonId: String) {
+        _contributeScreenLessonId.value = lessonId
+    }
+
     /// ملفات «المشاركة الخارجية» بانتظار أن تستهلكها شاشة المساهمة.
     private val _sharedAudio = MutableStateFlow(SharedAudioState())
     val sharedAudio: StateFlow<SharedAudioState> = _sharedAudio.asStateFlow()

@@ -96,9 +96,14 @@ fun QuranMushafView(
         if (target != state.currentPage) runCatching { state.animateScrollToPage(target) }
     }
 
+    // ⚠️ اللامبدا تُقرأ **حيّةً**: مفتاح التأثير هو `state` وحده ولا يتغيّر،
+    // فكان يبقى على نسخة `onPageSettled` الأولى فيُبلّغ مستقبِلاً قديماً بعد
+    // تبديل الرواية/القارئ. ولا تُضاف إلى المفاتيح: لامبدا جديدة كل تركيب
+    // تعني إعادة تشغيل التجميع في كل إطار.
+    val settled by rememberUpdatedState(onPageSettled)
     LaunchedEffect(state) {
         androidx.compose.runtime.snapshotFlow { state.settledPage }
-            .collect { onPageSettled(it + 1) }
+            .collect { settled(it + 1) }
     }
 
     HorizontalPager(

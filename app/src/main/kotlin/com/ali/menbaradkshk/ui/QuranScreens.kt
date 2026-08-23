@@ -2031,6 +2031,12 @@ private fun QuranPlayerControls(
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         seek?.let { (position, duration, onSeek) ->
             if (duration > 0L) {
+                // ⚠️ لا قفز من `onValueChange`: كل بكسل سحب كان يُصدر seekTo
+                // فيُجهض طلب الشبكة الجاري ويفتح آخر، والمقبض يتخلّف عن
+                // الإصبع لأنّ الموضع لا ينبض إلّا كل نصف ثانية. الحالة
+                // المحليّة تتبع الإصبع، والقفزة الواحدة عند الإفلات
+                // (نفس النمط المُصلَح في شاشة المشغّل).
+                var dragging by remember { mutableStateOf<Float?>(null) }
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -2050,8 +2056,12 @@ private fun QuranPlayerControls(
                         inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant,
                     )
                     Slider(
-                        value = position.coerceIn(0L, duration).toFloat(),
-                        onValueChange = { onSeek(it.toLong()) },
+                        value = dragging ?: position.coerceIn(0L, duration).toFloat(),
+                        onValueChange = { dragging = it },
+                        onValueChangeFinished = {
+                            dragging?.let { onSeek(it.toLong()) }
+                            dragging = null
+                        },
                         valueRange = 0f..duration.toFloat(),
                         modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                         colors = sliderColors,
@@ -2141,7 +2151,10 @@ private fun QuranPlayerControls(
                         onSleep(minutes)
                         sleepSheet = false
                     },
-                    headlineContent = { Text("بعد $minutes دقيقة") },
+                    headlineContent = {
+                        // صيغة العدد العربيّة: «بعد ٥ دقائق» لا «بعد 5 دقيقة».
+                        Text("بعد " + com.ali.menbaradkshk.util.minutesCountLabel(minutes))
+                    },
                 )
             }
             // ⚠️ **الإلغاء هنا كما في ورقة المشغّل**: كانت الورقة تضبط المؤقّت

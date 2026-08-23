@@ -1,6 +1,7 @@
 package com.ali.menbaradkshk.data
 
 import android.content.Context
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -144,7 +145,7 @@ class QuranDownloadRepository private constructor(context: Context) {
             urls.forEachIndexed { i, (ayah, url) ->
                 coroutineContext.ensureActive()
                 val target = File(dir, "$ayah.mp3")
-                if (!(target.isFile && target.length() > 0L)) fetch(url, target)
+                if (!(target.isFile && target.length() > 0L)) fetchWithRetry(url, target)
                 _progress.value = Progress(reciter.id, surahNumber, i + 1, urls.size)
             }
             _revision.value++
@@ -181,8 +182,11 @@ class QuranDownloadRepository private constructor(context: Context) {
         pageFile(riwayaId, page).takeIf { it.isFile && it.length() > 0L }?.absolutePath
 
     /** عدد الصفحات المنزَّلة فعلاً لرواية — يُعدّ من القرص لا من علامة محفوظة. */
+    /// ⚠️ `.webp` حصراً: الملفّات الجزئيّة `‎.part` صارت **تبقى** بعد الانقطاع
+    /// (انظر [fetch])، فعدُّ كل ما في المجلّد كان سيُظهر صفحاتٍ لم تكتمل.
     fun downloadedPageCount(riwayaId: String): Int =
-        pagesDir(riwayaId).listFiles()?.count { it.isFile && it.length() > 0L } ?: 0
+        pagesDir(riwayaId).listFiles()
+            ?.count { it.isFile && it.length() > 0L && it.name.endsWith(".webp") } ?: 0
 
     /** حجم صور المصحف المنزَّلة بالبايت لرواية بعينها. */
     fun pagesBytes(riwayaId: String): Long =
@@ -207,7 +211,7 @@ class QuranDownloadRepository private constructor(context: Context) {
                 coroutineContext.ensureActive()
                 val target = File(dir, "$page.webp")
                 if (!(target.isFile && target.length() > 0L)) {
-                    fetch(MushafRepository.pageUrl(riwayaId, page), target)
+                    fetchWithRetry(MushafRepository.pageUrl(riwayaId, page), target)
                 }
                 _pageProgress.value = PageProgress(page, total)
             }
@@ -231,7 +235,16 @@ class QuranDownloadRepository private constructor(context: Context) {
     private suspend fun fetch(url: String, target: File) {
         val temp = File(target.parentFile, target.name + ".part")
         var connection: HttpURLConnection? = null
+        // 📶 الملفّ الجزئي **يبقى** عند الانقطاع لا يُمحى.
+        //
+        // ⚠️ كان `finally { temp.delete() }` غير مشروط: كلّ انقطاعٍ يمحو ما
+        // نُزّل فيُعاد من الصفر — وسورةٌ بملفّ واحد قد تبلغ عشرات
+        // الميغابايتات، فعلى إنترنتٍ ضعيف لا تكتمل أبداً مهما أعاد المستخدم.
+        // والحذف يبقى في حالتين فقط: الإلغاء الصريح (المستخدم أوقف)، والنجاح
+        // (فقد صار الملفّ باسمه النهائي).
+        var keepPartial = false
         try {
+            val existing = if (temp.isFile) temp.length() else 0L
             connection = (URL(url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 20_000
                 readTimeout = 45_000
@@ -240,13 +253,17 @@ class QuranDownloadRepository private constructor(context: Context) {
                     "User-Agent",
                     "MinbarAdkassahk/${com.ali.menbaradkshk.BuildConfig.VERSION_NAME}",
                 )
+                // استئنافٌ من البايت نفسه لا من أوّله.
+                if (existing > 0L) setRequestProperty("Range", "bytes=$existing-")
                 connect()
             }
-            if (connection.responseCode !in 200..299) {
-                throw java.io.IOException("HTTP ${connection.responseCode}")
-            }
+            val code = connection.responseCode
+            if (code !in 200..299) throw java.io.IOException("HTTP $code")
+            // 206 وحده يعني أن الخادم قبل الاستئناف؛ و200 مع طلب Range يعني
+            // أنّه تجاهله وأرسل الملفّ كاملاً، فنكتب من الصفر لا فوق الجزئي.
+            val append = code == 206 && existing > 0L
             connection.inputStream.use { input ->
-                temp.outputStream().use { output ->
+                java.io.FileOutputStream(temp, append).use { output ->
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                     while (true) {
                         coroutineContext.ensureActive()
@@ -258,15 +275,49 @@ class QuranDownloadRepository private constructor(context: Context) {
             }
             if (temp.length() <= 0L) throw java.io.IOException("ملفّ فارغ")
             if (!temp.renameTo(target)) throw java.io.IOException("تعذّر حفظ الملف")
-        } finally {
+        } catch (cancelled: CancellationException) {
+            // إلغاء صريح: لا نُبقي أثراً — المستخدم طلب التوقّف لا التأجيل.
             runCatching { temp.delete() }
+            throw cancelled
+        } catch (failure: Throwable) {
+            keepPartial = true
+            throw failure
+        } finally {
+            if (!keepPartial) runCatching { temp.delete() }
             connection?.disconnect()
+        }
+    }
+
+    /**
+     * ⚠️ فشل آية واحدة كان يُسقط السورة كلّها.
+     *
+     * على إنترنتٍ ضعيف تتعثّر آيةٌ من مئة لسببٍ عابر، فيضيع تنزيلٌ كاد يكتمل
+     * ويعود المستخدم إلى أوّله. محاولاتٌ محدودة بمهلةٍ متزايدة تعالج العابر
+     * بلا أن تُخفي العطل الحقيقي (بعدها يُرمى الاستثناء كما كان).
+     */
+    private suspend fun fetchWithRetry(url: String, target: File) {
+        var attempt = 0
+        while (true) {
+            try {
+                fetch(url, target)
+                return
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                attempt++
+                if (attempt >= FETCH_ATTEMPTS) throw failure
+                kotlinx.coroutines.delay(RETRY_DELAY_MS * attempt)
+            }
         }
     }
 
     companion object {
         private const val DIR = "quran_audio"
         private const val PAGES_DIR = "quran_pages"
+
+        /// عدد محاولات جلب الملفّ الواحد قبل إسقاط التنزيل.
+        private const val FETCH_ATTEMPTS = 3
+        private const val RETRY_DELAY_MS = 1_500L
 
         @Volatile
         private var instance: QuranDownloadRepository? = null

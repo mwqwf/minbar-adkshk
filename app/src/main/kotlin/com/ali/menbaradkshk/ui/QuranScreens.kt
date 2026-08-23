@@ -643,8 +643,8 @@ private fun MushafPagesRow(vm: AppViewModel, riwayaId: String) {
                     "صفحة ${it.done} من ${it.total}"
                 }.orEmpty()
                 complete -> "كل الصفحات منزَّلة (${formatSize(bytes)}) • تعمل بلا إنترنت"
-                count > 0 -> "$count من ٦٠٤ صفحة (${formatSize(bytes)}) — اضغط لإكمالها"
-                else -> "٦٠٤ صفحة، نحو ٥١ م.ب — ليعمل المصحف المصوَّر بلا إنترنت"
+                count > 0 -> "$count من 604 صفحة (${formatSize(bytes)}) — اضغط لإكمالها"
+                else -> "604 صفحة، نحو 51 م.ب — ليعمل المصحف المصوَّر بلا إنترنت"
             }
             Text(label, style = MaterialTheme.typography.bodySmall)
         },
@@ -2179,7 +2179,7 @@ private fun QuranPlayerControls(
 
 private fun clock(ms: Long): String {
     val total = (ms / 1000).coerceAtLeast(0L)
-    return "%d:%02d".format(total / 60, total % 60)
+    return "%d:%02d".format(java.util.Locale.ROOT, total / 60, total % 60)
 }
 
 /**

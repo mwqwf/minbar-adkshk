@@ -236,7 +236,7 @@ fun ContributeScreen(vm: AppViewModel) {
     /// فقط؛ الاسم والملاحظة والإقرارات والنص المشروح كلها اختيارية.
     fun firstMissing(): Pair<String, String>? = when {
         files.isEmpty() -> FIELD_FILES to "اختر ملفاً صوتياً أولاً."
-        title.trim().length < 3 -> FIELD_TITLE to "اكتب عنوان الدرس (٣ أحرف على الأقل)."
+        title.trim().length < 3 -> FIELD_TITLE to "اكتب عنوان الدرس (3 أحرف على الأقل)."
         category == null -> FIELD_CATEGORY to "اختر القسم الرئيسي."
         subcategory == null && subsForCategory.isEmpty() ->
             FIELD_SUBCATEGORY to

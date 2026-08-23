@@ -133,13 +133,13 @@ fun RadioScreen(vm: AppViewModel) {
             Station("الأكثر استماعاً", "ما يستمع إليه الناس", Icons.AutoMirrored.Filled.TrendingUp, OrangeBrand) {
                 vm.content.mostListened(100)
             },
-            Station("القصيرة", "دروس أقل من ١٠ دقائق", Icons.Filled.Timer, GreenBrand) {
+            Station("القصيرة", "دروس أقل من 10 دقائق", Icons.Filled.Timer, GreenBrand) {
                 vm.content.shortStation()
             },
             Station("عشوائية", "اكتشف من كل الأقسام", Icons.Filled.Shuffle, Gold) {
                 vm.content.randomStation()
             },
-            Station("قبل النوم", "استماع هادئ مع مؤقّت ٣٠ دقيقة", Icons.Filled.Bedtime, Slate, sleepMinutes = 30) {
+            Station("قبل النوم", "استماع هادئ مع مؤقّت 30 دقيقة", Icons.Filled.Bedtime, Slate, sleepMinutes = 30) {
                 vm.content.randomStation()
             },
         )

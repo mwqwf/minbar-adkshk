@@ -59,7 +59,7 @@ fun Replay30Button(
                 modifier = Modifier.size(size * 0.42f),
             )
             Text(
-                "٣٠ ث",
+                "30 ث",
                 color = tint,
                 fontWeight = FontWeight.Bold,
                 fontSize = (size.value * 0.21f).sp,

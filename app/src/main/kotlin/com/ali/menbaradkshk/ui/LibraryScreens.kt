@@ -75,6 +75,7 @@ import com.ali.menbaradkshk.util.formatDuration
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.ali.menbaradkshk.util.lessonsCountLabel
 
 /// صفحة «قوائمي»: تجمع «المفضّلة» و«السجل» و«قوائم التشغيل».
 ///
@@ -586,7 +587,7 @@ fun DownloadsScreen(vm: AppViewModel) {
                         androidx.compose.foundation.layout.Spacer(Modifier.size(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text(
-                                "${items.size} درساً محفوظاً",
+                                "${lessonsCountLabel(items.size)} محفوظاً",
                                 style = MaterialTheme.typography.titleMedium,
                             )
                             Text(
@@ -750,7 +751,7 @@ fun DownloadsScreen(vm: AppViewModel) {
                                 Icon(iconForCategory(category.id), null, tint = colorForCategory(category.id))
                             },
                             headlineContent = { Text(category.name, style = MaterialTheme.typography.titleMedium) },
-                            supportingContent = { Text("القسم كاملاً — ${categoryLessons.size} درساً") },
+                            supportingContent = { Text("القسم كاملاً — ${lessonsCountLabel(categoryLessons.size)}") },
                             trailingContent = {
                                 Icon(Icons.Filled.DownloadDone, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             },
@@ -767,7 +768,7 @@ fun DownloadsScreen(vm: AppViewModel) {
                                     vm.requestBulkDownload(sub.name, subLessons)
                                 },
                             headlineContent = { Text(sub.name) },
-                            supportingContent = { Text("${subLessons.size} درساً") },
+                            supportingContent = { Text(lessonsCountLabel(subLessons.size)) },
                         )
                     }
                 }
@@ -795,7 +796,7 @@ fun DownloadsScreen(vm: AppViewModel) {
         AlertDialog(
             onDismissRequest = { deleteAllDialog = false },
             title = { Text("حذف كل التنزيلات") },
-            text = { Text("سيُحذف ${items.size} درساً محفوظاً (${formatBytes(totalBytes)}) من جهازك. الدروس نفسها تبقى متاحة بالبثّ.") },
+            text = { Text("سيُحذف ${lessonsCountLabel(items.size)} محفوظاً (${formatBytes(totalBytes)}) من جهازك. الدروس نفسها تبقى متاحة بالبثّ.") },
             confirmButton = {
                 TextButton(onClick = {
                     deleteAllDialog = false

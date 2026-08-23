@@ -70,6 +70,7 @@ import com.ali.menbaradkshk.util.smartTitleFromFileName
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.ali.menbaradkshk.util.filesCountLabel
 
 data class PickedFile(val uri: Uri, val name: String)
 
@@ -168,7 +169,7 @@ fun ContributeScreen(vm: AppViewModel) {
         // قيد «MP3 فقط» أُلغي نهائياً: الدمج صار يقبل أي صيغ (فكّ إلى PCM
         // ثم إعادة ترميز AAC/M4A عند اختلافها) — لا عبء تحويل على المستخدم.
         formError = if (combined.size > AudioMerger.maxFiles) {
-            "الحد الأقصى ${AudioMerger.maxFiles} ملفات للدرس الواحد — أُبقي أولها."
+            "الحد الأقصى ${filesCountLabel(AudioMerger.maxFiles)} للدرس الواحد — أُبقي أولها."
         } else {
             ""
         }
@@ -344,7 +345,7 @@ fun ContributeScreen(vm: AppViewModel) {
                     .padding(10.dp),
             ) {
                 Text(
-                    "ستُدمج ${files.size} ملفات بالترتيب أدناه في درس واحد متصل — استخدم الأسهم لإعادة الترتيب.",
+                    "ستُدمج ${filesCountLabel(files.size)} بالترتيب أدناه في درس واحد متصل — استخدم الأسهم لإعادة الترتيب.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }

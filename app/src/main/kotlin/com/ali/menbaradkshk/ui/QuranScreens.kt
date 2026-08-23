@@ -107,6 +107,7 @@ import com.ali.menbaradkshk.data.Reciter
 import com.ali.menbaradkshk.data.Surah
 import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.quranPagesLabel
+import com.ali.menbaradkshk.util.ayahsCountLabel
 
 /**
  * 🕌 المصحف الكامل — شاشة الفهرسة.
@@ -949,7 +950,7 @@ private fun QuranSearchResults(
                     },
                     supportingContent = {
                         Text(
-                            "${hit.surah.placeLabel} • ${hit.surah.ayahs} آية",
+                            "${hit.surah.placeLabel} • ${ayahsCountLabel(hit.surah.ayahs)}",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     },
@@ -1022,7 +1023,7 @@ private fun SurahList(index: QuranIndex, vm: AppViewModel) {
                 },
                 supportingContent = {
                     Text(
-                        "${surah.placeLabel} • ${surah.ayahs} آية",
+                        "${surah.placeLabel} • ${ayahsCountLabel(surah.ayahs)}",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 },
@@ -1952,7 +1953,7 @@ private fun QuranReaderBar(
             if (imageMode) {
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    "${surah.placeLabel} • ${surah.ayahs} آية",
+                    "${surah.placeLabel} • ${ayahsCountLabel(surah.ayahs)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -2232,7 +2233,7 @@ private fun SurahHeader(surah: Surah) {
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                "${surah.placeLabel} • ${surah.ayahs} آية",
+                "${surah.placeLabel} • ${ayahsCountLabel(surah.ayahs)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

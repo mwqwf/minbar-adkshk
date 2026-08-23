@@ -122,7 +122,13 @@ object ImageMerger {
         val bitmap = (image as? BitmapImage)?.bitmap
             ?: image.toBitmap(image.width, image.height)
         // شبكة أمان: لو عاد بِتماب عتاديّ رغم الإعداد، ننسخه نسخة برمجيّة.
-        return if (bitmap.config == Bitmap.Config.HARDWARE) {
+        // ⚠️ `Bitmap.Config.HARDWARE` أُضيف في أندرويد ٨ (API 26) وأدنى ما ندعمه
+        // أندرويد ٦ (API 23): مجرّد **قراءة** الثابت على جهاز أقدم تُلقي
+        // `NoSuchFieldError` فينهار التطبيق عند دمج صور «ساهم بالنص». والحارس
+        // مجّانيّ: البِتماب العتاديّ لا وجود له أصلاً قبل ٢٦.
+        return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O &&
+            bitmap.config == Bitmap.Config.HARDWARE
+        ) {
             bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: bitmap
         } else {
             bitmap

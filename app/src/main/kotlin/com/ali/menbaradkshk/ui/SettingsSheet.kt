@@ -76,6 +76,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import com.ali.menbaradkshk.util.lessonsCountLabel
 
 /// «الإعدادات» — درج جانبي حقيقي (بنمط تويتر/تلجرام) يُسحب من الجانب أو
 /// يُفتح بزرّه المخصّص. البنود المتشابهة مجمَّعة في مواضيع قليلة، وكل موضوع
@@ -330,7 +331,7 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                     SettingsTile(
                         icon = Icons.Filled.Favorite,
                         title = "تحميل المفضّلة كلها",
-                        subtitle = "${favorites.size} درساً",
+                        subtitle = lessonsCountLabel(favorites.size),
                         onClick = {
                             if (favorites.isEmpty()) vm.showMessage("لا توجد دروس في المفضّلة بعد.")
                             else vm.requestBulkDownload("المفضّلة", favorites)
@@ -341,7 +342,7 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                     SettingsTile(
                         icon = Icons.Filled.Headphones,
                         title = "تحميل دروس «تابع الاستماع»",
-                        subtitle = "${continueList.size} درساً لم تكمله",
+                        subtitle = "${lessonsCountLabel(continueList.size)} لم تكمله",
                         onClick = {
                             if (continueList.isEmpty()) vm.showMessage("لا توجد دروس غير مكتملة.")
                             else vm.requestBulkDownload("تابع الاستماع", continueList)
@@ -652,7 +653,7 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                                 Icon(iconForCategory(category.id), null, tint = colorForCategory(category.id))
                             },
                             headlineContent = { Text(category.name, style = MaterialTheme.typography.titleMedium) },
-                            supportingContent = { Text("القسم كاملاً — ${categoryLessons.size} درساً") },
+                            supportingContent = { Text("القسم كاملاً — ${lessonsCountLabel(categoryLessons.size)}") },
                         )
                     }
                     items(
@@ -666,7 +667,7 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                                 vm.requestBulkDownload(sub.name, subLessons)
                             },
                             headlineContent = { Text(sub.name) },
-                            supportingContent = { Text("${subLessons.size} درساً") },
+                            supportingContent = { Text(lessonsCountLabel(subLessons.size)) },
                         )
                     }
                 }

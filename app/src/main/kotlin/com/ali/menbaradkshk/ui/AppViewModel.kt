@@ -247,7 +247,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         com.ali.menbaradkshk.data.DownloadScheduler.enqueue(getApplication())
         showMessage(
-            "أُضيف ${pending.size} درساً إلى التحميل — يستمر في الخلفية حتى مع إغلاق التطبيق.",
+            "أُضيف ${com.ali.menbaradkshk.util.lessonsCountLabel(pending.size)} إلى التحميل — يستمر في الخلفية حتى مع إغلاق التطبيق.",
         )
     }
 
@@ -1131,7 +1131,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val notes = buildList {
                     if (overflow > 0) {
                         add(
-                            "شاركتَ ${uris.size} ملفاً والحدّ الأقصى ${AudioMerger.maxFiles} ملفات " +
+                            "شاركتَ ${com.ali.menbaradkshk.util.filesCountLabel(uris.size)} والحدّ الأقصى ${com.ali.menbaradkshk.util.filesCountLabel(AudioMerger.maxFiles)} " +
                                 "للدرس الواحد — أُدرجت أول ${accepted.size}، وأرسل البقية في مساهمة أخرى.",
                         )
                     }
@@ -1188,7 +1188,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             if (imageUris.size > accepted.size) {
                 showMessage(
-                    "شاركتَ ${imageUris.size} صور والحدّ ${TranscriptRepository.MAX_IMAGES} " +
+                    "شاركتَ ${com.ali.menbaradkshk.util.imagesCountLabel(imageUris.size)} والحدّ ${com.ali.menbaradkshk.util.imagesCountLabel(TranscriptRepository.MAX_IMAGES)} " +
                         "— أُدرجت أول ${accepted.size}.",
                 )
             }

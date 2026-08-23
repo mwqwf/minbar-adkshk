@@ -188,7 +188,7 @@ class DownloadQueueProcessor(private val context: Context) {
             // لا نمسح الطابور: المؤجَّل ينتظر شبكة غير محدودة بعمل مستقلّ.
             DownloadScheduler.enqueueUnmetered(context)
             showDone(
-                "بانتظار الواي فاي لإكمال ${deferred.size} درساً" +
+                "بانتظار الواي فاي لإكمال ${com.ali.menbaradkshk.util.lessonsCountLabel(deferred.size)}" +
                     if (failures == 0) "." else " (تعذّر $failures).",
             )
             return DownloadRunResult.FINISHED
@@ -196,7 +196,7 @@ class DownloadQueueProcessor(private val context: Context) {
         store.clearDownloadQueueIfEmpty()
         showDone(
             if (failures == 0) "اكتمل تحميل الدروس للاستماع دون إنترنت."
-            else "اكتمل التحميل مع تعذّر $failures درساً.",
+            else "اكتمل التحميل مع تعذّر ${com.ali.menbaradkshk.util.lessonsCountLabel(failures)}.",
         )
         return DownloadRunResult.FINISHED
     }

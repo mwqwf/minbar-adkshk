@@ -122,7 +122,7 @@ fun TranscriptImagesEditor(
                 images.add(final)
             } else {
                 onError(
-                    "الحد الأقصى ${TranscriptRepository.MAX_IMAGES} صور — " +
+                    "الحد الأقصى ${com.ali.menbaradkshk.util.imagesCountLabel(TranscriptRepository.MAX_IMAGES)} — " +
                         "لم تُضَف الصورة الأخيرة.",
                 )
             }
@@ -148,7 +148,7 @@ fun TranscriptImagesEditor(
         val remaining = TranscriptRepository.MAX_IMAGES - images.size - pendingNew.size
         pendingNew.addAll(uris.take(remaining.coerceAtLeast(0)))
         if (uris.size > remaining) {
-            onError("الحد الأقصى ${TranscriptRepository.MAX_IMAGES} صور.")
+            onError("الحد الأقصى ${com.ali.menbaradkshk.util.imagesCountLabel(TranscriptRepository.MAX_IMAGES)}.")
         }
     }
 

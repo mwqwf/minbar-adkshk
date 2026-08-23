@@ -83,6 +83,8 @@ import com.ali.menbaradkshk.data.transcriptSearchWords
 import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.normalizeArabic
 import kotlinx.coroutines.delay
+import com.ali.menbaradkshk.util.subcategoriesCountLabel
+import com.ali.menbaradkshk.util.lessonsCountLabel
 
 // ----------------------------------------------------------------------------
 // الرئيسية
@@ -389,7 +391,7 @@ fun LibraryScreen(vm: AppViewModel, state: ContentState) {
             SectionCard(
                 categoryId = category.id,
                 name = category.name,
-                subtitle = if (count > 0) "$count أقسام فرعية" else null,
+                subtitle = if (count > 0) subcategoriesCountLabel(count) else null,
                 onClick = { vm.open(Route.Category(category.id)) },
             )
         }
@@ -488,7 +490,7 @@ fun CategoryScreen(vm: AppViewModel, categoryId: String, state: ContentState) {
                     DownloadQueueControls(vm)
                 } else {
                     DownloadAllButton(
-                        text = "تحميل القسم كاملاً (${categoryLessons.size} درساً)",
+                        text = "تحميل القسم كاملاً (${lessonsCountLabel(categoryLessons.size)})",
                         enabled = categoryLessons.isNotEmpty(),
                         onClick = {
                             val name = state.categoryById[categoryId]?.name ?: "القسم"

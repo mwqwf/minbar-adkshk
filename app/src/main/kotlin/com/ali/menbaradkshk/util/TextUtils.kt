@@ -77,6 +77,29 @@ fun arabicCountLabel(count: Int, one: String, two: String, few: String, many: St
         else -> "$count $many"
     }
 
+/// عدد الدروس («درسٌ واحد» لا «1 درساً») — تتقاسمه المكتبة والتنزيلات
+/// وأوراق التحميل والإعدادات، فلا يقرأ المستخدم عدداً بصيغة خاطئة في مكان
+/// وصحيحة في آخر.
+fun lessonsCountLabel(count: Int): String =
+    arabicCountLabel(count, "درسٌ واحد", "درسان", "دروس", "درساً")
+
+/// عدد الأقسام الفرعيّة — كانت بطاقة القسم تقول «1 أقسام فرعية» و«2 أقسام
+/// فرعية»، وهو لحنٌ ظاهر لكل قارئ عربيّ في أوّل شاشة يفتحها.
+fun subcategoriesCountLabel(count: Int): String =
+    arabicCountLabel(count, "قسمٌ فرعيٌّ واحد", "قسمان فرعيّان", "أقسام فرعيّة", "قسماً فرعيّاً")
+
+/// عدد الآيات في السورة — «آيةٌ واحدة»/«آيتان»/«٦ آيات»/«٢٨٦ آية».
+fun ayahsCountLabel(count: Int): String =
+    arabicCountLabel(count, "آيةٌ واحدة", "آيتان", "آيات", "آية")
+
+/// عدد الملفّات الصوتيّة في مساهمة واحدة.
+fun filesCountLabel(count: Int): String =
+    arabicCountLabel(count, "ملفٌّ واحد", "ملفّان", "ملفّات", "ملفاً")
+
+/// عدد الصور المرفقة بالنصّ المشروح.
+fun imagesCountLabel(count: Int): String =
+    arabicCountLabel(count, "صورةٌ واحدة", "صورتان", "صور", "صورة")
+
 /// عدد صفحات المصحف («صفحتان» لا «2 صفحة») — يتقاسمه سطرُ وِرد الفهرس
 /// وإشعارُ التذكير وورقة الإعدادات، فلا يفترق لفظُ ما يُرى عمّا يُقال.
 fun quranPagesLabel(count: Int): String =

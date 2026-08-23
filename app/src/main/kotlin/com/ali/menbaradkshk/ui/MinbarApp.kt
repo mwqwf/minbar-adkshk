@@ -4,12 +4,10 @@ package com.ali.menbaradkshk.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,7 +16,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -26,28 +23,20 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.LibraryBooks
 import androidx.compose.material.icons.automirrored.outlined.LibraryBooks
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.HistoryEdu
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
-import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.MicExternalOn
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.NotificationsNone
-import androidx.compose.material.icons.filled.Outbox
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
@@ -68,7 +57,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -78,7 +66,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
@@ -86,8 +73,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ali.menbaradkshk.data.AppConfigRepository
 import com.ali.menbaradkshk.data.ContentState
-import com.google.firebase.auth.FirebaseAuth
-import kotlinx.coroutines.flow.catch
 
 private data class RootTab(
     val route: Route,
@@ -343,16 +328,13 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                                         )
                                     }
                                 }
-                                StreakChip(vm)
-                                NotificationBell(vm)
-                                MySubmissionsButton(vm)
-                                // «تنزيلاتي» هنا بطلب صريح: مكانها الطبيعيّ مع
-                                // بقيّة مداخل «ما يخصّني» (الإشعارات
-                                // والمساهمات)، لا مع شرائح الاستماع في
-                                // الإجراءات السريعة.
-                                IconButton(onClick = { vm.open(Route.Downloads) }) {
-                                    Icon(Icons.Filled.Download, "تنزيلاتي")
-                                }
+                                // ⛔ لا جرس ولا «مساهماتي» ولا «تنزيلاتي» ولا
+                                // شريحة السلسلة هنا: كانت سبع أيقونات بلا
+                                // كلمة واحدة تزاحم العنوان حتى يكاد يُقصّ،
+                                // وجمهور التطبيق لا يفكّ رموز الأيقونات. صارت
+                                // **بطاقات مكتوبة** في متن الرئيسية (انظر
+                                // `HomeInboxCards` في Screens.kt)، فبقي في
+                                // الشريط ما يُفهم بلا شرح: البحث والإعدادات.
                                 IconButton(onClick = { vm.open(Route.Search()) }) {
                                     Icon(Icons.Filled.Search, "بحث")
                                 }
@@ -529,6 +511,30 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                 onUpdate = { vm.openStoreFor(pendingUpdate) },
                 onLater = deferUpdate,
             )
+        }
+    }
+
+    // 👋 أوّل تشغيل — طبقةٌ فوق الهيكل لا بديلاً عنه (نفس سبب شاشة التحديث:
+    // الخروج المبكر كان يهدم حافظ حالة الشاشات).
+    //
+    // ولا تظهر إلّا بعد وصول المحتوى فعلاً: بلا أقسام يكون سؤالها بلا جواب،
+    // فتُؤجَّل إلى أوّل مرّة يتوفّر فيها المحتوى — وهي في الغالب أوّل اتصال.
+    // وتتنحّى لشاشة التحديث إن تصادفتا فلا تتكدّس طبقتان.
+    var onboardingDone by rememberSaveable { mutableStateOf(vm.store.onboardingDone()) }
+    if (!onboardingDone && !blockingUpdate && content.subcategories.isNotEmpty()) {
+        val finishOnboarding: () -> Unit = {
+            vm.store.markOnboardingDone()
+            onboardingDone = true
+        }
+        // «رجوع» = «تخطَّ»: لا حبس، ولا تنقّل خفيّ تحت الطبقة.
+        BackHandler(onBack = finishOnboarding)
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .pointerInput(Unit) { detectTapGestures { } },
+        ) {
+            OnboardingScreen(vm, content, finishOnboarding)
         }
     }
 }
@@ -748,97 +754,6 @@ private fun QuranBookmarksAction(vm: AppViewModel) {
     }
 }
 
-/// شريحة السلسلة 🔥 في الشريط العلوي — كانت مدفونة في ورقة الإعدادات
-/// و«حصادك» فقط، فلا يراها المستخدم حيث تحفّزه فعلاً. تظهر من يومين فصاعداً،
-/// والنقر يفتح «حصادك».
-@Composable
-private fun StreakChip(vm: AppViewModel) {
-    val revision by vm.store.revision.collectAsState()
-    val streak = remember(revision) { vm.store.streakDays() }
-    if (streak < 2) return
-    Row(
-        modifier = Modifier
-            .padding(horizontal = 2.dp)
-            .clip(RoundedCornerShape(999.dp))
-            .background(AppBarForeground.copy(alpha = 0.16f))
-            .clickable { vm.open(Route.Stats) }
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            Icons.Filled.LocalFireDepartment,
-            contentDescription = "سلسلة الاستماع: $streak يوماً",
-            tint = GoldOnDark,
-            modifier = Modifier.size(16.dp),
-        )
-        Spacer(Modifier.width(4.dp))
-        Text(
-            "$streak",
-            color = AppBarForeground,
-            style = MaterialTheme.typography.labelLarge,
-        )
-    }
-}
-
-/// زر الجرس مع عدّاد غير المقروء — نمط NotificationBell الأصلي.
-@Composable
-private fun NotificationBell(vm: AppViewModel) {
-    val items by vm.notifications.collectAsState()
-    val revision by vm.store.revision.collectAsState()
-    val unread = remember(items, revision) {
-        val lastSeen = vm.store.notificationLastSeenMs()
-        visibleNotifications(vm, items).count { it.createdAtMs > lastSeen }
-    }
-    IconButton(onClick = { vm.open(Route.Notifications) }) {
-        if (unread > 0) {
-            BadgedBox(badge = { Badge { Text("$unread") } }) {
-                Icon(Icons.Filled.NotificationsNone, contentDescription = "الإشعارات")
-            }
-        } else {
-            Icon(Icons.Filled.NotificationsNone, contentDescription = "الإشعارات")
-        }
-    }
-}
-
-/// زر «مساهماتي» بجوار الجرس — يظهر لمن ساهم من قبل فقط،
-/// وعليه نقطة إذا حُسمت مساهمة بعد آخر زيارة للشاشة.
-@Composable
-private fun MySubmissionsButton(vm: AppViewModel) {
-    var user by remember { mutableStateOf(FirebaseAuth.getInstance().currentUser) }
-    DisposableEffect(Unit) {
-        val auth = FirebaseAuth.getInstance()
-        val listener = FirebaseAuth.AuthStateListener { user = it.currentUser }
-        auth.addAuthStateListener(listener)
-        onDispose { auth.removeAuthStateListener(listener) }
-    }
-    if (user == null) return
-    // الدخول المجهول يقع لكل مستخدم عند أوّل إقلاع، فوجود الهوية وحده لا
-    // يعني مساهماً. من لم يساهم قطّ: لا زرّ يزحم الشريط، ولا مستمعا
-    // Firestore يعملان طوال بقاء الرئيسية على مجموعتين فارغتين عنده.
-    val revision by vm.store.revision.collectAsState()
-    val contributed = remember(revision) { vm.hasContributedBefore() }
-    if (!contributed) return
-
-    val flow = remember { vm.submissions.mine().catch { emit(emptyList()) } }
-    val submissions by flow.collectAsState(initial = emptyList())
-    // النقطة كانت تتجاهل «النص المشروح» رغم أن شاشة الوجهة تعرض النوعين معاً.
-    val transcriptsFlow = remember { vm.transcripts.mine().catch { emit(emptyList()) } }
-    val transcriptItems by transcriptsFlow.collectAsState(initial = emptyList())
-    val hasNewDecision = remember(submissions, transcriptItems, revision) {
-        val seen = vm.store.submissionsLastSeenMs()
-        submissions.any { it.status != "pending" && it.decidedAtMs > seen } ||
-            transcriptItems.any { it.status != "pending" && it.decidedAtMs > seen }
-    }
-    IconButton(onClick = { vm.open(Route.MySubmissions) }) {
-        if (hasNewDecision) {
-            BadgedBox(badge = { Badge(modifier = Modifier.size(8.dp)) }) {
-                Icon(Icons.Filled.Outbox, contentDescription = "مساهماتي")
-            }
-        } else {
-            Icon(Icons.Filled.Outbox, contentDescription = "مساهماتي")
-        }
-    }
-}
 
 // يأخذ `content` المُجمَّع من الواجهة (لا `state.value` مباشرة) كي يتفاعل
 // العنوان مع وصول البيانات/تغيّرها بدل التجمّد على أول قراءة.

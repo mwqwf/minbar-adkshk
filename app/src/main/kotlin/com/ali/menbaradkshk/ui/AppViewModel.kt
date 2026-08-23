@@ -1090,6 +1090,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         BackgroundScheduler.scheduleAutoDownload(getApplication())
     }
 
+    /// 📴 «أظهر المحفوظ فقط» — مفتاح شريط انقطاع الإنترنت.
+    ///
+    /// حالة عابرة لا تُحفظ في الجهاز عن قصد: هي جوابٌ على وضعٍ راهن (لا شبكة
+    /// الآن)، وتُطفأ ذاتياً عند عودة الشبكة. حفظها كان سيترك المستخدم يرى
+    /// مكتبةً شبه فارغة بعد أيام بلا أن يعرف السبب.
+    private val _savedOnly = MutableStateFlow(false)
+    val savedOnly: StateFlow<Boolean> = _savedOnly.asStateFlow()
+
+    fun setSavedOnly(value: Boolean) {
+        _savedOnly.value = value
+    }
+
     fun setAutoDownloadWifiOnly(enabled: Boolean) {
         store.setAutoDownloadWifiOnly(enabled)
         BackgroundScheduler.scheduleAutoDownload(getApplication())

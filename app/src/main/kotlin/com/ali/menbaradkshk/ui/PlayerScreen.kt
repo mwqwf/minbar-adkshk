@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.Cancel
@@ -134,6 +135,10 @@ fun PlayerScreen(
     var feedbackFor by remember { mutableStateOf<String?>(null) }
     var sleepSheet by remember { mutableStateOf(false) }
 
+    /// هل ملفّ هذا الدرس على الجهاز الآن؟ يُعاد حسابه مع كل مراجعة للمخزن
+    /// كي يظهر بند «أرسل الملف الصوتي» فور اكتمال التنزيل ويختفي فور حذفه.
+    val downloadedNow = remember(revision, current.id) { hasLocalAudioFile(vm, current) }
+
     // بدء التشغيل عند فتح درس من رابط «لحظة» أو حين لا يكون الدرس فعّالاً.
     // موضع «اللحظة» يُستهلك مرة واحدة ثم يُزال من المسار، كي لا يعيد الرجوع
     // أو التدوير التشغيل من الثانية المشارَكة.
@@ -211,6 +216,20 @@ fun PlayerScreen(
                             Icon(Icons.Filled.MoreVert, contentDescription = "تفاعل")
                         }
                         DropdownMenu(expanded = feedbackMenu, onDismissRequest = { feedbackMenu = false }) {
+                            // 📤 إرسال الملفّ نفسه — للمنزَّل فقط، ويختفي
+                            // تماماً لغيره (بندٌ معطّل يُسأل عنه بلا فائدة).
+                            // ولماذا أصلاً؟ لأنّ الرابط لا ينفع من لا إنترنت
+                            // عنده، والملفّ ينتقل بالبلوتوث بلا شبكة.
+                            if (downloadedNow) {
+                                DropdownMenuItem(
+                                    text = { Text("أرسل الملف الصوتي") },
+                                    leadingIcon = { Icon(Icons.Filled.AudioFile, null) },
+                                    onClick = {
+                                        feedbackMenu = false
+                                        sendLessonAudioFile(context, vm, current)
+                                    },
+                                )
+                            }
                             DropdownMenuItem(
                                 text = { Text("استفدت من الدرس") },
                                 leadingIcon = { Icon(Icons.Filled.ThumbUp, null) },
@@ -443,9 +462,33 @@ fun PlayerScreen(
                 DownloadButton(vm, current, size = 44.dp)
                 // طرفا القائمة: الزرّان كانا بكامل التباين ولا يفعلان شيئاً —
                 // نوحّدهما مع المشغّل المصغّر الذي يعتمد hasPrevious/hasNext.
-                IconButton(onClick = vm.playback::previous, enabled = playback.hasPrevious, modifier = Modifier.size(56.dp)) {
-                    Icon(Icons.Filled.SkipPrevious, contentDescription = "السابق", tint = BlueBrand, modifier = Modifier.size(40.dp))
+                IconButton(onClick = vm.playback::previous, enabled = playback.hasPrevious, modifier = Modifier.size(48.dp)) {
+                    Icon(Icons.Filled.SkipPrevious, contentDescription = "السابق", tint = BlueBrand, modifier = Modifier.size(36.dp))
                 }
+                // ⭐ «أعِد ٣٠ ثانية» بجوار زرّ التشغيل وبحجم قريب منه.
+                //
+                // **لماذا زرٌّ مستقلّ والترجيع موجود؟** لأنّ أكثر ما يفعله
+                // مستمع الدرس العلميّ هو «ما فهمتُ هذه الجملة، أعِدها»، وهذا
+                // الفعل اليوم إمّا زرٌّ صغير في صفٍّ من ثلاثة، وإمّا سحبٌ على
+                // الشريط يحتاج دقّةً لا يملكها من يستمع وهو يعمل.
+                //
+                // وثلاثون ثانية **ثابتة لا تتبع إعداد القفز**: الإعداد يضبط
+                // الترجيع الدقيق، وهذا الزرّ معناه واحد مكتوبٌ عليه لا يتغيّر.
+                Replay30Button(
+                    onClick = {
+                        val target = (position - 30_000L).coerceAtLeast(0L)
+                        // درسٌ غير مُشغَّل الآن: لا موضع في المشغّل ليُرجَع
+                        // منه، فنبدأ تشغيله من الموضع المطلوب مباشرةً.
+                        if (active) {
+                            vm.playback.seekTo(target)
+                        } else {
+                            vm.playback.play(current, listOf(current) + similar, target, restart = true)
+                        }
+                    },
+                    size = 62.dp,
+                    tint = BlueBrand,
+                    background = BlueBrand.copy(alpha = 0.12f),
+                )
                 val playing = active && playback.playing
                 val loading = active && playback.loading
                 Box(
@@ -469,8 +512,11 @@ fun PlayerScreen(
                         )
                     }
                 }
-                IconButton(onClick = vm.playback::next, enabled = playback.hasNext, modifier = Modifier.size(56.dp)) {
-                    Icon(Icons.Filled.SkipNext, contentDescription = "التالي", tint = BlueBrand, modifier = Modifier.size(40.dp))
+                // ⚠️ صغّرنا «السابق/التالي» قليلاً (56→48) لإفساح مكان زرّ
+                // «أعِد ٣٠ ثانية» في الصفّ نفسه على الشاشات الضيّقة — وهما
+                // ما زالا فوق حدّ اللمس (٤٨) بأمان.
+                IconButton(onClick = vm.playback::next, enabled = playback.hasNext, modifier = Modifier.size(48.dp)) {
+                    Icon(Icons.Filled.SkipNext, contentDescription = "التالي", tint = BlueBrand, modifier = Modifier.size(36.dp))
                 }
                 IconButton(onClick = { share(current) }) {
                     Icon(Icons.Filled.Share, contentDescription = "مشاركة", tint = Teal)

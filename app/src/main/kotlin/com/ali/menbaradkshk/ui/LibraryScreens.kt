@@ -36,7 +36,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.Shuffle
-import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
@@ -258,13 +257,24 @@ private fun HistoryTab(vm: AppViewModel, playback: PlaybackUiState) {
     val content by vm.content.state.collectAsState()
     // الإخفاء محليّ ولا يرفع `revision`، فيُحرّك إعادةَ التركيب عدّادٌ خاص.
     var hiddenTick by remember { mutableIntStateOf(0) }
-    val items = remember(revision, content.lessons, hiddenTick) { vm.content.historyLessons() }
+    val allHistory = remember(revision, content.lessons, hiddenTick) { vm.content.historyLessons() }
+    // 📴 «المحفوظ فقط» — السجلّ أيضاً: نقرة على درسٍ غير منزَّل بلا إنترنت
+    // تنتهي بخطأ تشغيل.
+    val items = rememberSavedOnly(vm, allHistory)
     val stamps = remember(revision, hiddenTick) { vm.content.historyStamps() }
     val completed = remember(revision) { vm.store.completedIds().toSet() }
     val positions = remember(revision) { vm.store.positions() }
     if (items.isEmpty()) {
         Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-            Text("لا يوجد سجل استماع بعد.", textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                if (allHistory.isEmpty()) {
+                    "لا يوجد سجل استماع بعد."
+                } else {
+                    "لا يوجد درس محفوظ من سجلّك على جهازك."
+                },
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodyLarge,
+            )
         }
         return
     }
@@ -423,20 +433,12 @@ fun PlaylistDetailScreen(vm: AppViewModel, playlistId: String) {
                     label = { Text("عشوائي") },
                 )
                 Spacer(Modifier.weight(1f))
-                AssistChip(
-                    onClick = { sortMode = (sortMode + 1) % 3 },
-                    leadingIcon = {
-                        Icon(Icons.Filled.SwapVert, null, tint = OrangeBrand, modifier = Modifier.size(20.dp))
-                    },
-                    label = {
-                        Text(
-                            when (sortMode) {
-                                1 -> "الأحدث"
-                                2 -> "الأقدم"
-                                else -> "ترتيبي"
-                            },
-                        )
-                    },
+                // ثلاث حالات كانت تتناوب بضغطات متتالية على كلمةٍ واحدة، فلا
+                // يعرف الضاغط إلى أين يمضي. صارت قائمةً مكتوبة (انظر `SortChip`).
+                SortChip(
+                    currentIndex = sortMode,
+                    options = listOf("ترتيبي", "الأحدث أولاً", "الأقدم أولاً"),
+                    onSelect = { index -> sortMode = index },
                 )
             }
         }
@@ -820,10 +822,20 @@ fun DownloadsScreen(vm: AppViewModel) {
 fun FavoritesScreen(vm: AppViewModel, playback: PlaybackUiState) {
     val revision by vm.store.revision.collectAsState()
     val content by vm.content.state.collectAsState()
-    val items = remember(revision, content.lessons) { vm.content.favorites() }
+    val all = remember(revision, content.lessons) { vm.content.favorites() }
+    // 📴 «المحفوظ فقط» — لا يظهر بلا إنترنت إلا ما يعمل بالنقر.
+    val items = rememberSavedOnly(vm, all)
     if (items.isEmpty()) {
         Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-            Text("اضغط ♥ على أي درس لحفظه هنا.", textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                if (all.isEmpty()) {
+                    "اضغط ♥ على أي درس لحفظه هنا."
+                } else {
+                    "لا يوجد درس محفوظ من مفضّلتك على جهازك."
+                },
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodyLarge,
+            )
         }
         return
     }

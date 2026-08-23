@@ -106,6 +106,15 @@ class ContentRepository private constructor(context: Context) {
                 setLastProbeMs(now)
                 // فشل المسبار (انقطاع/رفض) يسقط إلى الجلب الكامل كما كان.
                 if (server != null && server == stored) return@withContext
+                // 🪶 تصحيح حرفٍ في اسم قسم كان يُنزّل المكتبة كلّها من جديد:
+                // أي اختلاف في البصمة يُسقط الكاش ويُعاد جلب مئات الوثائق —
+                // دقائق انتظار وميغابايتات من رصيدٍ مدفوع. الآن نجلب ما
+                // **تغيّر وحده** وندمجه في المحفوظ، ولا نعود إلى الجلب
+                // الكامل إلا حين يكون هو الأصحّ أو الأرخص.
+                if (server != null) {
+                    _state.value = _state.value.copy(syncing = true, error = null)
+                    if (applyDelta(stored, server, now)) return@withContext
+                }
             }
         }
         _state.value = _state.value.copy(syncing = true, error = null)
@@ -182,6 +191,10 @@ class ContentRepository private constructor(context: Context) {
                 ),
             )
             setLastProbeMs(now)
+            // نقطة انطلاق سجلّ الحذف: الجلب الكامل حصر الموجود فعلاً، فما
+            // قبل هذه اللحظة لا يعنينا. والتراجع دقيقتين يحتاط لفارق ساعة
+            // الخادم عن ساعة الجهاز — وإعادة حذف ما ليس موجوداً لا تضرّ.
+            setDeleteMark(now - DELETE_MARK_BACKOFF_MS)
             // تنظيف الملفات اليتيمة لدروس أُزيلت من الخادم.
             store.pruneDownloads(lessons.map(Lesson::id).toSet())
             _state.value = ContentState(
@@ -316,6 +329,198 @@ class ContentRepository private constructor(context: Context) {
             ?.get(field)
             .timeMillis()
     }.getOrDefault(0L)
+
+    // ------------------------------------------------------------------
+    // المزامنة التفاضليّة: ما تغيّر وحده لا المكتبة كلّها
+    // ------------------------------------------------------------------
+
+    /**
+     * يجلب ما تغيّر منذ آخر مزامنة ويدمجه في الكاش المحفوظ.
+     *
+     * يعيد `true` إن نجح واكتفى بذلك، و`false` إن تعذّر — وحينها يمضي
+     * المستدعي إلى الجلب الكامل كما كان تماماً.
+     *
+     * ⚠️ **الصحّة قبل التوفير**: بعد الدمج نقارن الأعداد الثلاثة بأعداد
+     * الخادم التي جاء بها المسبار. أي فرق — درسٌ جديد بلا طابع تعديل، حذفٌ
+     * لم يُسجَّل، سجلّ حذفٍ انقضت مدّته — يُلغي التوفير ويُعيدنا إلى الجلب
+     * الكامل. فلا يمكن أن يخسر المستخدم محتوى بهذا المسار.
+     */
+    private suspend fun applyDelta(
+        stored: ProbeMarks,
+        server: ProbeMarks,
+        now: Long,
+    ): Boolean = runCatching {
+        // تراجعُ أي طابع يعني حالة خادم لا نفهمها (استعادة نسخة، تغيّر ساعة)
+        // — لا نجازف بالدمج عليها.
+        if (server.maxUpdatedMs < stored.maxUpdatedMs ||
+            server.categoriesUpdatedMs < stored.categoriesUpdatedMs ||
+            server.subcategoriesUpdatedMs < stored.subcategoriesUpdatedMs
+        ) {
+            return@runCatching false
+        }
+        // مجموعة بلا أي طابع تعديل (صفر عند الطرفين) لا يمكن تتبّعها
+        // تفاضليّاً أصلاً؛ ومع ذلك يبقى فحص الأعداد أدناه حكماً نهائياً.
+        val baseCategories = store.categories()
+        val baseSubcategories = store.subcategories()
+        val baseLessons = store.lessons()
+        if (baseLessons.isEmpty()) return@runCatching false
+        // بلا نقطة انطلاق لسجلّ الحذف لا نعرف ما فات المستخدمَ من حذف
+        // (تحديث تطبيقٍ كان يزامن بالطريقة القديمة) — جلبةٌ كاملة واحدة
+        // تُرسي النقطة، وما بعدها تفاضليّ.
+        val sinceDeleted = deleteMark()
+        if (sinceDeleted <= 0L) return@runCatching false
+
+        coroutineScope {
+            val deletedJob = async { deletedSince(sinceDeleted) }
+            val categoriesJob = async {
+                if (server.categoriesUpdatedMs > stored.categoriesUpdatedMs) {
+                    changedDocs("categories", stored.categoriesUpdatedMs)
+                } else {
+                    emptyList()
+                }
+            }
+            val subcategoriesJob = async {
+                if (server.subcategoriesUpdatedMs > stored.subcategoriesUpdatedMs) {
+                    changedDocs("subcategories", stored.subcategoriesUpdatedMs)
+                } else {
+                    emptyList()
+                }
+            }
+            val lessonsJob = async {
+                if (server.maxUpdatedMs > stored.maxUpdatedMs) {
+                    changedDocs("lessons", stored.maxUpdatedMs)
+                } else {
+                    emptyList()
+                }
+            }
+            val deleted = deletedJob.await() ?: return@coroutineScope false
+            val changedCategories = categoriesJob.await() ?: return@coroutineScope false
+            val changedSubcategories = subcategoriesJob.await() ?: return@coroutineScope false
+            val changedLessons = lessonsJob.await() ?: return@coroutineScope false
+
+            // تغييرٌ ضخم: التفاضليّ حينها أغلى من صفحات الجلب الكامل.
+            val touched = changedCategories.size + changedSubcategories.size +
+                changedLessons.size + deleted.values.sumOf { it.size }
+            if (touched == 0 || touched > MAX_DELTA_DOCS) return@coroutineScope false
+
+            val categories = mergeById(
+                baseCategories,
+                changedCategories.map { Category.fromMap(it.id, it.data.orEmpty()) },
+                deleted["categories"].orEmpty(),
+                Category::id,
+            )
+            val subcategories = mergeById(
+                baseSubcategories,
+                changedSubcategories.map { Subcategory.fromMap(it.id, it.data.orEmpty()) },
+                deleted["subcategories"].orEmpty(),
+                Subcategory::id,
+            )
+            val lessons = mergeById(
+                baseLessons,
+                changedLessons.map { Lesson.fromMap(it.id, it.data.orEmpty()) },
+                deleted["lessons"].orEmpty(),
+                Lesson::id,
+            )
+            // 🛡️ حكم الصحّة: العدد بعد الدمج = عدد الخادم، وإلّا فالجلب الكامل.
+            if (categories.size != server.categories ||
+                subcategories.size != server.subcategories ||
+                lessons.size != server.lessons
+            ) {
+                return@coroutineScope false
+            }
+
+            store.setCategories(categories)
+            store.setSubcategories(subcategories)
+            store.setLessons(lessons)
+            store.setLastSyncMs(now)
+            saveMarks(server)
+            setDeleteMark(now - DELETE_MARK_BACKOFF_MS)
+            store.pruneDownloads(lessons.map(Lesson::id).toSet())
+            _state.value = ContentState(
+                categories = categories,
+                subcategories = subcategories,
+                lessons = mergeDurations(lessons),
+                loading = false,
+                syncing = false,
+            )
+            true
+        }
+    }.getOrDefault(false)
+
+    /**
+     * وثائق مجموعةٍ تغيّرت بعد [sinceMs].
+     *
+     * ⚠️ أربعة استعلامات لا واحد، ولكلٍّ سببه:
+     * - **حقلان**: الوثائق القديمة المغلَّفة `{data:{…}}` تكتب الطابع في
+     *   `data.updatedAt` لا في الجذر (نفس علّة [newestUpdatedBy]).
+     * - **نوعان**: Firestore يرتّب القيم بأنواعها أولاً، فحدٌّ من نوع
+     *   Timestamp لا يرى وثيقةً طابعها رقمٌ خام والعكس — والقاعدة فيها
+     *   الشكلان.
+     *
+     * النتيجة تُدمج بمعرّف الوثيقة فلا تكرار. و`null` تعني فشلاً أو تجاوز
+     * الحدّ — أي «ارجع إلى الجلب الكامل».
+     */
+    private suspend fun changedDocs(
+        collection: String,
+        sinceMs: Long,
+    ): List<com.google.firebase.firestore.DocumentSnapshot>? = runCatching {
+        coroutineScope {
+            val bounds = listOf<Any>(
+                com.google.firebase.Timestamp(java.util.Date(sinceMs)),
+                sinceMs,
+            )
+            val jobs = listOf("updatedAt", "data.updatedAt").flatMap { field ->
+                bounds.map { bound -> async { changedBy(collection, field, bound) } }
+            }
+            val merged = LinkedHashMap<String, com.google.firebase.firestore.DocumentSnapshot>()
+            jobs.forEach { job -> job.await().forEach { merged[it.id] = it } }
+            if (merged.size > MAX_DELTA_DOCS) null else merged.values.toList()
+        }
+    }.getOrNull()
+
+    private suspend fun changedBy(
+        collection: String,
+        field: String,
+        bound: Any,
+    ): List<com.google.firebase.firestore.DocumentSnapshot> =
+        db.collection(collection)
+            .whereGreaterThan(field, bound)
+            .orderBy(field, Query.Direction.ASCENDING)
+            .limit(MAX_DELTA_DOCS + 1L)
+            .get()
+            .await()
+            .documents
+
+    /**
+     * ما حُذف من الخادم بعد [sinceMs]، مصنَّفاً بالمجموعة.
+     *
+     * الاستعلام التفاضليّ لا يكشف المحذوف أبداً (الوثيقة لم تعد موجودة
+     * لتُقرأ)، فالخادم يسجّل كل اختفاء في `deleted_ids` — وهذه قراءتها.
+     */
+    private suspend fun deletedSince(sinceMs: Long): Map<String, Set<String>>? = runCatching {
+        val documents = db.collection("deleted_ids")
+            .whereGreaterThan("deletedAtMs", sinceMs)
+            .orderBy("deletedAtMs", Query.Direction.ASCENDING)
+            .limit(MAX_DELTA_DOCS + 1L)
+            .get()
+            .await()
+            .documents
+        if (documents.size > MAX_DELTA_DOCS) return@runCatching null
+        val grouped = mutableMapOf<String, MutableSet<String>>()
+        documents.forEach { document ->
+            val collection = document.get("collection").text()
+            val docId = document.get("docId").text()
+            if (collection.isNotBlank() && docId.isNotBlank()) {
+                grouped.getOrPut(collection) { mutableSetOf() } += docId
+            }
+        }
+        grouped
+    }.getOrNull()
+
+    private fun deleteMark(): Long = prefs.getLong(KEY_DELETE_MARK, 0L)
+
+    private fun setDeleteMark(value: Long) =
+        prefs.edit().putLong(KEY_DELETE_MARK, value).apply()
 
     private fun storedMarks(): ProbeMarks? {
         if (!prefs.contains(KEY_MARK_LESSONS)) return null
@@ -695,6 +900,13 @@ class ContentRepository private constructor(context: Context) {
         private const val KEY_MARK_CATEGORIES_UPDATED = "mark_categories_updated_ms"
         private const val KEY_MARK_SUBCATEGORIES_UPDATED = "mark_subcategories_updated_ms"
         private const val KEY_LAST_PROBE = "last_probe_ms"
+        /// آخر لحظة قُرئ فيها سجلّ الحذف `deleted_ids`.
+        private const val KEY_DELETE_MARK = "delete_mark_ms"
+        /// تراجعٌ عن اللحظة عند حفظ علامة الحذف — احتياطاً لفارق الساعتين.
+        private const val DELETE_MARK_BACKOFF_MS = 2 * 60 * 1_000L
+        /// سقف التغيير التفاضليّ. فوقه يصير الجلب الكامل أرخص وأبسط: صفحة
+        /// واحدة من 300 وثيقة أقلّ كلفةً من عشرات الاستعلامات والدمج.
+        private const val MAX_DELTA_DOCS = 200
         private const val KEY_HIDDEN_HISTORY = "hidden_history_v1"
         private const val KEY_HISTORY_STAMPS = "history_stamps_v1"
         private const val KEY_PLAYLIST_ORDER = "playlist_order_v1"
@@ -703,4 +915,34 @@ class ContentRepository private constructor(context: Context) {
             instance ?: ContentRepository(context.applicationContext).also { instance = it }
         }
     }
+}
+
+/**
+ * دمج نتيجة المزامنة التفاضليّة في الكاش المحفوظ.
+ *
+ * دالّة خالصة بلا شبكة ولا تفضيلات كي تُختبر وحدها: تُبقي ترتيب الكاش كما
+ * هو (فلا تقفز البطاقات في الواجهة)، وتستبدل المعدَّل مكانه، وتُلحق الجديد
+ * في الآخر، وتُسقط ما ورد في [deleted] — والحذف مقدَّمٌ على التعديل لأن
+ * وثيقةً حُذفت بعد تعديلها يجب ألّا تعود.
+ */
+internal fun <T> mergeById(
+    base: List<T>,
+    changed: List<T>,
+    deleted: Set<String>,
+    id: (T) -> String,
+): List<T> {
+    val updates = changed.associateBy(id)
+    val result = ArrayList<T>(base.size + changed.size)
+    val seen = HashSet<String>(base.size + changed.size)
+    base.forEach { item ->
+        val key = id(item)
+        if (key in deleted || !seen.add(key)) return@forEach
+        result += updates[key] ?: item
+    }
+    changed.forEach { item ->
+        val key = id(item)
+        if (key in deleted || !seen.add(key)) return@forEach
+        result += item
+    }
+    return result
 }

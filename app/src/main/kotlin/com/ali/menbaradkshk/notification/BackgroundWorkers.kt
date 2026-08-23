@@ -51,6 +51,10 @@ class ContinueReminderWorker(
             body = "لديك درس لم تكمله — ${lesson.displayTitle}",
             destination = "https://minbar-adkassahk.vercel.app/lesson/${lesson.id}",
             channel = NotificationChannels.CONTENT,
+            // هنا الاستئناف من موضع التوقّف نفسه لا من أوّل الدرس — وهو
+            // معنى «تابع الاستماع». الموضع بالثواني كما يفهمه الرابط.
+            playDestination = "https://minbar-adkassahk.vercel.app/lesson/${lesson.id}" +
+                "?t=${(positions[candidate] ?: 0L) / 1_000L}",
         )
         return Result.success()
     }
@@ -111,6 +115,8 @@ class WardWorker(
             body = lesson.displayTitle,
             destination = "https://minbar-adkassahk.vercel.app/lesson/${lesson.id}",
             channel = NotificationChannels.WARD,
+            // وِرد اليوم يُسمع من أوّله، فلحظة البداية صفر.
+            playDestination = "https://minbar-adkassahk.vercel.app/lesson/${lesson.id}?t=0",
         )
         return Result.success()
     }
@@ -410,6 +416,9 @@ private object NotificationPublisher {
         /// حين تكون الوجهة المتجر: نقفز إليه مباشرة عبر الوسيط الصامت بدل
         /// فتح التطبيق. الرابط لا يظهر للمستخدم في الحالتين.
         toStore: Boolean = false,
+        /// ⏵ وجهة زرّ «استمع الآن»: رابط درسٍ يبدأ تشغيله فور فتحه.
+        /// فارغة = بلا زرّ.
+        playDestination: String = "",
     ) {
         val intent = if (toStore) {
             com.ali.menbaradkshk.util.StoreRedirectActivity.intent(context, destination)
@@ -426,14 +435,42 @@ private object NotificationPublisher {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = NotificationCompat.Builder(context, channel)
+        val builder = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_stat_minbar)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
-            .build()
+        // ⏵ «استمع الآن» — ضغطةٌ واحدة لا اثنتان: النقر على الإشعار كان
+        // يفتح التطبيق على صفحة الدرس ثم يبحث المستخدم عن زرّ التشغيل.
+        //
+        // ولماذا يفتح التطبيق ولا يشغّل من الخلفية مباشرة؟ لأن بدء خدمة
+        // الوسائط والتطبيق في الخلفية ممنوع منذ أندرويد 8 (ويرمي استثناءً
+        // في 12+) — وهي العلّة نفسها الموثَّقة في ودجت «الآن يُشغَّل».
+        // فنسلك المسار القائم: رابط الدرس مع لحظة بدايةٍ صريحة، وشاشة
+        // المشغّل تبدأ التشغيل من تلقائها حين تصلها اللحظة. النتيجة
+        // للمستخدم واحدة: ضغطة واحدة ثم صوت.
+        if (playDestination.isNotBlank()) {
+            val playIntent = Intent(context, MainActivity::class.java).apply {
+                action = Intent.ACTION_VIEW
+                data = android.net.Uri.parse(playDestination)
+                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            builder.addAction(
+                0,
+                "▶ استمع الآن",
+                PendingIntent.getActivity(
+                    context,
+                    // رمز طلبٍ مستقلّ عن نقرة الإشعار نفسها، وإلّا داس
+                    // أحدهما الآخر (نفس السياق ونفس الرمز = نفس المُعلَّق).
+                    id + PLAY_REQUEST_OFFSET,
+                    playIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                ),
+            )
+        }
+        val notification = builder.build()
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
@@ -441,4 +478,7 @@ private object NotificationPublisher {
         ) return
         runCatching { NotificationManagerCompat.from(context).notify(id, notification) }
     }
+
+    /// إزاحة رموز الطلب لأزرار الإشعارات — بعيدة عن معرّفات الإشعارات كلّها.
+    private const val PLAY_REQUEST_OFFSET = 90_000
 }

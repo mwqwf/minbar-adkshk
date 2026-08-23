@@ -169,6 +169,12 @@ fun TranscriptSection(vm: AppViewModel, lesson: Lesson) {
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(Modifier.padding(14.dp)) {
+                    // 🔠 زرّا الخطّ في زاوية النصّ — ظاهران دائماً.
+                    //
+                    // **لماذا؟** القرص بالإصبعين معرفةٌ تقنيّة: من لا يعرف أنّ
+                    // الشاشة تُقرَص لن يكتشف ذلك أبداً، وهو غالبُ من يحتاج
+                    // التكبير (كبار السنّ). والزرّ يُرى بلا أن يُعلَّم أحد شيئاً.
+                    TranscriptFontButtons(vm)
                     if (t.bookTitle.isNotBlank()) {
                         Text(
                             t.bookTitle,
@@ -326,6 +332,55 @@ fun TranscriptSection(vm: AppViewModel, lesson: Lesson) {
         }
     }
 }
+
+/**
+ * 🔠 «أ+» و«أ−» فوق النصّ المشروح — تكبير الخطّ بزرٍّ يُرى لا بإيماءة تُتعلَّم.
+ *
+ * الحجم المضبوط هنا هو حجم خطّ التطبيق العام نفسه (`fontScale`) لا مقياساً
+ * ثالثاً يخصّ هذا القسم: ثلاثة مقاييس لشيء واحد تُربك المستخدم، ومن كبّر
+ * النصّ هنا فالغالب أنّه يريد التطبيق كلّه أكبر. والضبط نفسه في الإعدادات
+ * باقٍ كما هو لمن يصل إليه.
+ *
+ * والزرّ يعطّل نفسه عند الطرف — الحدّان هما حدّا `fontScale` نفسها في المخزن،
+ * فلا يضغط المستخدم على زرٍّ لا يفعل شيئاً.
+ */
+@Composable
+private fun TranscriptFontButtons(vm: AppViewModel) {
+    val revision by vm.store.revision.collectAsState()
+    val scale = remember(revision) { vm.store.fontScale() }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "حجم الخطّ",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.weight(1f))
+        FontStepButton(
+            label = "أ−",
+            enabled = scale > FONT_SCALE_MIN,
+            onStep = { vm.store.setFontScale(vm.store.fontScale() - FONT_SCALE_STEP) },
+            size = 48,
+            fontSize = 22,
+        )
+        Spacer(Modifier.width(6.dp))
+        FontStepButton(
+            label = "أ+",
+            enabled = scale < FONT_SCALE_MAX,
+            onStep = { vm.store.setFontScale(vm.store.fontScale() + FONT_SCALE_STEP) },
+            size = 48,
+            fontSize = 22,
+        )
+    }
+}
+
+/// حدّا حجم الخطّ العام وخطوته — مطابقة لما يحصره `LocalStore.setFontScale`
+/// ولمنزلق الإعدادات، كي يتوقّف الزرّ عند الطرف نفسه الذي يتوقّف عنده المنزلق.
+private const val FONT_SCALE_MIN = 0.8f
+private const val FONT_SCALE_MAX = 1.4f
+private const val FONT_SCALE_STEP = 0.05f
 
 /**
  * نموذج المساهمة: نص المقطع من الكتاب و/أو صور صفحاته (حتى 4)، مع اسم

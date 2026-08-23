@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,16 +35,17 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Insights
+import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.MicExternalOn
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PauseCircleFilled
 import androidx.compose.material.icons.filled.NotificationsNone
+import androidx.compose.material.icons.filled.Outbox
 import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
-import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material3.AlertDialog
@@ -60,6 +62,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -69,6 +72,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -84,6 +88,9 @@ import com.ali.menbaradkshk.data.transcriptSearchAnchor
 import com.ali.menbaradkshk.data.transcriptSearchWords
 import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.normalizeArabic
+import com.ali.menbaradkshk.util.arabicCountLabel
+import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.delay
 import com.ali.menbaradkshk.util.subcategoriesCountLabel
 import com.ali.menbaradkshk.util.lessonsCountLabel
@@ -105,7 +112,7 @@ fun HomeScreen(
     val ward = remember(revision, state.lessons) { vm.content.dailyWard() }
     val rails = remember(revision, state.lessons) {
         listOf(
-            Triple("مختارات المنبر ⭐", vm.content.featured(), false),
+            Triple(featuredRailTitle, vm.content.featured(), false),
             Triple("تابع الاستماع", vm.content.continueListening(), true),
             Triple("لم تُكمله بعد", vm.content.unfinished(), true),
             Triple("الأكثر استماعاً هذا الأسبوع 🔥", vm.content.trending(), false),
@@ -123,14 +130,18 @@ fun HomeScreen(
     }
     val feedTitle = if (hasHistory) "مقترح لك" else "ابدأ من هنا"
 
+    // 📴 وضع «أظهر المحفوظ فقط»: يُرشَّح **قبل** إسقاط المكرّر كي لا يحتجز
+    // ريلٌ درساً غير منزَّل ثمّ يسقط من الجميع فلا يظهر في أيّ مكان.
+    val savedIds = rememberSavedOnlyIds(vm)
+
     // لا يتكرّر درس واحد بين الريلات: أوّل ريل يظهر فيه يحتفظ به، وما بعده
     // يسقطه — كي لا يرى المستخدم القائمة نفسها ثلاث مرات.
-    val deduped = remember(rails, feed) {
+    val deduped = remember(rails, feed, savedIds) {
         val seen = mutableSetOf<String>()
         val uniqueRails = rails.map { (title, lessons, showProgress) ->
-            Triple(title, lessons.filter { seen.add(it.id) }, showProgress)
+            Triple(title, lessons.savedOnly(savedIds).filter { seen.add(it.id) }, showProgress)
         }
-        uniqueRails to feed.filter { it.id !in seen }
+        uniqueRails to feed.savedOnly(savedIds).filter { it.id !in seen }
     }
     val visibleRails = deduped.first
     val visibleFeed = deduped.second
@@ -147,6 +158,10 @@ fun HomeScreen(
                 item { OfflineBanner(state.error) { vm.content.requestDeepRefresh() } }
             }
 
+            // 📴 «لا يوجد إنترنت — أظهر المحفوظ فقط»: مفتاحٌ واحد بدل نقرةٍ
+            // تنتهي بخطأ تشغيل على درسٍ غير منزَّل (انظر OfflineOnly.kt).
+            item { SavedOnlyBar(vm) }
+
             // 🔔 **الطبقة المستمرّة** من تذكير التحديث.
             //
             // بقيّة الطبقات كلّها مؤقّتة: الإشعار يمرّ ويُمسح، والشاشة الكاملة
@@ -157,6 +172,9 @@ fun HomeScreen(
             // يحجب شيئاً**: سطرٌ واحد فوق المحتوى. الإلحاح في البقاء لا في
             // الحجم، وهي الموازنة التي تجعله تذكيراً لا إزعاجاً.
             item { UpdateBanner(vm) }
+
+            // 📬 «ما يخصّني» — بطاقات مكتوبة بدل أيقونات الشريط العلوي.
+            item { HomeInboxCards(vm) }
 
             // إجراءات سريعة: إذاعة منبر، وضع القيادة، حصادك.
             item { QuickActions(vm) }
@@ -205,12 +223,20 @@ fun HomeScreen(
                 }
             }
 
-            if (ward != null) {
+            // وِرد اليوم يسقط في وضع «المحفوظ فقط» إن لم يكن منزَّلاً: بطاقةٌ
+            // كبيرة نقرتها تنتهي بخطأ تشغيل أسوأ من غيابها.
+            if (ward != null && (savedIds == null || ward.id in savedIds)) {
                 item { DailyWardCard(vm, ward, feed) }
             }
 
             visibleRails.forEach { (title, lessons, showProgress) ->
-                railItem(vm, title, lessons, playback, showProgress = showProgress)
+                // «مختارات المنبر» ريلٌ ببطاقات كبيرة مكتوبة (انظر
+                // `FeaturedCard`)، وبقيّة الريلات على حالها.
+                if (title == featuredRailTitle) {
+                    featuredRailItem(vm, title, lessons, playback)
+                } else {
+                    railItem(vm, title, lessons, playback, showProgress = showProgress)
+                }
             }
 
             if (visibleFeed.isNotEmpty()) {
@@ -262,6 +288,256 @@ private fun androidx.compose.foundation.lazy.LazyListScope.railItem(
                     AudioCard(vm, lesson, lessons, playback, showProgress = showProgress)
                 }
             }
+        }
+    }
+}
+
+/// عنوان ريل «مختارات المنبر» — مكتوب مرّة واحدة كي يبقى الريل وبطاقته
+/// المخصّصة مرتبطين ولو تغيّر العنوان.
+const val featuredRailTitle = "مختارات المنبر ⭐"
+
+/// ريل «مختارات المنبر» ببطاقاته الكبيرة المكتوبة.
+private fun androidx.compose.foundation.lazy.LazyListScope.featuredRailItem(
+    vm: AppViewModel,
+    title: String,
+    lessons: List<Lesson>,
+    playback: PlaybackUiState,
+) {
+    if (lessons.isEmpty()) return
+    item(key = "rail-$title") {
+        Column(horizontalAlignment = Alignment.Start) {
+            RailHeader(title)
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp),
+            ) {
+                items(lessons, key = { "$title-${it.id}" }) { lesson ->
+                    FeaturedCard(vm, lesson, lessons, playback)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * ⭐ بطاقة «مختارات المنبر» — **العنوان هو الصورة**.
+ *
+ * كانت البطاقة تملأ نفسها بأيقونة القسم العملاقة (نجمة أو كتاب) حين لا صورة
+ * للدرس، وهو رمزٌ لا يعني شيئاً لمن ينظر: كل بطاقات القسم الواحد تتشابه فلا
+ * يميّز بينها شيء. فحلّ محلّه **اسم الدرس بخطّ كبير داخل البطاقة**: عنوانٌ
+ * يُقرأ خيرٌ من رمزٍ لا يدلّ.
+ *
+ * والخلفيّة لون القسم نفسه (هويّة `CategoryColors` بلا تغيير) مع تدرّج داكن
+ * من الأسفل يضمن تباين النصّ الأبيض مهما فتح اللون — كما في بقيّة أسطح
+ * التطبيق المتدرّجة (`SectionCard` و`DailyWardCard`).
+ */
+@Composable
+private fun FeaturedCard(
+    vm: AppViewModel,
+    lesson: Lesson,
+    playlist: List<Lesson>,
+    playback: PlaybackUiState,
+) {
+    val accent = colorForCategory(lesson.categoryId)
+    val active = playback.mediaId == lesson.id && lesson.id.isNotBlank()
+    Box(
+        modifier = Modifier
+            .width(238.dp)
+            .height(136.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(Brush.linearGradient(listOf(accent, Slate)))
+            .clickable { vm.openPlayer(lesson, playlist) },
+    ) {
+        Box(
+            Modifier
+                .matchParentSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Transparent, Color(0xCC000000)),
+                    ),
+                ),
+        )
+        Column(
+            modifier = Modifier.align(Alignment.BottomStart).padding(14.dp),
+        ) {
+            Text(
+                lesson.displayTitle,
+                color = Color.White,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (lesson.speaker.isNotBlank()) {
+                Text(
+                    lesson.speaker,
+                    color = Color.White.copy(alpha = 0.85f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (active) {
+            Icon(
+                Icons.Filled.PlayCircleFilled,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).size(26.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 📬 بطاقات «ما يخصّني»: الإشعارات، مساهماتي، تنزيلاتي — **بأسمائها مكتوبة**.
+ *
+ * كانت هذه المداخل أيقونات في الشريط العلويّ (سبع أيقونات بلا كلمة واحدة،
+ * تزاحم العنوان حتى يكاد يُقصّ). وجمهور التطبيق لا يفكّ رموز الأيقونات، فما
+ * لا اسم له لا يُفتح. البطاقة هنا: أيقونة كبيرة واسمٌ تحتها، وشارة العدد غير
+ * المقروء على «الإشعارات» كما كانت على الجرس تماماً.
+ */
+@Composable
+private fun HomeInboxCards(vm: AppViewModel) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+        StreakLine(vm)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            NotificationsCard(vm, Modifier.weight(1f))
+            MySubmissionsCard(vm, Modifier.weight(1f))
+            InboxCard(
+                icon = Icons.Filled.Download,
+                label = "تنزيلاتي",
+                tint = OrangeBrand,
+                modifier = Modifier.weight(1f),
+                onClick = { vm.open(Route.Downloads) },
+            )
+        }
+    }
+}
+
+/// سطر السلسلة 🔥 — كان شريحة برقمٍ مجرّد في الشريط العلويّ لا يُفهم معناها،
+/// فصار جملةً مكتوبة في المتن. يظهر من يومين فصاعداً، والنقر يفتح «حصادك».
+@Composable
+private fun StreakLine(vm: AppViewModel) {
+    val revision by vm.store.revision.collectAsState()
+    val streak = remember(revision) { vm.store.streakDays() }
+    if (streak < 2) return
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { vm.open(Route.Stats) }
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Filled.LocalFireDepartment,
+            contentDescription = null,
+            tint = Gold,
+            modifier = Modifier.size(26.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "سلسلتك: ${arabicCountLabel(streak, "يومٌ واحد", "يومان", "أيام", "يوماً")}",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+@Composable
+private fun NotificationsCard(vm: AppViewModel, modifier: Modifier = Modifier) {
+    val items by vm.notifications.collectAsState()
+    val revision by vm.store.revision.collectAsState()
+    val unread = remember(items, revision) {
+        val lastSeen = vm.store.notificationLastSeenMs()
+        visibleNotifications(vm, items).count { it.createdAtMs > lastSeen }
+    }
+    InboxCard(
+        icon = Icons.Filled.NotificationsNone,
+        label = "الإشعارات",
+        tint = Teal,
+        badge = if (unread > 0) "$unread" else null,
+        modifier = modifier,
+        onClick = { vm.open(Route.Notifications) },
+    )
+}
+
+/// «مساهماتي» — تظهر لمن ساهم من قبل فقط (نفس شرط زرّ الشريط السابق)، وعليها
+/// نقطة إذا حُسمت مساهمة بعد آخر زيارة.
+@Composable
+private fun MySubmissionsCard(vm: AppViewModel, modifier: Modifier = Modifier) {
+    var user by remember { mutableStateOf(FirebaseAuth.getInstance().currentUser) }
+    DisposableEffect(Unit) {
+        val auth = FirebaseAuth.getInstance()
+        val listener = FirebaseAuth.AuthStateListener { user = it.currentUser }
+        auth.addAuthStateListener(listener)
+        onDispose { auth.removeAuthStateListener(listener) }
+    }
+    if (user == null) return
+    // الدخول المجهول يقع لكل مستخدم عند أوّل إقلاع، فوجود الهوية وحده لا
+    // يعني مساهماً. من لم يساهم قطّ: لا بطاقة تزحم الصفّ، ولا مستمعا
+    // Firestore يعملان طوال بقاء الرئيسية على مجموعتين فارغتين عنده.
+    val revision by vm.store.revision.collectAsState()
+    val contributed = remember(revision) { vm.hasContributedBefore() }
+    if (!contributed) return
+
+    val flow = remember { vm.submissions.mine().catch { emit(emptyList()) } }
+    val submissions by flow.collectAsState(initial = emptyList())
+    val transcriptsFlow = remember { vm.transcripts.mine().catch { emit(emptyList()) } }
+    val transcriptItems by transcriptsFlow.collectAsState(initial = emptyList())
+    val hasNewDecision = remember(submissions, transcriptItems, revision) {
+        val seen = vm.store.submissionsLastSeenMs()
+        submissions.any { it.status != "pending" && it.decidedAtMs > seen } ||
+            transcriptItems.any { it.status != "pending" && it.decidedAtMs > seen }
+    }
+    InboxCard(
+        icon = Icons.Filled.Outbox,
+        label = "مساهماتي",
+        tint = BlueBrand,
+        badge = if (hasNewDecision) " " else null,
+        modifier = modifier,
+        onClick = { vm.open(Route.MySubmissions) },
+    )
+}
+
+/// بطاقة واحدة: أيقونة كبيرة والاسم مكتوب تحتها، وهدف لمسٍ يفوق ٤٨dp بكثير.
+@Composable
+private fun InboxCard(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    tint: Color,
+    modifier: Modifier = Modifier,
+    badge: String? = null,
+    onClick: () -> Unit,
+) {
+    androidx.compose.material3.Card(
+        modifier = modifier.heightIn(min = 96.dp).clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp, horizontal = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            if (badge != null) {
+                androidx.compose.material3.BadgedBox(
+                    badge = { androidx.compose.material3.Badge { Text(badge) } },
+                ) {
+                    Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(34.dp))
+                }
+            } else {
+                Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(34.dp))
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                label,
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
@@ -383,12 +659,26 @@ fun LibraryScreen(vm: AppViewModel, state: ContentState) {
     val counts = remember(state.subcategories) {
         state.subcategories.groupingBy(Subcategory::categoryId).eachCount()
     }
+    // 📴 «المحفوظ فقط»: لا يبقى إلا قسمٌ فيه درسٌ منزَّل فعلاً — فتحُ قسمٍ
+    // فارغ بلا إنترنت طريقٌ مسدود لا فائدة في عرضه.
+    val savedIds = rememberSavedOnlyIds(vm)
+    val categories = remember(state.categories, state.lessons, savedIds) {
+        if (savedIds == null) {
+            state.categories
+        } else {
+            val withSaved = state.lessons
+                .filter { it.id in savedIds }
+                .mapTo(HashSet()) { it.categoryId }
+            state.categories.filter { it.id in withSaved }
+        }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        items(state.categories, key = Category::id) { category ->
+        item { SavedOnlyBar(vm) }
+        items(categories, key = Category::id) { category ->
             val count = counts[category.id] ?: 0
             SectionCard(
                 categoryId = category.id,
@@ -399,13 +689,19 @@ fun LibraryScreen(vm: AppViewModel, state: ContentState) {
         }
         // كانت الشاشة تبقى بيضاء أثناء التحميل، ورسالة الفراغ تطلب سحباً
         // للتحديث لا وجود له في هذا التبويب — فوُحِّدت مع الشاشتين الشقيقتين.
-        if (state.categories.isEmpty()) {
+        if (categories.isEmpty()) {
             item {
                 EmptyOrLoadingState(
-                    loading = state.loading,
-                    offline = state.offline,
+                    // في وضع «المحفوظ فقط» الفراغ ليس فراغ محتوى ولا انقطاع
+                    // شبكة: لم يُحفظ شيء بعد، وهذا ما يجب أن يُقال.
+                    loading = state.loading && savedIds == null,
+                    offline = state.offline && savedIds == null,
                     offlineMessage = "يجب الاتصال بالإنترنت أول مرة لتحميل الأقسام. بعد ذلك يمكنك التصفّح دون إنترنت.",
-                    emptyMessage = "لا توجد أقسام.",
+                    emptyMessage = if (savedIds != null) {
+                        "لا يوجد درس محفوظ على جهازك بعد. حمّل دروساً وأنت متصل لتسمعها بلا إنترنت."
+                    } else {
+                        "لا توجد أقسام."
+                    },
                     onRetry = { vm.content.requestDeepRefresh() },
                 )
             }
@@ -652,15 +948,20 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
     val revision by vm.store.revision.collectAsState()
     val content by vm.content.state.collectAsState()
     val sub = content.subcategoryById[subcategoryId]
-    val lessons = remember(revision, content.lessons) { vm.content.lessonsForSubcategory(subcategoryId) }
+    val all = remember(revision, content.lessons) { vm.content.lessonsForSubcategory(subcategoryId) }
+    // 📴 «المحفوظ فقط» — بلا إنترنت لا يظهر إلا ما يعمل بالنقر فعلاً.
+    val lessons = rememberSavedOnly(vm, all)
     val bulk by vm.bulkDownload.collectAsState()
     var newestFirst by rememberSaveable(subcategoryId) { mutableStateOf(false) }
     val ordered = remember(lessons, newestFirst) { if (newestFirst) lessons.reversed() else lessons }
     // قراءة خريطة التنزيلات مرّة واحدة: `isDownloaded` لكل درس كان يفكّ خريطة
     // JSON كاملةً من التفضيلات، أي n تحليلاً كاملاً على خيط الواجهة.
-    val downloadedCount = remember(revision, lessons) {
+    // ⚠️ العدّ والتحميل الجماعيّ على القائمة **الكاملة** لا المرشَّحة: ترشيح
+    // العرض شأن الشاشة، أمّا «تنزيل كل دروس القسم» فيجب أن يبقى معناه كل
+    // الدروس وإلّا صار زرّاً لا يفعل شيئاً.
+    val downloadedCount = remember(revision, all) {
         val map = vm.downloads.all()
-        lessons.count { l -> map[l.id]?.let { java.io.File(it).isFile } == true }
+        all.count { l -> map[l.id]?.let { java.io.File(it).isFile } == true }
     }
     // القسم الرئيسي قد لا يكون قد وصل بعد (رابط عميق/إشعار قبل اكتمال
     // المزامنة)، فالزرّ يُعطَّل بدل أن يبتلع الضغطة صامتاً.
@@ -697,10 +998,11 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
                         label = { Text("عشوائي") },
                     )
                     Spacer(Modifier.weight(1f))
-                    AssistChip(
-                        onClick = { newestFirst = !newestFirst },
-                        leadingIcon = { Icon(Icons.Filled.SwapVert, null, tint = OrangeBrand, modifier = Modifier.size(20.dp)) },
-                        label = { Text(if (newestFirst) "الأحدث" else "الأقدم") },
+                    // الحال مكتوبة والخيارات مكتوبة (انظر `SortChip`).
+                    SortChip(
+                        currentIndex = if (newestFirst) 0 else 1,
+                        options = listOf("الأحدث أولاً", "الأقدم أولاً"),
+                        onSelect = { index -> newestFirst = index == 0 },
                     )
                 }
             }
@@ -735,10 +1037,10 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
                     DownloadQueueControls(vm)
                 } else {
                     DownloadAllButton(
-                        text = if (downloadedCount > 0) "تنزيل الكل ($downloadedCount/${lessons.size} محمّل)"
+                        text = if (downloadedCount > 0) "تنزيل الكل ($downloadedCount/${all.size} محمّل)"
                         else "تنزيل كل دروس القسم",
-                        enabled = lessons.isNotEmpty(),
-                        onClick = { vm.requestBulkDownload(sub?.name ?: "القسم", lessons) },
+                        enabled = all.isNotEmpty(),
+                        onClick = { vm.requestBulkDownload(sub?.name ?: "القسم", all) },
                     )
                     Spacer(Modifier.weight(1f))
                 }
@@ -752,12 +1054,19 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
         }
         if (lessons.isEmpty()) {
             item {
+                // فراغُ «المحفوظ فقط» ليس فراغ قسم: نقول للمستخدم ما جرى بدل
+                // أن يظنّ القسم خالياً.
+                val savedOnlyEmpty = all.isNotEmpty()
                 EmptyOrLoadingState(
-                    loading = content.loading,
+                    loading = content.loading && !savedOnlyEmpty,
                     // مع وجود دروس محفوظة يكون القسم فارغاً فعلاً لا الاتصال منقطعاً.
                     offline = content.offline && content.lessons.isEmpty(),
                     offlineMessage = "يجب الاتصال بالإنترنت أول مرة لتحميل الدروس. بعد ذلك يمكنك الاستماع دون إنترنت.",
-                    emptyMessage = "لا توجد دروس في هذا القسم.",
+                    emptyMessage = if (savedOnlyEmpty) {
+                        "لا يوجد درس محفوظ من هذا القسم على جهازك."
+                    } else {
+                        "لا توجد دروس في هذا القسم."
+                    },
                     onRetry = { vm.content.requestDeepRefresh() },
                 )
             }
@@ -778,13 +1087,19 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
 @Composable
 fun LessonListScreen(
     vm: AppViewModel,
-    lessons: List<Lesson>,
+    all: List<Lesson>,
     playback: PlaybackUiState,
     emptyTitle: String,
     emptyDetail: String = "لم تُضف عناصر هنا بعد.",
 ) {
+    // 📴 «المحفوظ فقط» يسري على كل قوائم الدروس بلا استثناء.
+    val lessons = rememberSavedOnly(vm, all)
     if (lessons.isEmpty()) {
-        EmptyState(emptyTitle, emptyDetail)
+        if (all.isEmpty()) {
+            EmptyState(emptyTitle, emptyDetail)
+        } else {
+            EmptyState("لا شيء محفوظ هنا", "حمّل دروساً وأنت متصل لتسمعها بلا إنترنت.")
+        }
         return
     }
     // ⛔ لا `revision` في المفتاح ولا اشتراك به هنا: `AudioItem` يقرأه بنفسه،

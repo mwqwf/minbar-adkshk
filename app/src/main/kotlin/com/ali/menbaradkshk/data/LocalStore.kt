@@ -782,6 +782,12 @@ class LocalStore private constructor(context: Context) {
         putLong("adhkar_rem_m_$kind", minute.toLong())
     }
 
+    // ---- أوّل تشغيل (سؤالان ثم لا شيء بعدهما أبداً) ----
+    /// هل انتهى المستخدم من شاشتَي أوّل تشغيل؟ تُكتب حتى لو تخطّاهما: الغرض
+    /// ألّا يُسأل مرّتين، لا أن يُلاحَق حتى يجيب.
+    fun onboardingDone(): Boolean = bool("onboarding_done")
+    fun markOnboardingDone() = write { putBoolean("onboarding_done", true) }
+
     // ---- تلميحات الإرشاد للمستخدم الجديد (تُعرض مرة واحدة) ----
     fun hintSeen(key: String): Boolean = bool("hint_$key")
     fun markHintSeen(key: String) = write { putBoolean("hint_$key", true) }

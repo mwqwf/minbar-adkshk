@@ -474,16 +474,21 @@ private fun DhikrZoomDialog(
                         )
                     }
                     Spacer(Modifier.weight(1f))
+                    // «أ−»/«أ+» لا «−»/«+»: الرمز وحده يحتمل أن يكون عدّاً أو
+                    // صوتاً، والحرف يقطع بأنّ المقصود حجم الخطّ.
                     FontStepButton(
-                        label = "−",
+                        label = "أ−",
                         enabled = fontSp > LocalStore.ZOOM_FONT_MIN,
                         onStep = { onFont(currentFont() - (currentFont() * FONT_STEP_RATIO).coerceAtLeast(2f)) },
+                        // حرفان لا رمزٌ واحد: الحجم أصغر كي يسع الدائرة.
+                        fontSize = 21,
                     )
                     Spacer(Modifier.width(8.dp))
                     FontStepButton(
-                        label = "+",
+                        label = "أ+",
                         enabled = fontSp < LocalStore.ZOOM_FONT_MAX,
                         onStep = { onFont(currentFont() + (currentFont() * FONT_STEP_RATIO).coerceAtLeast(2f)) },
+                        fontSize = 21,
                     )
                 }
                 // الشاشة كلّها منطقة عدّ: لا هدف صغير يُصاب.

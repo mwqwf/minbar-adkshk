@@ -160,12 +160,15 @@ fun ReadingFontRow(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.width(10.dp))
+        // ⭐ «أ−»/«أ+» لا «−»/«+»: الرمز المجرّد يحتمل معاني كثيرة (عدّ،
+        // صوت، سرعة)، أمّا الحرف مع العلامة فيقطع بأنّ المقصود حجم الخطّ —
+        // وأكثر من يحتاج التكبير لا يقرأ عناوين الأزرار الصغيرة أصلاً.
         FontStepButton(
-            label = "−",
+            label = "أ−",
             enabled = value > min,
             onStep = { onChange(current().let { it - (it * stepFraction).coerceAtLeast(1f) }) },
             size = buttonSize,
-            fontSize = (buttonSize * 0.58f).toInt(),
+            fontSize = (buttonSize * 0.40f).toInt(),
         )
         TextButton(onClick = { onChange(default) }) {
             Text(
@@ -176,11 +179,11 @@ fun ReadingFontRow(
             )
         }
         FontStepButton(
-            label = "+",
+            label = "أ+",
             enabled = value < max,
             onStep = { onChange(current().let { it + (it * stepFraction).coerceAtLeast(1f) }) },
             size = buttonSize,
-            fontSize = (buttonSize * 0.58f).toInt(),
+            fontSize = (buttonSize * 0.40f).toInt(),
         )
         Spacer(Modifier.weight(1f))
         // ⭐ «عريض» — كلمةً لا أيقونة، ومكتوبةً بالوزن الذي تصفه فيراها

@@ -251,9 +251,21 @@ fun CarScreen(vm: AppViewModel, playback: PlaybackUiState) {
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = vm.playback::skipBackward, modifier = Modifier.size(88.dp)) {
-                Icon(Icons.Filled.Replay, "رجوع", tint = Color.White, modifier = Modifier.size(64.dp))
-            }
+            // ⭐ «أعِد ٣٠ ثانية» أكبر زرّ بعد التشغيل — والسائق أولى الناس به:
+            // فاتته جملة ولا يستطيع أن يبحث عن مقبض السحب على الشريط ولا أن
+            // يعدّ ضغطات ترجيعٍ صغيرة وعيناه على الطريق. هدفٌ واحد كبير.
+            //
+            // الخلفيّة سوداء هنا عمداً (وضع القيادة)، فالألوان صريحة لا من
+            // السمة: بياضٌ على دائرة بيضاء شفيفة يعطي أعلى تباين ممكن ليلاً.
+            Replay30Button(
+                onClick = {
+                    val target = (playback.positionMs - 30_000L).coerceAtLeast(0L)
+                    vm.playback.seekTo(target)
+                },
+                size = 116.dp,
+                tint = Color.White,
+                background = Color.White.copy(alpha = 0.16f),
+            )
             Box(
                 modifier = Modifier
                     .size(140.dp)
@@ -268,20 +280,26 @@ fun CarScreen(vm: AppViewModel, playback: PlaybackUiState) {
                     modifier = Modifier.size(90.dp),
                 )
             }
-            IconButton(onClick = vm.playback::skipForward, modifier = Modifier.size(88.dp)) {
-                Icon(Icons.Filled.FastForward, "تقديم", tint = Color.White, modifier = Modifier.size(64.dp))
-            }
         }
         Spacer(Modifier.height(30.dp))
+        // ⚠️ الترجيع والتقديم المعتادان نزلا إلى هذا الصفّ: الصفّ الأعلى صار
+        // «أعِد ٣٠ ثانية» + «تشغيل»، وهما الفعلان اللذان يحتاجهما السائق بلا
+        // نظر. وهما باقيان كما كانا لمن أرادهما — لم يُحذف شيء.
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
-            IconButton(onClick = vm.playback::previous, modifier = Modifier.size(80.dp)) {
-                Icon(Icons.Filled.SkipPrevious, "السابق", tint = Color.White, modifier = Modifier.size(56.dp))
+            IconButton(onClick = vm.playback::previous, modifier = Modifier.size(72.dp)) {
+                Icon(Icons.Filled.SkipPrevious, "السابق", tint = Color.White, modifier = Modifier.size(50.dp))
             }
-            IconButton(onClick = vm.playback::next, modifier = Modifier.size(80.dp)) {
-                Icon(Icons.Filled.SkipNext, "التالي", tint = Color.White, modifier = Modifier.size(56.dp))
+            IconButton(onClick = vm.playback::skipBackward, modifier = Modifier.size(72.dp)) {
+                Icon(Icons.Filled.Replay, "رجوع", tint = Color.White, modifier = Modifier.size(50.dp))
+            }
+            IconButton(onClick = vm.playback::skipForward, modifier = Modifier.size(72.dp)) {
+                Icon(Icons.Filled.FastForward, "تقديم", tint = Color.White, modifier = Modifier.size(50.dp))
+            }
+            IconButton(onClick = vm.playback::next, modifier = Modifier.size(72.dp)) {
+                Icon(Icons.Filled.SkipNext, "التالي", tint = Color.White, modifier = Modifier.size(50.dp))
             }
         }
         Spacer(Modifier.weight(1f))

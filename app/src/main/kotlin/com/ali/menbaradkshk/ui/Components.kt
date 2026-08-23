@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -17,6 +18,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
@@ -721,6 +724,57 @@ fun DownloadAllButton(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+        }
+    }
+}
+
+/**
+ * ↕️ زرّ الفرز — **وعدٌ بالنتيجة ثم قائمةٌ مكتوبة**، لا كلمةٌ تتقلّب.
+ *
+ * كان الزرّ يكتب «الأقدم» وهو نفسه الذي يبدّل الترتيب، فلا يُعرف أهي وصفٌ
+ * للحال أم وعدٌ بما سيصير — وهي حيرةٌ لا تُحلّ إلا بالتجربة. والتطبيق يلتزم
+ * القاعدة المعاكسة صراحةً في شريط المصحف («الزرّ وعدٌ بالنتيجة»).
+ *
+ * فصار: «رتّب: الأحدث أولاً ▾» يقول الحال، والنقر يفتح **الخيارات مكتوبةً**
+ * فيختار المستخدم ما يريد بدل أن يخمّن ما ستفعله الضغطة. والخيار الجاري
+ * معلَّم بعلامة صحّ.
+ */
+@Composable
+fun SortChip(
+    currentIndex: Int,
+    options: List<String>,
+    onSelect: (Int) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        androidx.compose.material3.AssistChip(
+            onClick = { open = true },
+            modifier = Modifier.heightIn(min = 48.dp),
+            leadingIcon = {
+                Icon(
+                    Icons.Filled.SwapVert,
+                    contentDescription = null,
+                    tint = OrangeBrand,
+                    modifier = Modifier.size(20.dp),
+                )
+            },
+            label = { Text("رتّب: ${options.getOrElse(currentIndex) { options.first() }} ▾") },
+        )
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            options.forEachIndexed { index, option ->
+                DropdownMenuItem(
+                    text = { Text(option, style = MaterialTheme.typography.titleMedium) },
+                    leadingIcon = {
+                        if (index == currentIndex) {
+                            Icon(Icons.Filled.Check, contentDescription = null, tint = Teal)
+                        }
+                    },
+                    onClick = {
+                        open = false
+                        onSelect(index)
+                    },
+                )
+            }
         }
     }
 }

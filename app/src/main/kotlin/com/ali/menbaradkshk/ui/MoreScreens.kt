@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FiberNew
 import androidx.compose.material.icons.filled.Flag
@@ -693,17 +694,6 @@ fun NotificationsScreen(vm: AppViewModel) {
         return
     }
     LazyColumn(contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp)) {
-        item {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.End,
-            ) {
-                TextButton(onClick = { vm.store.dismissNotifications(items.map(NotificationItem::id)) }) {
-                    Icon(Icons.Filled.ClearAll, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Text(" مسح الكل")
-                }
-            }
-        }
         items(items, key = NotificationItem::id) { n ->
             val dismissState = rememberSwipeToDismissBoxState(
                 confirmValueChange = { value ->
@@ -778,18 +768,40 @@ fun NotificationsScreen(vm: AppViewModel) {
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                // الحذف أحمر دائماً — لا رمادياً كبقيّة الأيقونات:
+                                // لونه وحده يميّزه عمّا لا يحذف شيئاً.
                                 IconButton(onClick = { vm.store.dismissNotification(n.id) }) {
                                     Icon(
                                         Icons.Filled.Close,
                                         contentDescription = "حذف",
                                         modifier = Modifier.size(16.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        tint = MaterialTheme.colorScheme.error,
                                     )
                                 }
                             }
                         },
                     )
                     androidx.compose.material3.HorizontalDivider()
+                }
+            }
+        }
+        // 🔻 «مسح الكل» نزل إلى آخر القائمة وصار أحمر: هو الفعل الوحيد الماحي
+        // في الشاشة، وكان أوّل ما تقع عليه الإصبع فوق الإشعارات — في موضع
+        // الأزرار المألوفة ولونها. القاعدة الآن واحدة: الحذف أحمر وآخرٌ ومفصول.
+        item(key = "clear-all") {
+            androidx.compose.material3.HorizontalDivider()
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = { vm.store.dismissNotifications(items.map(NotificationItem::id)) }) {
+                    Icon(
+                        Icons.Filled.ClearAll,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                    Text(" مسح الكل", color = MaterialTheme.colorScheme.error)
                 }
             }
         }
@@ -810,6 +822,13 @@ fun MySubmissionsScreen(vm: AppViewModel) {
     val transcriptSubmissions by transcriptsFlow.collectAsState(initial = emptyList())
     var withdrawTarget by remember { mutableStateOf<LessonSubmission?>(null) }
     var withdrawTranscript by remember { mutableStateOf<TranscriptSubmissionItem?>(null) }
+    // ✏️ تعديل العنوان: من أخطأ في العنوان كان عليه سحب المساهمة ورفع الملفّ
+    // الصوتيّ كلّه من جديد على إنترنت ضعيف. العناوين المعدَّلة تُحفظ هنا أيضاً
+    // كي يظهر التصحيح فوراً بلا انتظار وصول التحديث من الخادم.
+    val editedTitles = remember { androidx.compose.runtime.mutableStateMapOf<String, String>() }
+    var editTarget by remember { mutableStateOf<LessonSubmission?>(null) }
+    var editText by remember { mutableStateOf("") }
+    var savingTitle by remember { mutableStateOf(false) }
 
     // خريطة الحالات المحلّية هي بوّابة «هل ساهم من قبل؟» (زرّ «مساهماتي»
     // ومستمع القرارات معاً)، ولم يكن يكتبها أحد. نكتبها هنا دمجاً لا
@@ -861,7 +880,7 @@ fun MySubmissionsScreen(vm: AppViewModel) {
                                 Icon(icon, null, tint = color, modifier = Modifier.size(20.dp))
                                 Spacer(Modifier.width(8.dp))
                                 Text(
-                                    submission.title,
+                                    editedTitles[submission.id] ?: submission.title,
                                     modifier = Modifier.weight(1f),
                                     fontWeight = FontWeight.Bold,
                                 )
@@ -888,10 +907,26 @@ fun MySubmissionsScreen(vm: AppViewModel) {
                                 )
                             }
                             if (submission.status == "pending") {
+                                Spacer(Modifier.height(4.dp))
+                                // خطٌّ يفصل أفعال البطاقة عن محتواها، والسحب
+                                // (وهو الفعل الذي لا رجعة فيه) أحمر وآخرٌ دائماً.
+                                androidx.compose.material3.HorizontalDivider()
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                    TextButton(onClick = {
+                                        editText = editedTitles[submission.id] ?: submission.title
+                                        editTarget = submission
+                                    }) {
+                                        Icon(Icons.Filled.Edit, null, modifier = Modifier.size(18.dp))
+                                        Text(" عدّل العنوان")
+                                    }
                                     TextButton(onClick = { withdrawTarget = submission }) {
-                                        Icon(Icons.Filled.Undo, null, modifier = Modifier.size(18.dp))
-                                        Text(" سحب الطلب")
+                                        Icon(
+                                            Icons.Filled.Undo,
+                                            null,
+                                            modifier = Modifier.size(18.dp),
+                                            tint = MaterialTheme.colorScheme.error,
+                                        )
+                                        Text(" سحب الطلب", color = MaterialTheme.colorScheme.error)
                                     }
                                 }
                             }
@@ -902,11 +937,66 @@ fun MySubmissionsScreen(vm: AppViewModel) {
         }
     }
 
+    // ✏️ حوار تعديل العنوان — حقلٌ واحد لا غير: الملفّ الصوتيّ لا يُرفع ثانية،
+    // والعنوان القديم يبقى كما هو إن فشل الإرسال.
+    editTarget?.let { submission ->
+        AlertDialog(
+            onDismissRequest = { if (!savingTitle) editTarget = null },
+            title = { Text("تعديل العنوان") },
+            text = {
+                Column {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = editText,
+                        onValueChange = { editText = it },
+                        placeholder = { Text("عنوان الدرس") },
+                        singleLine = true,
+                        enabled = !savingTitle,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "يُرسَل العنوان وحده — الملفّ الصوتيّ محفوظ ولن يُرفع من جديد.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !savingTitle && editText.isNotBlank(),
+                    onClick = {
+                        val title = editText.trim()
+                        savingTitle = true
+                        scope.launch {
+                            runCatching { vm.submissions.updateMyTitle(submission, title) }
+                                .onSuccess {
+                                    editedTitles[submission.id] = title
+                                    savingTitle = false
+                                    editTarget = null
+                                    vm.showMessage("حُفظ العنوان الجديد.")
+                                }
+                                .onFailure {
+                                    savingTitle = false
+                                    vm.showMessage(
+                                        "تعذّر حفظ العنوان — تأكّد من الاتصال ثم أعد المحاولة. " +
+                                            "العنوان القديم باقٍ كما هو.",
+                                    )
+                                }
+                        }
+                    },
+                ) { Text(if (savingTitle) "جارٍ الحفظ…" else "حفظ") }
+            },
+            dismissButton = {
+                TextButton(enabled = !savingTitle, onClick = { editTarget = null }) { Text("إلغاء") }
+            },
+        )
+    }
+
     withdrawTarget?.let { submission ->
         AlertDialog(
             onDismissRequest = { withdrawTarget = null },
-            title = { Text("سحب المساهمة؟") },
-            text = { Text("سيُحذف الطلب قبل أن يراجعه المشرفون.") },
+            // الاسم لا العدد: من يقرأ «سحب المساهمة؟» لا يعرف أيّها يسحب.
+            title = { Text("سحب: ${editedTitles[submission.id] ?: submission.title}") },
+            text = { Text("سيُحذف الطلب قبل أن يراجعه المشرفون، ولا يمكن التراجع.") },
             confirmButton = {
                 TextButton(onClick = {
                     withdrawTarget = null
@@ -925,8 +1015,9 @@ fun MySubmissionsScreen(vm: AppViewModel) {
     withdrawTranscript?.let { item ->
         AlertDialog(
             onDismissRequest = { withdrawTranscript = null },
-            title = { Text("سحب اقتراح النص؟") },
-            text = { Text("سيُحذف الاقتراح قبل أن يراجعه المشرفون.") },
+            // الاسم لا الوصف العامّ — أيّ درسٍ يخصّ هذا الاقتراح.
+            title = { Text("سحب نصّ: ${item.lessonTitle.ifBlank { "نص مشروح" }}") },
+            text = { Text("سيُحذف الاقتراح قبل أن يراجعه المشرفون، ولا يمكن التراجع.") },
             confirmButton = {
                 TextButton(onClick = {
                     withdrawTranscript = null
@@ -999,10 +1090,18 @@ private fun TranscriptSubmissionCard(
                 )
             }
             if (item.isPending) {
+                Spacer(Modifier.height(4.dp))
+                // نفس قاعدة بطاقة المساهمة الصوتيّة: الفعل الماحي أحمر ومفصول.
+                androidx.compose.material3.HorizontalDivider()
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = onWithdraw) {
-                        Icon(Icons.Filled.Undo, null, modifier = Modifier.size(18.dp))
-                        Text(" سحب الاقتراح")
+                        Icon(
+                            Icons.Filled.Undo,
+                            null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                        Text(" سحب الاقتراح", color = MaterialTheme.colorScheme.error)
                     }
                 }
             }

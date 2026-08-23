@@ -178,7 +178,16 @@ fun AudioItem(
                     }
                 }
                 if (showActions) {
-                    IconButton(onClick = { vm.toggleFavorite(lesson.id) }) {
+                    // ↩️ الإزالة من المفضّلة فعلٌ رخيص قابل للرجوع: يُنفَّذ فوراً
+                    // ومعه «تراجع» يعيد الدرس إلى **موضعه**، بلا حوار يسأل عن
+                    // كل نقرة قلب. الإضافة لا تحتاج شيئاً أصلاً.
+                    IconButton(onClick = {
+                        if (favorite) {
+                            vm.removeFavoriteWithUndo(lesson.id, lesson.displayTitle)
+                        } else {
+                            vm.toggleFavorite(lesson.id)
+                        }
+                    }) {
                         Icon(
                             if (favorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
                             contentDescription = if (favorite) "إزالة من المفضّلة" else "إضافة للمفضّلة",
@@ -475,6 +484,9 @@ fun DownloadButton(
                     },
                 )
             }
+            // 🔻 قاعدة واحدة لزرّ الحذف في التطبيق كلّه: أحمر، وآخر عنصر،
+            // ومفصولٌ بخطّ عمّا قبله — كي تعرفه العين قبل أن تقرأه.
+            androidx.compose.material3.HorizontalDivider()
             DropdownMenuItem(
                 text = { Text("إلغاء التحميل", color = MaterialTheme.colorScheme.error) },
                 leadingIcon = {

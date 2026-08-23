@@ -257,6 +257,32 @@ class SubmissionRepository private constructor(context: Context) {
         awaitClose { registration.remove() }
     }
 
+    /**
+     * ✏️ تصحيح عنوان مساهمة **ما دامت قيد المراجعة**.
+     *
+     * لماذا؟ أشيع خطأ في المساهمة خطأٌ في العنوان، ولم يكن أمام صاحبه إلا
+     * سحب الطلب ثم **رفع الملف الصوتي كلّه من جديد** — وهو ثمن باهظ على
+     * إنترنت ضعيف لأجل حرف واحد. الآن يُرسَل العنوان وحده.
+     *
+     * الحمولة `{ submissionId, title }` فقط (وnote إن كانت لدينا): الخادم لا
+     * يقبل تعديل شيء آخر، والملف المرفوع لا يُمَسّ.
+     */
+    suspend fun updateMyTitle(
+        submission: LessonSubmission,
+        title: String,
+        note: String? = null,
+    ) {
+        if (submission.status != "pending") return
+        val trimmed = title.trim()
+        require(trimmed.isNotBlank()) { "أدخل عنوان الدرس." }
+        val payload = buildMap<String, Any> {
+            put("submissionId", submission.id)
+            put("title", trimmed)
+            note?.trim()?.takeIf(String::isNotBlank)?.let { put("note", it) }
+        }
+        functions.getHttpsCallable("updateMySubmission").call(payload).await()
+    }
+
     suspend fun deletePending(submission: LessonSubmission) {
         if (submission.status != "pending") return
         functions.getHttpsCallable("deleteMySubmission")

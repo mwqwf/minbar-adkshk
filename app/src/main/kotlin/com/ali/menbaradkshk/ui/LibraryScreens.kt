@@ -75,6 +75,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.ali.menbaradkshk.util.lessonsCountLabel
+import com.ali.menbaradkshk.util.audiosCountLabel
 
 /// صفحة «قوائمي»: تجمع «المفضّلة» و«السجل» و«قوائم التشغيل».
 ///
@@ -148,7 +149,8 @@ private fun PlaylistsTab(vm: AppViewModel) {
                                 }
                             },
                             headlineContent = { Text(playlist.name) },
-                            supportingContent = { Text("${playlist.lessonIds.size} صوتية") },
+                            // صيغة العدد العربيّة: «صوتيتان» لا «2 صوتية».
+                            supportingContent = { Text(audiosCountLabel(playlist.lessonIds.size)) },
                             trailingContent = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     IconButton(onClick = {
@@ -157,6 +159,11 @@ private fun PlaylistsTab(vm: AppViewModel) {
                                     }) {
                                         Icon(Icons.Filled.Edit, contentDescription = "إعادة تسمية", tint = Teal)
                                     }
+                                    // الحذف أحمر وآخرٌ ومفصولٌ بخطّ — قاعدة واحدة
+                                    // في كل قوائم التطبيق وأوراقه.
+                                    androidx.compose.material3.VerticalDivider(
+                                        modifier = Modifier.height(24.dp).padding(horizontal = 2.dp),
+                                    )
                                     IconButton(onClick = { deleteTarget = playlist }) {
                                         Icon(Icons.Filled.Delete, contentDescription = "حذف", tint = MaterialTheme.colorScheme.error)
                                     }
@@ -385,12 +392,23 @@ fun PlaylistDetailScreen(vm: AppViewModel, playlistId: String) {
     // المدد تُقرأ مرّة واحدة لا مرّة لكل صفّ (كل قراءة تحليل JSON كامل).
     val durations = remember(revision) { vm.store.durations() }
     // الدرس الذي أُزيل للتوّ — يُنفَّذ الإزالة ويُعرض «تراجع» فوراً.
-    var removedFromPlaylist by remember { mutableStateOf<com.ali.menbaradkshk.data.Lesson?>(null) }
+    // ⚠️ نحتفظ مع الدرس بترتيب القائمة **قبل** الإزالة: `addToPlaylist` تُلحق
+    // بالآخر دائماً، فكان «تراجع» يعيد الدرس إلى ذيل القائمة لا إلى مكانه —
+    // وهذا تغييرٌ ثانٍ لا تراجعاً. بعد الإعادة ننقله إلى موضعه بالضبط.
+    var removedFromPlaylist by remember {
+        mutableStateOf<Pair<com.ali.menbaradkshk.data.Lesson, List<String>>?>(null)
+    }
     LaunchedEffect(removedFromPlaylist) {
-        val lesson = removedFromPlaylist ?: return@LaunchedEffect
+        val (lesson, previousOrder) = removedFromPlaylist ?: return@LaunchedEffect
+        val index = previousOrder.indexOf(lesson.id)
         vm.store.removeFromPlaylist(playlistId, lesson.id)
         vm.showUndo("أُزيل «${lesson.displayTitle}» من القائمة.") {
             vm.store.addToPlaylist(playlistId, lesson.id)
+            if (index >= 0) {
+                val restored = previousOrder.filterNot { it == lesson.id } + lesson.id
+                vm.content.movePlaylistItem(playlistId, restored, restored.lastIndex, index)
+            }
+            orderTick += 1
         }
         removedFromPlaylist = null
     }
@@ -473,12 +491,15 @@ fun PlaylistDetailScreen(vm: AppViewModel, playlistId: String) {
                                         orderTick += 1
                                     },
                                     enabled = index > 0,
-                                    modifier = Modifier.size(34.dp),
+                                    // ٤٨dp حدٌّ أدنى لكل هدف لمس: كان ٣٤dp فتزلّ
+                                    // الإصبع إلى الصفّ فيُفتح الدرس بدل تحريكه.
+                                    modifier = Modifier.size(48.dp),
                                 ) {
                                     Icon(
                                         Icons.Filled.KeyboardArrowUp,
                                         contentDescription = "تحريك للأعلى",
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(22.dp),
                                     )
                                 }
                                 IconButton(
@@ -492,20 +513,28 @@ fun PlaylistDetailScreen(vm: AppViewModel, playlistId: String) {
                                         orderTick += 1
                                     },
                                     enabled = index < lessons.lastIndex,
-                                    modifier = Modifier.size(34.dp),
+                                    modifier = Modifier.size(48.dp),
                                 ) {
                                     Icon(
                                         Icons.Filled.KeyboardArrowDown,
                                         contentDescription = "تحريك للأسفل",
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(22.dp),
                                     )
                                 }
+                                // خطٌّ فاصل قبل زرّ الإزالة — نفس قاعدة القوائم
+                                // والأوراق: الحذف أحمر، وآخرٌ، ومفصول.
+                                androidx.compose.material3.VerticalDivider(
+                                    modifier = Modifier.height(24.dp).padding(horizontal = 2.dp),
+                                )
                             }
                             // إزالة بضغطة واحدة مقبولة هنا **لأنّ لها تراجعاً
                             // فوريّاً**: لا شيء يُفقَد، والدرس يعود بضغطة.
                             // القاعدة العامّة في التطبيق: ما لا يُتراجَع عنه
                             // يُسأل عنه أوّلاً (كحذف التنزيلات والقوائم).
-                            IconButton(onClick = { removedFromPlaylist = lesson }) {
+                            IconButton(onClick = {
+                                removedFromPlaylist = lesson to stored.map { it.id }
+                            }) {
                                 Icon(
                                     Icons.Filled.RemoveCircleOutline,
                                     contentDescription = "إزالة من القائمة",
@@ -605,13 +634,20 @@ fun DownloadsScreen(vm: AppViewModel) {
                         }
                     }
                     androidx.compose.foundation.layout.Spacer(Modifier.size(10.dp))
-                    Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         DownloadAllButton(
                             text = "تحميل قسم كامل",
                             enabled = bulk == null,
                             onClick = { sectionSheet = true },
                         )
                         if (items.isNotEmpty()) {
+                            // الحذف أحمر وآخرٌ ومفصولٌ بخطّ عمّا قبله.
+                            androidx.compose.material3.VerticalDivider(
+                                modifier = Modifier.height(24.dp).padding(horizontal = 2.dp),
+                            )
                             TextButton(onClick = { deleteAllDialog = true }) {
                                 Icon(Icons.Filled.Delete, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
                                 Text(" حذف الكل", color = MaterialTheme.colorScheme.error)

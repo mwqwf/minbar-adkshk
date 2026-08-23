@@ -1457,4 +1457,36 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         playback.release()
         super.onCleared()
     }
+
+    /**
+     * ♥ إزالة درس من المفضّلة **بضغطة واحدة ومعها مخرج ظاهر**.
+     *
+     * لماذا لا حوار؟ لأنّ القاعدة المكتوبة في هذا الملفّ نفسه (انظر
+     * [ActionMessage]): ما يُتراجَع عنه يُنفَّذ فوراً. وكانت النقرة الخاطئة
+     * على القلب في قائمة تُخفي الدرس من «المفضّلة» بلا أثر ولا طريق للرجوع.
+     */
+    fun removeFavoriteWithUndo(lessonId: String, title: String) {
+        val index = store.favoriteIds().indexOf(lessonId)
+        if (index < 0) return
+        store.toggleFavorite(lessonId)
+        showUndo("أُزيل «$title» من المفضّلة.") { restoreFavoriteAt(lessonId, index) }
+    }
+
+    /**
+     * ↩️ يعيد الدرس إلى **موضعه** في المفضّلة لا إلى رأسها.
+     *
+     * `toggleFavorite` تضيف في الرأس دائماً، فالتراجع كان ينقل الدرس من
+     * مكانه — وهذا ليس تراجعاً بل تغييرٌ ثانٍ. الحيلة: نعيده أوّلاً (فيصير في
+     * الرأس)، ثم نعيد من كان يسبقه إلى الرأس واحداً واحداً **بترتيب معكوس**،
+     * فينزل هو إلى موضعه بالضبط ويعود من قبله إلى ترتيبهم الأوّل.
+     */
+    private fun restoreFavoriteAt(lessonId: String, index: Int) {
+        if (store.isFavorite(lessonId)) return
+        val precedents = store.favoriteIds().take(index)
+        store.toggleFavorite(lessonId)
+        precedents.asReversed().forEach { id ->
+            store.toggleFavorite(id)
+            store.toggleFavorite(id)
+        }
+    }
 }

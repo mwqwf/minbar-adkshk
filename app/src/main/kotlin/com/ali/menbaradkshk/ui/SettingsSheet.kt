@@ -66,7 +66,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,7 +74,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 import com.ali.menbaradkshk.util.lessonsCountLabel
@@ -85,7 +83,6 @@ import com.ali.menbaradkshk.util.lessonsCountLabel
 /// يفتح ورقة فرعية تضم بنوده كاملة — نفس الوظائف حرفياً بأزرار أقل.
 @Composable
 fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
-    val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
     val revision by vm.store.revision.collectAsState()
     val content by vm.content.state.collectAsState()
@@ -152,38 +149,18 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     var sectionSheet by remember { mutableStateOf(false) }
 
     // نسخة احتياطية محلية عبر منتقي ملفات النظام (بلا أي رفع للسحابة).
+    // ⚠️ التنفيذ كلّه في AppViewModel على خيط الإدخال/الإخراج: الكتابة
+    // والقراءة هنا كانتا تقعان على خيط الواجهة من callback المُطلِق (والوجهة
+    // قد تكون مزوّد وثائق سحابيّاً = شبكة) فتجمّد الواجهة وقد تبلغ ANR.
     val exportLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/json"),
     ) { uri ->
-        if (uri != null) {
-            runCatching {
-                context.contentResolver.openOutputStream(uri)?.use { stream ->
-                    stream.write(vm.store.exportBackup().toByteArray())
-                }
-            }.onSuccess { vm.showMessage("حُفظت نسخة بياناتك.") }
-                .onFailure { vm.showMessage("تعذّر حفظ النسخة.") }
-        }
+        if (uri != null) vm.exportBackupTo(uri)
     }
     val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
     ) { uri ->
-        if (uri != null) {
-            runCatching {
-                val text = context.contentResolver.openInputStream(uri)?.use {
-                    it.readBytes().toString(Charsets.UTF_8)
-                }.orEmpty()
-                vm.store.importBackup(text)
-            }.onSuccess { restored ->
-                if (restored < 0) vm.showMessage("الملف ليس نسخة احتياطية صالحة للتطبيق.")
-                else {
-                    vm.content.refreshPersonalization()
-                    // المتابعات تعود بالاستعادة، أمّا اشتراكات مواضيعها فلا:
-                    // كان المستخدم يرى نفسه «متابِعاً» ولا يصله شيء منها.
-                    vm.resubscribeFollowedTopics()
-                    vm.showMessage("استُعيدت بياناتك ($restored عنصراً).")
-                }
-            }.onFailure { vm.showMessage("تعذّر قراءة الملف.") }
-        }
+        if (uri != null) vm.importBackupFrom(uri)
     }
 
     fun wardTimeLabel(): String = clockLabel(wardHour, wardMinute)
@@ -213,7 +190,9 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                     AssistChip(
                         onClick = {},
                         leadingIcon = { Icon(Icons.Filled.LocalFireDepartment, null, tint = OrangeBrand) },
-                        label = { Text("سلسلة استماع: $streak ${daysLabel(streak)}") },
+                        // صيغة العدد العربيّة: «يومان» لا «2 يومان» — الدالّة
+                        // تُخرج العدد ومعدوده معاً فلا يُسبق بالرقم مرّتين.
+                        label = { Text("سلسلة استماع: ${daysCountLabel(streak)}") },
                     )
                 }
             }
@@ -234,7 +213,9 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                 SettingsTile(
                     icon = Icons.Filled.DownloadForOffline,
                     title = "التنزيلات",
-                    subtitle = "$downloadsCount درساً — ${formatStorage(downloadsBytes)}" +
+                    // lessonsCountLabel لا «$n درساً»: «3 درساً» و«0 درساً» لحن
+                    // — والدالة مستوردة ومستعملة في هذا الملف نفسه.
+                    subtitle = "${lessonsCountLabel(downloadsCount)} — ${formatStorage(downloadsBytes)}" +
                         if (autoDownload) " · التلقائي مفعَّل" else "",
                     onClick = { group = "downloads" },
                 )
@@ -376,7 +357,8 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                     SettingsTile(
                         icon = Icons.Filled.DownloadDone,
                         title = "إدارة التنزيلات",
-                        subtitle = "$downloadsCount درساً — ${formatStorage(downloadsBytes)}",
+                        // نفس تصحيح بطاقة «التنزيلات» أعلاه: صيغة الجمع الصحيحة.
+                        subtitle = "${lessonsCountLabel(downloadsCount)} — ${formatStorage(downloadsBytes)}",
                         onClick = {
                             group = null
                             vm.closeSettings()
@@ -846,10 +828,10 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
             confirmButton = {
                 TextButton(onClick = {
                     deleteDialog = false
-                    scope.launch {
-                        runCatching { vm.deleteMyData() }
-                            .onFailure { vm.showMessage("تعذّر حذف البيانات. تحقق من الاتصال وحاول مجدداً.") }
-                    }
+                    // ⚠️ في viewModelScope لا نطاق التركيبة: تدوير الشاشة كان
+                    // يلغي النطاق في منتصف الحذف (بعد حذف السحابة وقبل المحو
+                    // المحلي) فتبقى حالة غير متسقة بصمت.
+                    vm.deleteMyDataAsync()
                 }) { Text("حذف نهائي") }
             },
             dismissButton = {

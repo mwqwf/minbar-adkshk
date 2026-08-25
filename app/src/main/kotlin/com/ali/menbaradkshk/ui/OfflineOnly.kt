@@ -98,14 +98,13 @@ private fun hasInternet(manager: ConnectivityManager): Boolean {
     return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
 }
 
-/// الشريط نفسه — لا يظهر إلا حين لا إنترنت، ويطفئ المفتاح عند عودتها.
+/// الشريط نفسه — لا يظهر إلا حين لا إنترنت. (الإطفاء الذاتيّ عند عودة
+/// الشبكة صار في MinbarApp على مستوى التطبيق كلّه: كان هنا وحده، فمن عادت
+/// شبكته في شاشة بلا شريط بقيت قوائمه مرشَّحة بلا مؤشّر ولا مفتاح.)
 @Composable
 fun SavedOnlyBar(vm: AppViewModel) {
     val online = rememberOnline()
     val savedOnly by vm.savedOnly.collectAsState()
-    LaunchedEffect(online) {
-        if (online) vm.setSavedOnly(false)
-    }
     if (online) return
     Row(
         modifier = Modifier
@@ -154,19 +153,28 @@ fun SavedOnlyBar(vm: AppViewModel) {
 ///
 /// الخريطة تُقرأ مرّة واحدة لا مرّة لكل درس: `isDownloaded` يفكّ خريطة JSON
 /// كاملةً من التفضيلات في كل نداء (نفس سبب اللفّ في `AudioItem`).
+///
+/// ⚠️ الفحص على خيط الإدخال/الإخراج لا أثناء التركيب: فكّ JSON + `isFile`
+/// لكل تنزيل مع كل نبضة `revision` (كل قلب وكل اكتمال تنزيل) كان يقع على
+/// خيط الواجهة في أربع شاشات — تنقيطٌ ملموس على الأجهزة الضعيفة مع مئات
+/// التنزيلات. النتيجة السابقة تبقى معروضة أثناء إعادة الحساب فلا وميض.
 @Composable
 fun rememberSavedOnlyIds(vm: AppViewModel): Set<String>? {
     val savedOnly by vm.savedOnly.collectAsState()
     val revision by vm.store.revision.collectAsState()
-    return remember(savedOnly, revision) {
-        if (!savedOnly) {
+    var ids by remember { mutableStateOf<Set<String>?>(null) }
+    LaunchedEffect(savedOnly, revision) {
+        ids = if (!savedOnly) {
             null
         } else {
-            vm.downloads.all()
-                .filterValues { path -> java.io.File(path).isFile }
-                .keys
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                vm.downloads.all()
+                    .filterValues { path -> java.io.File(path).isFile }
+                    .keys
+            }
         }
     }
+    return if (savedOnly) ids else null
 }
 
 /// ترشيح قائمة دروس بمعرّفات [ids] (لا شيء يتغيّر حين تكون `null`).

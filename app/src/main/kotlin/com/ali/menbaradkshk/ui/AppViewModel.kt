@@ -321,6 +321,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             downloads.clearCancel(lessonId)
             // المهلة تضمن أنّ نقلاً جارياً حذف جزئيّه بنفسه، فلا يتنازع
             // الكنسُ معه؛ والمنتظِر في الطابور لا يحذفه أحدٌ غيرُ هذا السطر.
+            // ⚠️ حارس سباق «إلغاء ثم إعادة تحميل»: إن عاد الدرس إلى الطابور
+            // (أو بدأ نقله فعلاً) خلال المهلة فالجزئي ملكُ التحميل الجديد —
+            // كنسُه كان يحذف ملفاً مفتوحاً للكتابة فيكتمل النقل في ملف محذوف
+            // ويفشل التنزيل بعد استهلاك بياناته المدفوعة كاملة.
+            if (lessonId in store.downloadQueue() ||
+                downloads.progress.value.containsKey(lessonId)
+            ) {
+                return@launch
+            }
             downloads.discardPartials(listOf(lessonId))
         }
     }
@@ -344,7 +353,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             kotlinx.coroutines.delay(2_000L)
             downloads.clearAllCancels()
             // وعدُ الحوار «تُحذف الأجزاء المحمَّلة» يُنفَّذ هنا فعلاً.
-            downloads.discardPartials(cancelled)
+            // ⚠️ نفس حارس سباق cancelDownload: «إلغاء الكل» ثم «تحميل قسم»
+            // خلال المهلة يعيد بعض المعرّفات إلى الطابور — جزئياتها صارت
+            // ملك التحميل الجديد فلا تُكنس.
+            val requeued = store.downloadQueue().toSet()
+            val active = downloads.progress.value.keys
+            downloads.discardPartials(cancelled.filterNot { it in requeued || it in active })
         }
         showMessage("أُلغي تحميل ما تبقّى في الطابور.")
     }
@@ -1226,7 +1240,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      * التدوير أو الرجوع فتتوقف المساهمة بصمت بعد أن بدأ رفع صورها.
      */
     fun submitTranscript(draft: TranscriptDraft) {
-        if (_transcriptContribution.value.submitting) return
+        if (_transcriptContribution.value.submitting) {
+            // ⚠️ لا تجاهل صامتاً: شاشة المساهمة المستقلّة كانت تستدعي والرفعُ
+            // لدرس آخر جارٍ (زرّها لا يعرف إلا حالتها هي) فلا يحدث شيء بلا أي
+            // تفسير — الرسالة هنا تغطّي كل المداخل بنصّ حارس الورقة نفسه.
+            showMessage("هناك مساهمة قيد الإرسال — انتظر انتهاءها.")
+            return
+        }
         _transcriptContribution.value = TranscriptContributionState(
             lessonId = draft.lessonId,
             submitting = true,
@@ -1449,8 +1469,69 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         submissions.deleteCloudIdentityData()
         downloads.deleteAll()
         store.clearPersonalData()
+        // تفضيلات ContentRepository الشخصيّة (السجلّ المخفي وطوابعه وترتيب
+        // القوائم) في ملفٍّ مستقلّ لا يمسّه `store.clearPersonalData` — كانت
+        // تنجو من المحو فيبقى درسٌ أخفاه المستخدم محجوباً من سجلّه بعده.
+        content.clearPersonalData()
         content.refreshPersonalization()
         _message.value = "حُذفت بياناتك بنجاح."
+    }
+
+    /// «حذف بياناتي» من الإعدادات — في `viewModelScope` لا نطاق التركيبة:
+    /// التنفيذ من نطاق الدرج كان يُقطع بتدوير الشاشة في منتصف الحذف (بعد حذف
+    /// السحابة وقبل المحو المحلي مثلاً) فيترك حالة غير متسقة بصمت — نفس
+    /// العلّة التي أُصلحت في [submitTranscript] بالضبط.
+    fun deleteMyDataAsync() {
+        viewModelScope.launch {
+            runCatching { deleteMyData() }
+                .onFailure { showMessage("تعذّر حذف البيانات. تحقق من الاتصال وحاول مجدداً.") }
+        }
+    }
+
+    /// يكتب النسخة الاحتياطية إلى وثيقة SAF على خيط الإدخال/الإخراج وفي
+    /// `viewModelScope`: الوجهة قد تكون مزوّد وثائق سحابيّاً (= شبكة)، وكانت
+    /// الكتابة تقع على خيط الواجهة من callback المُطلِق فتجمّده وقد تبلغ ANR.
+    fun exportBackupTo(uri: Uri) {
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    getApplication<Application>().contentResolver.openOutputStream(uri)
+                        ?.use { stream -> stream.write(store.exportBackup().toByteArray()) }
+                        ?: error("تعذّر فتح الوجهة")
+                }
+            }.onSuccess { showMessage("حُفظت نسخة بياناتك.") }
+                .onFailure { showMessage("تعذّر حفظ النسخة.") }
+        }
+    }
+
+    /// نظيرة [exportBackupTo] للاستيراد — القراءة والاستيراد خارج خيط الواجهة.
+    fun importBackupFrom(uri: Uri) {
+        viewModelScope.launch {
+            val restored = runCatching {
+                withContext(Dispatchers.IO) {
+                    val text = getApplication<Application>().contentResolver
+                        .openInputStream(uri)
+                        ?.use { it.readBytes().toString(Charsets.UTF_8) }
+                        .orEmpty()
+                    store.importBackup(text)
+                }
+            }.getOrNull()
+            when {
+                restored == null -> showMessage("تعذّر قراءة الملف.")
+                restored < 0 -> showMessage("الملف ليس نسخة احتياطية صالحة للتطبيق.")
+                else -> {
+                    content.refreshPersonalization()
+                    // المتابعات تعود بالاستعادة، أمّا اشتراكات مواضيعها فلا:
+                    // كان المستخدم يرى نفسه «متابِعاً» ولا يصله شيء منها.
+                    resubscribeFollowedTopics()
+                    // «عنصران»/«5 عناصر» لا «5 عنصراً» — بقاعدة الجمع الواحدة.
+                    val label = com.ali.menbaradkshk.util.arabicCountLabel(
+                        restored, "عنصر واحد", "عنصران", "عناصر", "عنصراً",
+                    )
+                    showMessage("استُعيدت بياناتك ($label).")
+                }
+            }
+        }
     }
 
     override fun onCleared() {

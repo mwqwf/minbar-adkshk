@@ -171,6 +171,17 @@ class DownloadRepository private constructor(context: Context) {
         val safeId = lesson.id.replace(Regex("[^A-Za-z0-9_-]"), "_")
         val target = File(directory, "$safeId.$extension")
         val partial = File(directory, "$safeId.$extension.part")
+        // ⚠️ بصمة مصدر الجزئي: اسم الجزئي مفتاحه معرّف الدرس لا الرابط، فلو
+        // استُبدل صوت الدرس في اللوحة (رابط جديد بنفس الامتداد) لاستُؤنف جزئي
+        // الملف القديم فوق الجديد بـRange — فيُحفَظ ملف نصفه من صوتٍ ونصفه من
+        // آخر كتنزيل «مكتمل» يُشغَّل مشوَّهاً بلا إنترنت إلى الأبد. الرابط
+        // يُكتب في ملف جانبي، واختلافه يُسقط الجزئي فيبدأ التنزيل من الصفر.
+        val sourceMark = File(directory, "$safeId.$extension.part.src")
+        if (partial.length() > 0L) {
+            val previousUrl = runCatching { sourceMark.readText() }.getOrDefault("")
+            if (previousUrl != lesson.audioUrl) partial.delete()
+        }
+        runCatching { sourceMark.writeText(lesson.audioUrl) }
 
         var connection: HttpURLConnection? = null
         try {
@@ -265,6 +276,17 @@ class DownloadRepository private constructor(context: Context) {
                         }
                     }
                     output.fd.sync()
+                    // 🧮 اكتمال البايتات: انتهاء التيار انتهاءً «نظيفاً» مبكراً
+                    // (بروكسي شبكة، بوابة أسيرة، قطع خادم) يعيد -1 بلا استثناء،
+                    // فكان ملف 40% يُحفَظ كتنزيل مكتمل ويتقطّع صوته بلا إنترنت
+                    // إلى الأبد (isDownloaded ترى الملف موجوداً فلا يُعاد). النقص
+                    // قابل للإعادة والجزئي يبقى ليُستأنف من موضعه؛ والزائد
+                    // يُشفى ذاتياً: الاستئناف التالي يعيد 416 فيُحذف الجزئي.
+                    if (total > 0L && received != total) {
+                        throw RetryableDownloadException(
+                            java.io.IOException("نقل ناقص ($received من $total)"),
+                        )
+                    }
                 }
             }
             check(partial.length() > 0L) { "ملف الصوت فارغ." }
@@ -276,6 +298,8 @@ class DownloadRepository private constructor(context: Context) {
                 partial.delete()
             }
             store.setDownload(lesson.id, target.absolutePath)
+            // البصمة أدّت غرضها — الملف صار باسمه النهائي في الفهرس.
+            sourceMark.delete()
             target.absolutePath
         } catch (cancelled: CancellationException) {
             // إلغاء (onStopJob/إغلاق العملية) ليس فشلاً: الملف الجزئي يبقى
@@ -288,7 +312,14 @@ class DownloadRepository private constructor(context: Context) {
         } catch (cancelled: DownloadCancelledException) {
             // ✕ إلغاء صريح: لا معنى لإبقاء نصف ملفّ لن يُستأنف.
             partial.delete()
+            sourceMark.delete()
             throw cancelled
+        } catch (retryable: RetryableDownloadException) {
+            // ♻️ قابل للإعادة (HTTP 5xx/416/نقل ناقص): كان يسقط في مصيدة
+            // Throwable أدناه فتحذف الجزئيَّ الذي وعد التعليق أعلاه بإبقائه —
+            // أي أن كل انقطاع يُعيد التنزيل من الصفر. يُعاد رميه كما هو
+            // (من حذف جزئيّه قبل الرمي — كحالة 416 — حَذَفه صراحةً هناك).
+            throw retryable
         } catch (failure: java.io.IOException) {
             // ⛔ امتلاء التخزين ليس انقطاع شبكة: كان يُصنَّف «قابلاً للإعادة»
             // فيوقظ الوظيفة بلا نهاية ويعرض «بانتظار عودة الاتصال…» وهي رسالة
@@ -296,12 +327,14 @@ class DownloadRepository private constructor(context: Context) {
             val reason = "${failure.message} ${failure.cause?.message}"
             if (reason.contains("ENOSPC") || reason.contains("No space left")) {
                 partial.delete()
+                sourceMark.delete()
                 throw IllegalStateException("لا تكفي المساحة على الجهاز لإكمال التنزيل.")
             }
             // انقطاع شبكة: نُبقي الملف الجزئي للاستئناف لاحقاً ونعلن قابلية الإعادة.
             throw RetryableDownloadException(failure)
         } catch (failure: Throwable) {
             partial.delete()
+            sourceMark.delete()
             throw failure
         } finally {
             connection?.disconnect()
@@ -325,11 +358,13 @@ class DownloadRepository private constructor(context: Context) {
         if (ids.isEmpty()) return@withContext
         val directory = File(appContext.filesDir, "lessons")
         val files = directory.listFiles() ?: return@withContext
-        // قاعدة التسمية نفسها المستعملة في التنزيل: `<safeId>.<ext>.part`.
+        // قاعدة التسمية نفسها المستعملة في التنزيل: `<safeId>.<ext>.part`،
+        // ومعها بصمة المصدر `<safeId>.<ext>.part.src` كي لا تبقى يتيمة.
         val prefixes = ids.map { "${it.replace(Regex("[^A-Za-z0-9_-]"), "_")}." }
         files.forEach { file ->
             val name = file.name
-            if (name.endsWith(".part") && prefixes.any { name.startsWith(it) }) file.delete()
+            val isPartialArtifact = name.endsWith(".part") || name.endsWith(".part.src")
+            if (isPartialArtifact && prefixes.any { name.startsWith(it) }) file.delete()
         }
     }
 

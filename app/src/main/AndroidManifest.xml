@@ -13,6 +13,16 @@
          (أندرويد 14+) بدل خدمة أمامية من نوع dataSync. -->
     <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" />
 
+    <!-- «إرفاق آخر لقطة شاشة» في «ساهم بالنص»: قراءة الصور تُطلب كسولاً —
+         عند أوّل نقرة على البطاقة فقط، لا عند الإقلاع ولا عند فتح الشاشة.
+         VISUAL_USER_SELECTED تدعم «الوصول الجزئي للصور» في أندرويد 14+،
+         وREAD_EXTERNAL_STORAGE للأجهزة قبل أندرويد 13 فقط. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
     <application
         android:name=".MinbarApplication"
         android:allowBackup="false"

@@ -29,11 +29,15 @@ class MinbarMessagingService : FirebaseMessagingService() {
         // الحارس هنا يسبق فحص النوع، فيصل التذكير لمن أوقف الإشعارات من مسار
         // العامل ولا يصله من FCM: سلوكان متناقضان لأمرٍ واحد، ونسخةٌ قديمة
         // تبقى عند من لا يفتح التطبيق كثيراً. فحص النوع يسبق الحارس الآن.
+        // 🧹 إبطال كاش النصّ **قبل** حارس الإشعارات: الإبطال نظافةُ بيانات لا
+        // عرضُ إشعار. كان الرجوع المبكر لمن أوقف الإشعارات يسبقه، فتصل بشرى
+        // «اعتُمد نصّك» ولا يُفرَغ الكاش الذي يخزّن النتيجة الفارغة 24 ساعة —
+        // فيفتح المستخدم درسه ولا يرى نصّه المعتمد حتى يوم كامل.
+        invalidateTranscriptCache(this, message.data)
         if (!update && !store.notificationsEnabled()) return
         val title = message.notification?.title ?: message.data["title"] ?: getString(R.string.app_name)
         val body = message.notification?.body ?: message.data["body"].orEmpty()
         val destination = destinationFor(message.data)
-        invalidateTranscriptCache(this, message.data)
         // 🛒 إشعار الإصدار الجديد يقفز إلى المتجر مباشرة، لا إلى التطبيق:
         // فتح التطبيق ثم انتظار أن يعثر المستخدم على زرّ التحديث بنفسه هو
         // بالضبط ما يجعل نسخاً قديمة تبقى شهوراً. والرابط يبقى مخفياً في

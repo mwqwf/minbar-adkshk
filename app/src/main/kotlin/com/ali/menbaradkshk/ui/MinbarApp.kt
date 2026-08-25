@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -138,13 +140,56 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
     // دائماً)، ولا تتكرّر للنسخة الاختياريّة أكثر من مرّة كل ٢٤ ساعة.
     var updateDeferred by rememberSaveable { mutableStateOf(false) }
     val pendingUpdate = updateStatus.takeIf { it !is AppConfigRepository.Status.None }
+
+    // 👋 حالة الترحيب تُحسم هنا (قبل شاشة التحديث) لأن للترحيب الأولويّة:
+    // كان مشروطاً بـ!blockingUpdate، فوصولُ حالة التحديث متأخّراً (الفحص
+    // شبكيّ) يُخرج شاشة الترحيب من التركيب في منتصف أسئلتها ويمحو تقدّمها.
+    // ولا «يبدأ» الترحيب إلا والمستخدم في الرئيسية: الميزات المحلّية
+    // (الأذكار والمصحف) تعمل قبل أوّل مزامنة، فكانت الطبقة تنقضّ فوق عدّاد
+    // الأذكار لحظة اكتمال المزامنة في الخلفيّة. وبعد أن يبدأ يبقى حتى يُنهى.
+    var onboardingDone by rememberSaveable { mutableStateOf(vm.store.onboardingDone()) }
+    var onboardingStarted by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(route, content.subcategories.isEmpty(), onboardingDone) {
+        if (!onboardingDone && route == Route.Home && content.subcategories.isNotEmpty()) {
+            onboardingStarted = true
+        }
+    }
+    val showOnboarding = onboardingStarted && !onboardingDone
+
     // ⚠️ كانت تُعرض بـ`return` مبكر قبل بقيّة الدالة، فيخرج حافظ حالة المسارات
     // من التركيب وتضيع حالة كل الشاشات — ومنها نموذج «شارك درساً» قيد التعبئة،
     // وهو ما وُضع الحافظ أصلاً ليحميه. والفحص يقع في كل عودة إلى التطبيق، فقد
     // كان يظهر والمستخدم يكتب. صارت طبقةً **فوق** الهيكل (كما LessonUpdateNudge)
-    // فلا يُهدم تحتها شيء.
-    val blockingUpdate = pendingUpdate != null && !updateDeferred &&
+    // فلا يُهدم تحتها شيء. وتتنحّى لشاشة الترحيب الجارية (انظر أعلاه) —
+    // فتظهر بعد إنهائها مباشرة، لا فوقها فتمحو أجوبتها.
+    val blockingUpdate = pendingUpdate != null && !updateDeferred && !showOnboarding &&
         vm.shouldPromptUpdate(pendingUpdate)
+
+    // 🔆 أيقونات شريط الحالة أثناء الطبقتين: خلفيّتهما خلفيّة السمة (فاتحة
+    // في الوضع الفاتح) لا الشريط العلويّ الداكن — والأيقونات المفروضة فاتحةً
+    // دائماً في MainActivity كانت تختفي تماماً (ساعة وبطاريّة بيضاء على
+    // أبيض في أوّل شاشة يراها المستخدم الجديد). تُقلب داكنةً ما دامت طبقةٌ
+    // ظاهرة على خلفيّة فاتحة، ثم تُعاد كما كانت.
+    val overlayShown = blockingUpdate || showOnboarding
+    val overlayOnLightBackground = overlayShown && !isDarkTheme(vm.store.themeMode())
+    val rootView = androidx.compose.ui.platform.LocalView.current
+    LaunchedEffect(overlayOnLightBackground) {
+        // سياق العرض قد يكون ContextWrapper — نصعد حتى النشاط.
+        val activity = generateSequence(rootView.context) {
+            (it as? android.content.ContextWrapper)?.baseContext
+        }.filterIsInstance<android.app.Activity>().firstOrNull() ?: return@LaunchedEffect
+        androidx.core.view.WindowCompat.getInsetsController(activity.window, rootView)
+            .isAppearanceLightStatusBars = overlayOnLightBackground
+    }
+
+    // 📴 الإطفاء الذاتيّ لوضع «المحفوظ فقط» على مستوى التطبيق كلّه: كان في
+    // SavedOnlyBar وحده (الرئيسية والمكتبة)، بينما الترشيح يسري على كل قوائم
+    // الدروس — فمن عادت شبكته وهو في «قوائمي» بقيت مفضّلته مرشَّحة برسالة
+    // «حمّل دروساً وأنت متصل» وهو متصل، بلا مؤشّر ولا مفتاح يلغيها.
+    val online = rememberOnline()
+    LaunchedEffect(online) {
+        if (online) vm.setSavedOnly(false)
+    }
 
     // 📣 التذكير عند فتح درس — يعمل فوق الشاشة لا بدلاً منها، ويُقيَّم مرّة
     // واحدة لكل درس يُفتَح (مفتاح الدرس)، فالتنقّل داخل المشغّل لا يعيده.
@@ -170,7 +215,9 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
             status = updateStatus,
             onUpdate = {
                 nudgeVisible = false
-                vm.openStore("")
+                // ⚠️ openStoreFor لا openStore(""): يحترم storeUrl المضبوط من
+                // الخادم (توزيع خارج Play مثلاً) كما تفعل الشاشة الكاملة.
+                vm.openStoreFor(updateStatus)
             },
             onLater = { nudgeVisible = false },
             onMute = {
@@ -228,8 +275,10 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         vm.consumeUndo()
     }
     // فشل التشغيل كان صامتاً خارج شاشة المشغّل (صفوف القوائم/المشغّل المصغّر):
-    // نعرضه عالمياً مع «إعادة المحاولة». شاشة المشغّل لها شريطها الثابت فلا نكرّره.
-    // نعرض الرسالة مرة واحدة لكل خطأ؛ كل محاولة جديدة تُصفّر الخطأ أولاً فيُعاد عرضه.
+    // نعرضه عالمياً مع «إعادة المحاولة». شاشة المشغّل لها شريطها الثابت فلا
+    // نكرّره — **وكذلك كل شاشة يظهر فيها المشغّل المصغّر**: له شريط خطأ ثابت
+    // خاصّ به، فكان الاثنان يظهران معاً لنفس الخطأ بزرّي إعادة محاولة وزرّي
+    // إغلاق، وإغلاق أحدهما لا يُغلق الآخر.
     var shownError by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(playback.error, route) {
         val error = playback.error
@@ -237,7 +286,9 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
             shownError = null
             return@LaunchedEffect
         }
-        if (route is Route.Lesson || error == shownError) return@LaunchedEffect
+        val hasOwnErrorBar = route is Route.Lesson ||
+            isRoot || route is Route.Subcategory || route is Route.QuranSurah
+        if (hasOwnErrorBar || error == shownError) return@LaunchedEffect
         shownError = error
         val result = snackbar.showSnackbar(
             message = error,
@@ -295,6 +346,16 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         drawerContent = { SettingsDrawerContent(vm, requestNotifications) },
     ) {
     Scaffold(
+        // ⚠️ في الشاشات الملء لا تُطبَّق حواشي النظام هنا: الهيكل الخارجيّ بلا
+        // topBar كان يضيف حشوة شريط الحالة، ثم يضيفها TopAppBar الداخليّ في
+        // شاشة المشغّل مرّة ثانية — فجوة بلون الخلفية فوق «الآن يُشغَّل»،
+        // وشريط فاتح فوق سواد وضع القيادة، وارتفاع مهدور في المصحف الغامر
+        // (والحشوة السفلية كانت تتضاعف كذلك). الشاشات الملء تتولّى حواشيها.
+        contentWindowInsets = if (fullScreen) {
+            WindowInsets(0.dp)
+        } else {
+            androidx.compose.material3.ScaffoldDefaults.contentWindowInsets
+        },
         topBar = {
             if (!fullScreen) {
                 CenterAlignedTopAppBar(
@@ -504,7 +565,11 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
             Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
-                .pointerInput(Unit) { detectTapGestures { } },
+                .pointerInput(Unit) { detectTapGestures { } }
+                // ⚠️ النافذة edge-to-edge: بلا هذه الحشوة كان زرّ «لاحقاً»
+                // السفليّ خلف شريط تنقّل النظام والعنوان تحت شريط الحالة.
+                // الخلفيّة قبل الحشوة فتغطّي الشاشة كاملةً.
+                .windowInsetsPadding(WindowInsets.systemBars),
         ) {
             UpdateScreen(
                 status = pendingUpdate,
@@ -519,9 +584,8 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
     //
     // ولا تظهر إلّا بعد وصول المحتوى فعلاً: بلا أقسام يكون سؤالها بلا جواب،
     // فتُؤجَّل إلى أوّل مرّة يتوفّر فيها المحتوى — وهي في الغالب أوّل اتصال.
-    // وتتنحّى لشاشة التحديث إن تصادفتا فلا تتكدّس طبقتان.
-    var onboardingDone by rememberSaveable { mutableStateOf(vm.store.onboardingDone()) }
-    if (!onboardingDone && !blockingUpdate && content.subcategories.isNotEmpty()) {
+    // (شروط البدء وأولويّتها على شاشة التحديث محسومة أعلى الدالة.)
+    if (showOnboarding) {
         val finishOnboarding: () -> Unit = {
             vm.store.markOnboardingDone()
             onboardingDone = true
@@ -532,7 +596,10 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
             Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
-                .pointerInput(Unit) { detectTapGestures { } },
+                .pointerInput(Unit) { detectTapGestures { } }
+                // ⚠️ نفس حشوة شاشة التحديث: زرّ «تخطَّ» كان شبه مغطّى بشريط
+                // تنقّل النظام في وضع الأزرار الثلاثة فلا يستجيب للنقر.
+                .windowInsetsPadding(WindowInsets.systemBars),
         ) {
             OnboardingScreen(vm, content, finishOnboarding)
         }

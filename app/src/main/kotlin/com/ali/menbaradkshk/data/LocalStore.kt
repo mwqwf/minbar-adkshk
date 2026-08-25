@@ -215,6 +215,25 @@ class LocalStore private constructor(context: Context) {
     fun pruneDownloads(validIds: Set<String>): Int {
         // موضع تنظيف الفهرس: هنا (خيط خلفيّ بعد مزامنة) لا في الإقلاع.
         repairDownloadIndex()
+        // 🧹 كنس الجزئيات اليتيمة: ملفات `.part` (وبصمات مصدرها `.part.src`)
+        // ليست في الفهرس أصلاً فلا يلمسها مسار اليتامى أدناه — تحميلٌ انقطع
+        // ثم حُذف درسه من الخادم، أو «حذف الكل»/«حذف بياناتي» (مجموعة فارغة)،
+        // كانا يتركان عشرات الميغابايتات محجوزة في filesDir (ليست cache فلا
+        // يمحوها النظام) بلا أي طريق لحذفها من التطبيق ولا شاشة تُظهرها.
+        // قاعدة التسمية نفسها المستعملة في DownloadRepository:
+        // `<safeId>.<ext>.part` حيث safeId ناتج إبدال غير [A-Za-z0-9_-].
+        runCatching {
+            val validPrefixes = validIds.map {
+                it.replace(Regex("[^A-Za-z0-9_-]"), "_") + "."
+            }
+            File(appContext.filesDir, "lessons").listFiles()?.forEach { file ->
+                val name = file.name
+                val isPartialArtifact = name.endsWith(".part") || name.endsWith(".part.src")
+                if (isPartialArtifact && validPrefixes.none { name.startsWith(it) }) {
+                    file.delete()
+                }
+            }
+        }
         val orphans = downloads().filterKeys { it !in validIds }
         if (orphans.isEmpty()) return 0
         orphans.values.forEach { runCatching { File(it).delete() } }

@@ -454,30 +454,9 @@ class TranscriptRepository private constructor(context: Context) {
         awaitClose { registration.remove() }
     }
 
-    /**
-     * ✏️ تصحيح اقتراح نصٍّ **ما دام قيد المراجعة** — نظير `updateMyTitle`
-     * في مساهمات الصوت: تعديلٌ بلا سحبٍ ولا إعادة رفع.
-     *
-     * ⚠️ لا يظهر لها زرّ في «مساهماتي» اليوم عن قصد: العنوان المعروض على
-     * بطاقة النصّ هو **عنوان الدرس نفسه** لا عنوانٌ كتبه المساهم، فتعديله
-     * يوهم المساهم أنّه يغيّر اسم الدرس. تبقى الدالّة جاهزةً لحقلٍ يملكه
-     * المساهم فعلاً (الملاحظة) حين يفتحه الخادم.
-     */
-    suspend fun updateMyTitle(
-        item: TranscriptSubmissionItem,
-        title: String,
-        note: String? = null,
-    ) {
-        if (!item.isPending) return
-        val trimmed = title.trim()
-        require(trimmed.isNotBlank()) { "أدخل العنوان." }
-        val payload = buildMap<String, Any> {
-            put("submissionId", item.id)
-            put("title", trimmed)
-            note?.trim()?.takeIf(String::isNotBlank)?.let { put("note", it) }
-        }
-        functions.getHttpsCallable("updateMyTranscriptSubmission").call(payload).await()
-    }
+    // ✏️ تعديل اقتراح النصّ يمرّ بعقد الخادم `updateMyTranscriptSubmission`
+    // (حقوله text/bookTitle/sourceRef/note) حين تُبنى واجهته — أُزيلت من هنا
+    // دالّة ميتة كانت ترسل {submissionId, title} خلافاً للعقد ولا تستعملها أي واجهة.
 
     suspend fun deletePending(item: TranscriptSubmissionItem) {
         if (!item.isPending) return

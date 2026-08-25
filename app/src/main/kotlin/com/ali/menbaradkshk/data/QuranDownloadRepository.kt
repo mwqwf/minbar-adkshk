@@ -253,15 +253,34 @@ class QuranDownloadRepository private constructor(context: Context) {
                     "User-Agent",
                     "MinbarAdkassahk/${com.ali.menbaradkshk.BuildConfig.VERSION_NAME}",
                 )
+                // بلا ضغط وسيط: gzip شفّاف يجعل Content-Length وحساب
+                // الاستئناف غير مطابقَين للبايتات المكتوبة — القاعدة نفسها
+                // المطبَّقة في DownloadRepository.
+                setRequestProperty("Accept-Encoding", "identity")
                 // استئنافٌ من البايت نفسه لا من أوّله.
                 if (existing > 0L) setRequestProperty("Range", "bytes=$existing-")
                 connect()
             }
             val code = connection.responseCode
+            // 416: الجزئي أطول من ملفّ الخادم (استُبدلت التلاوة بأصغر غالباً،
+            // أو بقي جزئي مكتمل بعد فشل rename) — يُحذف وتُعاد المحاولة من
+            // الصفر عبر fetchWithRetry. بدون هذا كانت كل محاولة تعيد 416 إلى
+            // الأبد (keepPartial يُبقيه) ولا مخرج للمستخدم إلا حذف السورة
+            // كلّها — بعكس DownloadRepository الذي يعالجها صراحةً.
+            if (code == 416 && existing > 0L) {
+                runCatching { temp.delete() }
+                throw java.io.IOException("HTTP 416")
+            }
             if (code !in 200..299) throw java.io.IOException("HTTP $code")
             // 206 وحده يعني أن الخادم قبل الاستئناف؛ و200 مع طلب Range يعني
             // أنّه تجاهله وأرسل الملفّ كاملاً، فنكتب من الصفر لا فوق الجزئي.
             val append = code == 206 && existing > 0L
+            // اكتمال البايتات (الفحص المناظر في DownloadRepository): انتهاء
+            // نظيف مبكر كان يحفظ تلاوة مبتورة باسمها النهائي فلا تُنزَّل ثانية.
+            val remaining = connection.getHeaderField("Content-Length")
+                ?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+            val expected = if (remaining > 0L) remaining + (if (append) existing else 0L) else 0L
+            var received = if (append) existing else 0L
             connection.inputStream.use { input ->
                 java.io.FileOutputStream(temp, append).use { output ->
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
@@ -270,10 +289,16 @@ class QuranDownloadRepository private constructor(context: Context) {
                         val read = input.read(buffer)
                         if (read < 0) break
                         output.write(buffer, 0, read)
+                        received += read
                     }
                 }
             }
             if (temp.length() <= 0L) throw java.io.IOException("ملفّ فارغ")
+            // النقص يُبقي الجزئي (keepPartial) فيُستأنف من موضعه في المحاولة
+            // التالية؛ والزائد يُشفى ذاتياً عبر 416 أعلاه.
+            if (expected > 0L && received != expected) {
+                throw java.io.IOException("نقل ناقص ($received من $expected)")
+            }
             if (!temp.renameTo(target)) throw java.io.IOException("تعذّر حفظ الملف")
         } catch (cancelled: CancellationException) {
             // إلغاء صريح: لا نُبقي أثراً — المستخدم طلب التوقّف لا التأجيل.

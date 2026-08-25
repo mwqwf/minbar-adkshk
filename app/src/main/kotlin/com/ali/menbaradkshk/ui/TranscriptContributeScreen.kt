@@ -314,6 +314,16 @@ fun TranscriptContributeScreen(vm: AppViewModel) {
                 LinearProgressIndicator(Modifier.fillMaxWidth())
                 Spacer(Modifier.height(8.dp))
             }
+            // 📸 اقتراح آخر لقطة شاشة (≤ دقيقتين): تُضاف إلى نفس قائمة صور
+            // المساهمة مباشرة — كما تُضاف صور المشاركة الخارجيّة أعلاه، ورابط
+            // MediaStore دائم فلا يحتاج نسخاً إلى الكاش (خلاف رابط الحافظة).
+            RecentScreenshotChip(
+                enabled = !sending && images.size < TranscriptRepository.MAX_IMAGES,
+                onPick = { uri ->
+                    if (images.size < TranscriptRepository.MAX_IMAGES) images.add(uri)
+                },
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
             TranscriptImagesEditor(
                 images = images,
                 enabled = !sending,

@@ -150,7 +150,13 @@ fun PlayerScreen(
     var handledStart by rememberSaveable(lesson.id) { mutableStateOf(Long.MIN_VALUE) }
     LaunchedEffect(lesson.id, startAtMs) {
         if (startAtMs != null) {
-            if (handledStart != startAtMs) {
+            // ⚠️ المساواة وحدها لا تكفي: `handledStart` ينجو من مغادرة الشاشة
+            // (rememberSaveable داخل حافظ الحالة)، فإعادة النقر على الرابط
+            // نفسه لاحقاً — والمشغّل على درس آخر — كانت تُسقط القفز والتشغيل
+            // معاً وتفتح الشاشة على الدرس الجاري، فيبدو الرابط معطوباً.
+            // فنقارن أيضاً بحالة التشغيل الفعليّة: درسٌ غير مُشغَّل ⇒ شغِّل
+            // واقفز ولو تطابق `handledStart`.
+            if (handledStart != startAtMs || playback.mediaId != lesson.id) {
                 handledStart = startAtMs
                 vm.playback.play(lesson, listOf(lesson) + vm.content.similarTo(lesson), startAtMs, restart = true)
                 vm.replaceRoute(Route.Lesson(lesson.id))
@@ -720,17 +726,21 @@ fun PlayerScreen(
                     )
                 },
                 confirmButton = {
-                    TextButton(onClick = {
-                        val name = newListName.trim()
-                        if (name.isNotEmpty()) {
+                    // ⚠️ «حفظ» والاسم فارغ كان يغلق الحوار والورقة معاً بصمت —
+                    // لا قائمة أُنشئت ولا الدرس أُضيف، ويظنّ المستخدم أنه حُفظ.
+                    // الزرّ معطَّل حتى يُكتب اسم.
+                    TextButton(
+                        enabled = newListName.isNotBlank(),
+                        onClick = {
+                            val name = newListName.trim()
                             val created = vm.store.createPlaylist(name)
                             vm.store.addToPlaylist(created.id, current.id)
                             vm.showMessage("أُضيف إلى \"${created.name}\"")
-                        }
-                        newListName = ""
-                        newListDialog = false
-                        playlistSheet = false
-                    }) { Text("حفظ") }
+                            newListName = ""
+                            newListDialog = false
+                            playlistSheet = false
+                        },
+                    ) { Text("حفظ") }
                 },
                 dismissButton = {
                     TextButton(onClick = { newListDialog = false }) { Text("إلغاء") }
@@ -743,6 +753,13 @@ fun PlayerScreen(
     if (momentsSheet) {
         var momentNoteDialog by remember { mutableStateOf(false) }
         var momentNote by remember { mutableStateOf("") }
+        // ⚠️ اللحظة تُلتقط **عند ضغطة الزرّ** لا عند تأكيد الحوار: التشغيل
+        // مستمرّ أثناء كتابة الملاحظة، فقراءة الموضع عند «حفظ» كانت تحفظ
+        // لحظة متأخّرة عن المقصود — وأسوأ: إن انتقل التشغيل التلقائيّ للدرس
+        // التالي والحوار مفتوح (current يتبع mediaId) حُفظت اللحظة على درس
+        // آخر كليّاً بموضعه هو.
+        var momentPositionMs by remember { mutableStateOf(0L) }
+        var momentLessonId by remember { mutableStateOf("") }
         ModalBottomSheet(onDismissRequest = { momentsSheet = false }) {
             Text(
                 "لحظات هذا الدرس",
@@ -751,7 +768,13 @@ fun PlayerScreen(
                 textAlign = TextAlign.Center,
             )
             FilledTonalButton(
-                onClick = { momentNote = ""; momentNoteDialog = true },
+                onClick = {
+                    momentNote = ""
+                    // «الحالية» = لحظة الضغط، لا لحظة إنهاء كتابة الملاحظة.
+                    momentPositionMs = if (active) playback.positionMs else 0L
+                    momentLessonId = current.id
+                    momentNoteDialog = true
+                },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
             ) {
                 Icon(Icons.Filled.AddLocationAlt, contentDescription = null)
@@ -828,9 +851,9 @@ fun PlayerScreen(
                 },
                 confirmButton = {
                     TextButton(onClick = {
-                        val pos = if (active) playback.positionMs else 0L
-                        vm.store.addBookmark(current.id, pos, momentNote.trim())
-                        vm.showMessage("حُفظت اللحظة عند ${formatDuration(pos)}")
+                        // القيم الملتقطة عند ضغطة الزرّ (انظر التعليق أعلاه).
+                        vm.store.addBookmark(momentLessonId, momentPositionMs, momentNote.trim())
+                        vm.showMessage("حُفظت اللحظة عند ${formatDuration(momentPositionMs).ifBlank { "0:00" }}")
                         momentNoteDialog = false
                     }) { Text("حفظ") }
                 },

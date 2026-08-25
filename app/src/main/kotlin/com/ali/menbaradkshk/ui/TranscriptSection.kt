@@ -76,7 +76,9 @@ fun TranscriptSection(vm: AppViewModel, lesson: Lesson) {
     var unreachable by remember(lesson.id) { mutableStateOf(false) }
     var retry by remember(lesson.id) { mutableIntStateOf(0) }
     var contributeSheet by rememberSaveable(lesson.id) { mutableStateOf(false) }
-    var viewingImage by remember { mutableStateOf("") }
+    // محفوظة لا مُتذكَّرة فقط: النشاط بلا `configChanges`، فتدوير الشاشة كان
+    // يُغلق الصفحة المكبَّرة على من يدقّق فيها — نفس علاج `zoomed` في الأذكار.
+    var viewingImage by rememberSaveable(lesson.id) { mutableStateOf("") }
 
     LaunchedEffect(lesson.id, retry) {
         loading = true

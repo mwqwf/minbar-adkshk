@@ -200,16 +200,21 @@ class DownloadQueueProcessor(private val context: Context) {
         if (deferred.isNotEmpty()) {
             // لا نمسح الطابور: المؤجَّل ينتظر شبكة غير محدودة بعمل مستقلّ.
             DownloadScheduler.enqueueUnmetered(context)
+            // صياغة اسميّة عمداً: lessonsCountLabel تعيد صيغة مرفوعة
+            // («درسٌ واحد»/«درسان») فوضعُها بعد «لإكمال» موضعُ جرٍّ يُنتج
+            // لحناً («لإكمال درسٌ واحد») — والفاعل بعد «بقي» مرفوع فيصحّ.
             showDone(
-                "بانتظار الواي فاي لإكمال ${com.ali.menbaradkshk.util.lessonsCountLabel(deferred.size)}" +
+                "بقي ${com.ali.menbaradkshk.util.lessonsCountLabel(deferred.size)} بانتظار الواي فاي" +
                     if (failures == 0) "." else " (تعذّر $failures).",
             )
             return DownloadRunResult.FINISHED
         }
         store.clearDownloadQueueIfEmpty()
+        // «وتعذّر …» فاعلٌ مرفوع فتصحّ الصيغة المرفوعة، بخلاف «مع تعذّر …»
+        // التي تجعلها مضافاً إليه مجروراً («مع تعذّر درسٌ واحد» لحن).
         showDone(
             if (failures == 0) "اكتمل تحميل الدروس للاستماع دون إنترنت."
-            else "اكتمل التحميل مع تعذّر ${com.ali.menbaradkshk.util.lessonsCountLabel(failures)}.",
+            else "اكتمل التحميل وتعذّر ${com.ali.menbaradkshk.util.lessonsCountLabel(failures)}.",
         )
         return DownloadRunResult.FINISHED
     }

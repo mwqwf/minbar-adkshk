@@ -9,12 +9,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -208,7 +211,12 @@ fun CarScreen(vm: AppViewModel, playback: PlaybackUiState) {
         onDispose { vm.playback.setAutoplay(previous) }
     }
     Column(
-        modifier = Modifier.fillMaxSize().background(Color.Black),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            // السواد يغطّي الشاشة كلّها حتى خلف شريطي النظام (كان فوقه شريط
+            // فاتح بلون الخلفية)، والمحتوى وحده يُزاح داخل الحواشي.
+            .windowInsetsPadding(WindowInsets.systemBars),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Row(Modifier.fillMaxWidth().padding(top = 24.dp)) {
@@ -290,8 +298,20 @@ fun CarScreen(vm: AppViewModel, playback: PlaybackUiState) {
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
-            IconButton(onClick = vm.playback::previous, modifier = Modifier.size(72.dp)) {
-                Icon(Icons.Filled.SkipPrevious, "السابق", tint = Color.White, modifier = Modifier.size(50.dp))
+            // ⚠️ «السابق/التالي» يتعطّلان عند طرفي القائمة مع تعتيم ظاهر —
+            // نفس ما أُصلح في شاشة المشغّل: زرٌّ بكامل التباين لا يفعل شيئاً
+            // يوحي للسائق (الذي يضغط بلا نظر) أنّ التطبيق معلّق.
+            IconButton(
+                onClick = vm.playback::previous,
+                enabled = playback.hasPrevious,
+                modifier = Modifier.size(72.dp),
+            ) {
+                Icon(
+                    Icons.Filled.SkipPrevious,
+                    "السابق",
+                    tint = if (playback.hasPrevious) Color.White else Color.White.copy(alpha = 0.3f),
+                    modifier = Modifier.size(50.dp),
+                )
             }
             IconButton(onClick = vm.playback::skipBackward, modifier = Modifier.size(72.dp)) {
                 Icon(Icons.Filled.Replay, "رجوع", tint = Color.White, modifier = Modifier.size(50.dp))
@@ -299,8 +319,17 @@ fun CarScreen(vm: AppViewModel, playback: PlaybackUiState) {
             IconButton(onClick = vm.playback::skipForward, modifier = Modifier.size(72.dp)) {
                 Icon(Icons.Filled.FastForward, "تقديم", tint = Color.White, modifier = Modifier.size(50.dp))
             }
-            IconButton(onClick = vm.playback::next, modifier = Modifier.size(72.dp)) {
-                Icon(Icons.Filled.SkipNext, "التالي", tint = Color.White, modifier = Modifier.size(50.dp))
+            IconButton(
+                onClick = vm.playback::next,
+                enabled = playback.hasNext,
+                modifier = Modifier.size(72.dp),
+            ) {
+                Icon(
+                    Icons.Filled.SkipNext,
+                    "التالي",
+                    tint = if (playback.hasNext) Color.White else Color.White.copy(alpha = 0.3f),
+                    modifier = Modifier.size(50.dp),
+                )
             }
         }
         Spacer(Modifier.weight(1f))
@@ -433,7 +462,9 @@ fun StatsScreen(vm: AppViewModel) {
                         if (todayRatio >= 1f) {
                             "أتممت حصّة اليوم 🎉 ($todayMinutes/$dailyGoal د)"
                         } else {
-                            "$todayMinutes من $dailyGoal دقيقة اليوم"
+                            // الحصّة اليوميّة صغيرة (الهدف ÷ 7 = 4 أو 8 غالباً)
+                            // فتحتاج صيغة العدد الصحيحة: «4 دقائق» لا «4 دقيقة».
+                            "$todayMinutes من ${com.ali.menbaradkshk.util.minutesCountLabel(dailyGoal)} اليوم"
                         },
                         modifier = Modifier.fillMaxWidth(),
                         textAlign = TextAlign.Center,
@@ -525,7 +556,9 @@ fun StatsScreen(vm: AppViewModel) {
                                     "• إجمالي: ${fmtSeconds(total)}\n" +
                                     "• هذا الأسبوع: ${fmtSeconds(week)}\n" +
                                     "• دروس أكملتها: $completed\n" +
-                                    "• سلسلة استماع: $streak يوماً\n" +
+                                    // «يومان» و«3 أيام» لا «2 يوماً» — نصٌّ يُشارَك
+                                    // خارج التطبيق فيمثّله أمام غير مستخدميه.
+                                    "• سلسلة استماع: ${daysCountLabel(streak)}\n" +
                                     "انضمّ إليّ في الاستماع 🎧",
                             )
                         },
@@ -947,14 +980,16 @@ fun MySubmissionsScreen(vm: AppViewModel) {
                 Column {
                     androidx.compose.material3.OutlinedTextField(
                         value = editText,
-                        onValueChange = { editText = it },
+                        // 120 حرفاً حدّ الخادم الأعلى — يُقصّ هنا بدل رفضٍ لاحق.
+                        onValueChange = { editText = it.take(120) },
                         placeholder = { Text("عنوان الدرس") },
                         singleLine = true,
                         enabled = !savingTitle,
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "يُرسَل العنوان وحده — الملفّ الصوتيّ محفوظ ولن يُرفع من جديد.",
+                        // شرط الخادم معلَن هنا لا مكتشَف بالفشل.
+                        "ثلاثة أحرف على الأقل. يُرسَل العنوان وحده — الملفّ الصوتيّ محفوظ ولن يُرفع من جديد.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -962,7 +997,11 @@ fun MySubmissionsScreen(vm: AppViewModel) {
             },
             confirmButton = {
                 TextButton(
-                    enabled = !savingTitle && editText.isNotBlank(),
+                    // ⚠️ حدّ الخادم 3 أحرف (updateMySubmission يرفض ما دونها):
+                    // كان الزرّ مفعّلاً لأي نصّ فيمضي الإرسال ثم يفشل برسالة
+                    // «تأكّد من الاتصال» الكاذبة — فيكرّر المستخدم المحاولة
+                    // على «انقطاع» غير موجود ولن ينجح أبداً.
+                    enabled = !savingTitle && editText.trim().length >= 3,
                     onClick = {
                         val title = editText.trim()
                         savingTitle = true
@@ -974,11 +1013,20 @@ fun MySubmissionsScreen(vm: AppViewModel) {
                                     editTarget = null
                                     vm.showMessage("حُفظ العنوان الجديد.")
                                 }
-                                .onFailure {
+                                .onFailure { error ->
                                     savingTitle = false
+                                    // رسالة الخادم الفعليّة إن وُجدت — لا افتراض
+                                    // مشكلة اتصال قد لا تكون هي السبب.
+                                    val serverMessage = generateSequence(error) { it.cause }
+                                        .filterIsInstance<com.google.firebase.functions.FirebaseFunctionsException>()
+                                        .firstOrNull()?.message?.takeIf { it.isNotBlank() }
                                     vm.showMessage(
-                                        "تعذّر حفظ العنوان — تأكّد من الاتصال ثم أعد المحاولة. " +
-                                            "العنوان القديم باقٍ كما هو.",
+                                        if (serverMessage != null) {
+                                            "تعذّر حفظ العنوان: $serverMessage — العنوان القديم باقٍ كما هو."
+                                        } else {
+                                            "تعذّر حفظ العنوان — تأكّد من الاتصال ثم أعد المحاولة. " +
+                                                "العنوان القديم باقٍ كما هو."
+                                        },
                                     )
                                 }
                         }

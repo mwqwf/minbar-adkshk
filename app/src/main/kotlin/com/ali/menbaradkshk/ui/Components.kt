@@ -59,6 +59,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -78,6 +79,49 @@ import kotlinx.coroutines.withContext
 /// أحمر المفضّلة على السطح الفاتح: النسبة السابقة (0xFFD84343) كانت 4.25
 /// وهي دون حدّ التباين، فرُفعت إلى 6.07 بلا تغيير في هوية اللون.
 private val FavoriteRed = Color(0xFFB32F2F)
+
+/// بديلان فاتحان على الأسطح الداكنة (نفس نمط PositiveOnDark/GoldOnDark في
+/// Theme.kt): الأحمر هو نفسه المستعمل لقلب المفضّلة على شريط المشغّل الداكن.
+private val FavoriteRedOnDark = Color(0xFFFF8A80)
+private val BlueOnDark = Color(0xFF6FB1DC)
+
+/// هل نحن على أسطح السمة الداكنة الآن؟ تُستنتج من سطوع سطح السمة نفسه —
+/// فلا يحتاج كل مكوّن تمريرَ الحالة ولا قراءةَ التفضيلات عند كل تركيب.
+@Composable
+fun onDarkSurfaces(): Boolean = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+
+/// وسمُ لون هوية على سطح السمة الحالية: ألوان الهوية ضُبط تباينها «على
+/// السطح الفاتح» فقط (التعليق أعلاه)، فتهبط دون كل حدود التباين على أسطح
+/// السمة الداكنة (Teal ‏≈ 2.3:1 وBlueBrand ‏≈ 1.7:1 على Ink700) — لكلٍّ
+/// منها هنا درجة فاتحة من سُلَّم الهوية نفسه.
+@Composable
+fun brandTintOnSurface(brand: Color): Color = if (!onDarkSurfaces()) {
+    brand
+} else {
+    when (brand) {
+        Teal, GreenBrand -> Gem100
+        OrangeBrand, Gold -> GoldOnDark
+        BlueBrand -> BlueOnDark
+        FavoriteRed -> FavoriteRedOnDark
+        else -> brand
+    }
+}
+
+/// 🔢 عنوان العرض في الريلات وصفوف الدروس: العناوين الرقميّة الخام («1»،
+/// «2») تأتي من ملفّات مرقّمة بلا تسمية ولا تدلّ على شيء وحدها — فتُعرض
+/// «اسم القسم الفرعي — الرقم» حين يتوفّر الاسم (نفس ما تعدّه smart_title
+/// اسماً آليّاً بحتاً لا يُعرض كما هو).
+private val numericOnlyTitle = Regex("^[0-9٠-٩\\s_.()\\-~]*[0-9٠-٩][0-9٠-٩\\s_.()\\-~]*$")
+
+fun sectionAwareTitle(vm: AppViewModel, lesson: Lesson): String {
+    val raw = lesson.displayTitle.trim()
+    if (!numericOnlyTitle.matches(raw)) return raw
+    val section = vm.content.state.value.subcategoryById[lesson.subcategoryId]
+        ?.name?.trim().orEmpty()
+    if (section.isEmpty()) return raw
+    val number = Regex("[0-9٠-٩]+").find(raw)?.value ?: raw
+    return "$section — $number"
+}
 
 /// صف درس كامل بنمط الأصل: زر تشغيل دائري ملوّن، عنوان، متحدث، مدّة،
 /// وأزرار المفضّلة/التنزيل(بنسبة)/المشاركة، وشريط تقدّم محفوظ أسفل البطاقة.
@@ -114,6 +158,11 @@ fun AudioItem(
         savedProgress
     }
     val accent = colorForCategory(lesson.categoryId)
+    // ⚠️ التباين الداكن: ألوان الهوية مضبوطة للسطح الفاتح فقط، فعلى أسطح
+    // السمة الداكنة تُستبدل بدرجات فاتحة (انظر brandTintOnSurface أعلاه).
+    val dark = onDarkSurfaces()
+    // العناوين الرقميّة الخام تُعرض باسم قسمها الفرعي (انظر sectionAwareTitle).
+    val title = remember(lesson.id, lesson.title) { sectionAwareTitle(vm, lesson) }
 
     Card(
         modifier = Modifier
@@ -141,12 +190,18 @@ fun AudioItem(
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        lesson.displayTitle,
+                        title,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.SemiBold,
-                            color = if (active) Teal else MaterialTheme.colorScheme.onSurface,
+                            // نصٌّ على بطاقة داكنة: Teal يهبط إلى ≈ 2.3:1، فيحلّ
+                            // محلّه ذهب التحديد نفسه المستعمل في الشريط السفلي.
+                            color = when {
+                                active && dark -> SecondaryGold
+                                active -> Teal
+                                else -> MaterialTheme.colorScheme.onSurface
+                            },
                         ),
                     )
                     if (lesson.speaker.isNotBlank()) {
@@ -191,13 +246,21 @@ fun AudioItem(
                         Icon(
                             if (favorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
                             contentDescription = if (favorite) "إزالة من المفضّلة" else "إضافة للمفضّلة",
-                            tint = if (favorite) FavoriteRed else MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = if (favorite) {
+                                brandTintOnSurface(FavoriteRed)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
                         )
                     }
                     DownloadButton(vm, lesson, size = 38.dp)
                     Spacer(Modifier.width(4.dp))
                     IconButton(onClick = { shareLesson(context, vm, lesson) }) {
-                        Icon(Icons.Filled.Share, contentDescription = "مشاركة", tint = Teal)
+                        Icon(
+                            Icons.Filled.Share,
+                            contentDescription = "مشاركة",
+                            tint = brandTintOnSurface(Teal),
+                        )
                     }
                 }
             }
@@ -212,8 +275,11 @@ fun AudioItem(
     }
 }
 
-/// بطاقة أفقية للريلات في الرئيسية (نمط الأصل _AudioCard): تدرّج لون القسم،
-/// أيقونة القسم، شارة المدّة، وشريط تقدّم اختياري، ثم العنوان.
+/// بطاقة أفقية للريلات في الرئيسية — **العنوان هو الصورة** (نفس معالجة
+/// `FeaturedCard`): كانت البطاقة تملأ نفسها بأيقونة القسم العملاقة (نجمة أو
+/// مسجد أو كتاب) حين لا صورة للدرس، فتتشابه كل بطاقات القسم الواحد ولا
+/// يميّز بينها شيء. فحلّ محلّها اسم الدرس مكتوباً داخل البطاقة على خلفيّة
+/// لون القسم، مع تدرّج داكن من الأسفل يضمن تباين النصّ الأبيض.
 @Composable
 fun AudioCard(
     vm: AppViewModel,
@@ -239,33 +305,33 @@ fun AudioCard(
     } else {
         0f
     }
+    // العناوين الرقميّة الخام تُعرض باسم قسمها الفرعي (انظر sectionAwareTitle).
+    val title = remember(lesson.id, lesson.title) { sectionAwareTitle(vm, lesson) }
     Column(
         modifier = Modifier
             .width(150.dp)
             .clickable { vm.openPlayer(lesson, playlist) },
     ) {
-        Box {
+        Box(
+            modifier = Modifier
+                .height(96.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(Brush.linearGradient(listOf(accent, Slate))),
+        ) {
+            // التدرّج الداكن من الأسفل يضمن قراءة العنوان مهما فتح لون القسم.
             Box(
-                modifier = Modifier
-                    .height(96.dp)
-                    .fillMaxWidth()
+                Modifier
+                    .matchParentSize()
                     .background(
-                        Brush.linearGradient(listOf(accent, Slate)),
-                        RoundedCornerShape(16.dp),
+                        Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC000000))),
                     ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    iconForCategory(lesson.categoryId),
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(44.dp),
-                )
-            }
+            )
+            // المدّة انتقلت إلى الأعلى: أسفل البطاقة صار للعنوان.
             if (durMs > 0L) {
                 Box(
                     modifier = Modifier
-                        .align(Alignment.BottomStart)
+                        .align(Alignment.TopStart)
                         .padding(6.dp)
                         .background(Color(0x8A000000), RoundedCornerShape(6.dp))
                         .padding(horizontal = 6.dp, vertical = 2.dp),
@@ -277,6 +343,16 @@ fun AudioCard(
                     )
                 }
             }
+            Text(
+                title,
+                color = Color.White,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 8.dp, end = 8.dp, bottom = 6.dp),
+            )
         }
         if (showProgress && liveProgress > 0f) {
             Spacer(Modifier.height(4.dp))
@@ -285,13 +361,6 @@ fun AudioCard(
                 modifier = Modifier.fillMaxWidth().height(3.dp),
             )
         }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            lesson.displayTitle,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-        )
     }
 }
 
@@ -387,7 +456,8 @@ fun MiniPlayer(
             if (state.loading) {
                 LinearProgressIndicator(
                     modifier = Modifier.fillMaxWidth().height(2.dp),
-                    color = Teal,
+                    // على السطح الداكن تُستبدل درجة فاتحة (انظر brandTintOnSurface).
+                    color = brandTintOnSurface(Teal),
                 )
             }
             Row(
@@ -425,16 +495,22 @@ fun MiniPlayer(
                         modifier = Modifier.fillMaxWidth().height(2.dp),
                     )
                 }
+                // ⚠️ أهمّ عنصري تحكّم دائمين: OrangeBrand ‏≈ 2.4:1 وBlueBrand
+                // ‏≈ 1.7:1 على السطح الداكن — فتُستبدل درجتان فاتحتان هناك.
                 IconButton(onClick = onToggle) {
                     Icon(
                         if (state.playing) Icons.Filled.PauseCircleFilled else Icons.Filled.PlayCircleFilled,
                         contentDescription = if (state.playing) "إيقاف مؤقت" else "تشغيل",
-                        tint = OrangeBrand,
+                        tint = brandTintOnSurface(OrangeBrand),
                         modifier = Modifier.size(36.dp),
                     )
                 }
                 IconButton(onClick = onNext, enabled = state.hasNext) {
-                    Icon(Icons.Filled.SkipNext, contentDescription = "التالي", tint = BlueBrand)
+                    Icon(
+                        Icons.Filled.SkipNext,
+                        contentDescription = "التالي",
+                        tint = brandTintOnSurface(BlueBrand),
+                    )
                 }
             }
         }
@@ -671,10 +747,11 @@ fun ConfirmBulkDownloadDialog(
             Text(
                 buildString {
                     append("سيبدأ تحميل ")
-                    // تمييز عربيّ صحيح: المفرد والمثنّى وجمع القلّة والكثرة.
+                    // تمييز عربيّ صحيح: المضاف إليه بعد «تحميل» مجرور —
+                    // «درسٍ واحد» لا «درساً واحداً».
                     append(
                         when {
-                            count == 1 -> "درساً واحداً"
+                            count == 1 -> "درسٍ واحد"
                             count == 2 -> "درسين"
                             count in 3..10 -> "$count دروس"
                             else -> "$count درساً"
@@ -766,7 +843,8 @@ fun SortChip(
                 Icon(
                     Icons.Filled.SwapVert,
                     contentDescription = null,
-                    tint = OrangeBrand,
+                    // درجة فاتحة على أسطح السمة الداكنة (انظر brandTintOnSurface).
+                    tint = brandTintOnSurface(OrangeBrand),
                     modifier = Modifier.size(20.dp),
                 )
             },
@@ -924,7 +1002,10 @@ fun UpdateBanner(vm: AppViewModel) {
             .background(
                 if (required) OrangeBrand.copy(alpha = .16f) else Teal.copy(alpha = .13f),
             )
-            .clickable { vm.openStore("") }
+            // ⚠️ openStoreFor لا openStore(""): كان الشريط يتجاهل storeUrl
+            // المضبوط من الخادم فيفتح صفحة Play الافتراضيّة ولو كانت النسخة
+            // موزَّعة من رابط مخصّص في app_config.
+            .clickable { vm.openStoreFor(latest) }
             .padding(start = 12.dp, top = 9.dp, bottom = 9.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -943,7 +1024,7 @@ fun UpdateBanner(vm: AppViewModel) {
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        androidx.compose.material3.TextButton(onClick = { vm.openStore("") }) {
+        androidx.compose.material3.TextButton(onClick = { vm.openStoreFor(latest) }) {
             Text("تحديث")
         }
     }

@@ -56,6 +56,9 @@ fun FontStepButton(
     /// `pointerInput(Unit)` أدناه.
     val enabledNow by rememberUpdatedState(enabled)
     var held by remember { mutableStateOf(false) }
+    // هل نفّذت حلقة الضغط المستمرّ خطوات فعلاً؟ تمنع خطوةً زائدة عند رفع
+    // الإصبع بعد ضغط مطوّل (النقرة القصيرة وحدها تخطو عند الرفع).
+    var repeated by remember { mutableStateOf(false) }
 
     // حلقة التكرار أثناء الضغط: مهلة أولى تمنع تكراراً غير مقصود من نقرة
     // عاديّة، ثمّ تسارع تدريجيّ حتى حدٍّ أدنى للفاصل.
@@ -76,6 +79,7 @@ fun FontStepButton(
         delay(HOLD_BEFORE_REPEAT_MS)
         var interval = FIRST_INTERVAL_MS
         while (enabledNow) {
+            repeated = true
             step()
             delay(interval)
             interval = (interval * ACCELERATION).toLong().coerceAtLeast(MIN_INTERVAL_MS)
@@ -96,12 +100,16 @@ fun FontStepButton(
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
                     if (!enabledNow) return@awaitEachGesture
-                    // خطوة فوريّة عند اللمس: الاستجابة تُطمئن أنّ الزرّ يعمل
-                    // قبل أن تبدأ حلقة التكرار.
-                    step()
+                    // ⚠️ لا خطوة عند الملامسة: الزرّ يجلس داخل صفحة قابلة
+                    // للتمرير، وكل تمريرة تبدأ فوقه كانت تغيّر حجم خطّ
+                    // التطبيق كلّه لحظة الهبوط قبل تمييز التمرير من النقر.
+                    // النقرة تُحسم عند الرفع (تمريرٌ = إلغاء فلا خطوة)،
+                    // والضغط المستمرّ يبدأ خطواته بعد مهلته كما كان.
+                    repeated = false
                     held = true
-                    waitForUpOrCancellation()
+                    val up = waitForUpOrCancellation()
                     held = false
+                    if (up != null && !repeated && enabledNow) step()
                 }
             },
         contentAlignment = Alignment.Center,

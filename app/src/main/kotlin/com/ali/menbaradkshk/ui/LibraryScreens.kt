@@ -195,11 +195,15 @@ private fun PlaylistsTab(vm: AppViewModel) {
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    val name = newName.trim()
-                    if (name.isNotEmpty()) vm.store.createPlaylist(name)
-                    createDialog = false
-                }) { Text("حفظ") }
+                // «حفظ» والاسم فارغ كان يغلق الحوار بصمت بلا قائمة — الزرّ
+                // معطَّل حتى يُكتب اسم (نفس قاعدة حوار المشغّل).
+                TextButton(
+                    enabled = newName.isNotBlank(),
+                    onClick = {
+                        vm.store.createPlaylist(newName.trim())
+                        createDialog = false
+                    },
+                ) { Text("حفظ") }
             },
             dismissButton = {
                 TextButton(onClick = { createDialog = false }) { Text("إلغاء") }
@@ -219,11 +223,14 @@ private fun PlaylistsTab(vm: AppViewModel) {
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    val name = renameText.trim()
-                    if (name.isNotEmpty()) vm.store.renamePlaylist(playlist.id, name)
-                    renameTarget = null
-                }) { Text("حفظ") }
+                // نفس القاعدة: لا «حفظ» صامتاً بلا اسم.
+                TextButton(
+                    enabled = renameText.isNotBlank(),
+                    onClick = {
+                        vm.store.renamePlaylist(playlist.id, renameText.trim())
+                        renameTarget = null
+                    },
+                ) { Text("حفظ") }
             },
             dismissButton = {
                 TextButton(onClick = { renameTarget = null }) { Text("إلغاء") }
@@ -623,7 +630,10 @@ fun DownloadsScreen(vm: AppViewModel) {
                         androidx.compose.foundation.layout.Spacer(Modifier.size(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text(
-                                "${lessonsCountLabel(items.size)} محفوظاً",
+                                // «على جهازك» بدل «محفوظاً»: الصفة المنصوبة
+                                // المفردة لا تطابق إلا صيغة 11 فما فوق —
+                                // «درسان محفوظاً» لحنٌ ظاهر.
+                                "${lessonsCountLabel(items.size)} على جهازك",
                                 style = MaterialTheme.typography.titleMedium,
                             )
                             Text(
@@ -839,7 +849,8 @@ fun DownloadsScreen(vm: AppViewModel) {
         AlertDialog(
             onDismissRequest = { deleteAllDialog = false },
             title = { Text("حذف كل التنزيلات") },
-            text = { Text("سيُحذف ${lessonsCountLabel(items.size)} محفوظاً (${formatBytes(totalBytes)}) من جهازك. الدروس نفسها تبقى متاحة بالبثّ.") },
+            // بلا «محفوظاً» — نفس علّة بطاقة الملخّص أعلاه.
+            text = { Text("سيُحذف من جهازك ${lessonsCountLabel(items.size)} (${formatBytes(totalBytes)}). الدروس نفسها تبقى متاحة بالبثّ.") },
             confirmButton = {
                 TextButton(onClick = {
                     deleteAllDialog = false

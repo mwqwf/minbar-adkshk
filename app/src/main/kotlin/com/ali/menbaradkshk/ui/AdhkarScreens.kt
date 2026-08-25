@@ -92,6 +92,13 @@ fun daysLabel(n: Int): String = when {
     else -> "يومًا"
 }
 
+/// الصيغة الكاملة بالرقم عند الحاجة فقط: «يوم واحد»/«يومان»/«3 أيام»/
+/// «15 يوماً» — إلحاق [daysLabel] بالرقم دائماً كان ينتج «2 يومان» و«1 يوم»،
+/// والمثنّى والمفرد في العربيّة يستغنيان عن الرقم. القاعدة نفسها المستعملة
+/// في بقيّة المعدودات (util/TextUtils.kt).
+fun daysCountLabel(n: Int): String =
+    com.ali.menbaradkshk.util.arabicCountLabel(n, "يوم واحد", "يومان", "أيام", "يوماً")
+
 /// أيقونة ولون لكل قسم — تمييز بصري سريع بلا صور (خفّة).
 private fun iconFor(id: String): ImageVector = when (id) {
     Adhkar.MORNING_ID -> Icons.Filled.WbSunny
@@ -146,7 +153,8 @@ fun AdhkarScreen(vm: AppViewModel) {
                         Icon(Icons.Filled.LocalFireDepartment, null, tint = OrangeBrand)
                         Spacer(Modifier.width(10.dp))
                         Text(
-                            "مداومتك على الأذكار: $streak ${daysLabel(streak)}",
+                            // «يومان» لا «2 يومان» (انظر daysCountLabel أعلاه).
+                            "مداومتك على الأذكار: ${daysCountLabel(streak)}",
                             style = MaterialTheme.typography.titleSmall,
                         )
                     }

@@ -133,6 +133,8 @@ fun HomeScreen(
     // 📴 وضع «أظهر المحفوظ فقط»: يُرشَّح **قبل** إسقاط المكرّر كي لا يحتجز
     // ريلٌ درساً غير منزَّل ثمّ يسقط من الجميع فلا يظهر في أيّ مكان.
     val savedIds = rememberSavedOnlyIds(vm)
+    // تُقرأ هنا (سياق قابل للتركيب) لا داخل قائمة LazyColumn.
+    val online = rememberOnline()
 
     // لا يتكرّر درس واحد بين الريلات: أوّل ريل يظهر فيه يحتفظ به، وما بعده
     // يسقطه — كي لا يرى المستخدم القائمة نفسها ثلاث مرات.
@@ -154,7 +156,11 @@ fun HomeScreen(
         // ٨٨dp أسفل القائمة: زرّ «شارك درساً» العائم (٥٦dp + ١٦dp هامشه) كان
         // يغطّي آخر بطاقة، والحشوة تُبقيها كاملةً فوقه.
         LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
-            if (state.offline && state.error != null) {
+            // ⚠️ حين لا شبكة أصلاً يظهر SavedOnlyBar وحده: كان الشريطان
+            // يتكدّسان معاً — رسالتا انقطاع متلاصقتان بنفس اللون والأيقونة —
+            // و«إعادة المحاولة» بلا شبكة عبث. شريط الخطأ لفشل المزامنة
+            // والشبكة موجودة (عطل خادم ونحوه) فقط.
+            if (state.offline && state.error != null && online) {
                 item { OfflineBanner(state.error) { vm.content.requestDeepRefresh() } }
             }
 
@@ -340,6 +346,8 @@ private fun FeaturedCard(
 ) {
     val accent = colorForCategory(lesson.categoryId)
     val active = playback.mediaId == lesson.id && lesson.id.isNotBlank()
+    // العناوين الرقميّة الخام تُعرض باسم قسمها الفرعي (انظر sectionAwareTitle).
+    val title = remember(lesson.id, lesson.title) { sectionAwareTitle(vm, lesson) }
     Box(
         modifier = Modifier
             .width(238.dp)
@@ -361,7 +369,7 @@ private fun FeaturedCard(
             modifier = Modifier.align(Alignment.BottomStart).padding(14.dp),
         ) {
             Text(
-                lesson.displayTitle,
+                title,
                 color = Color.White,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
@@ -407,7 +415,8 @@ private fun HomeInboxCards(vm: AppViewModel) {
             InboxCard(
                 icon = Icons.Filled.Download,
                 label = "تنزيلاتي",
-                tint = OrangeBrand,
+                // درجة فاتحة على أسطح السمة الداكنة (انظر brandTintOnSurface).
+                tint = brandTintOnSurface(OrangeBrand),
                 modifier = Modifier.weight(1f),
                 onClick = { vm.open(Route.Downloads) },
             )
@@ -457,7 +466,7 @@ private fun NotificationsCard(vm: AppViewModel, modifier: Modifier = Modifier) {
     InboxCard(
         icon = Icons.Filled.NotificationsNone,
         label = "الإشعارات",
-        tint = Teal,
+        tint = brandTintOnSurface(Teal),
         badge = if (unread > 0) "$unread" else null,
         modifier = modifier,
         onClick = { vm.open(Route.Notifications) },
@@ -495,7 +504,7 @@ private fun MySubmissionsCard(vm: AppViewModel, modifier: Modifier = Modifier) {
     InboxCard(
         icon = Icons.Filled.Outbox,
         label = "مساهماتي",
-        tint = BlueBrand,
+        tint = brandTintOnSurface(BlueBrand),
         badge = if (hasNewDecision) " " else null,
         modifier = modifier,
         onClick = { vm.open(Route.MySubmissions) },
@@ -593,9 +602,10 @@ private fun QuickActions(vm: AppViewModel) {
         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        item { QuickChip(Icons.Filled.Radio, "إذاعة منبر", Teal) { vm.open(Route.Radio) } }
-        item { QuickChip(Icons.Filled.DirectionsCar, "وضع القيادة", BlueBrand) { vm.open(Route.Car) } }
-        item { QuickChip(Icons.Filled.Insights, "حصادك", OrangeBrand) { vm.open(Route.Stats) } }
+        // درجات فاتحة على أسطح السمة الداكنة (انظر brandTintOnSurface).
+        item { QuickChip(Icons.Filled.Radio, "إذاعة منبر", brandTintOnSurface(Teal)) { vm.open(Route.Radio) } }
+        item { QuickChip(Icons.Filled.DirectionsCar, "وضع القيادة", brandTintOnSurface(BlueBrand)) { vm.open(Route.Car) } }
+        item { QuickChip(Icons.Filled.Insights, "حصادك", brandTintOnSurface(OrangeBrand)) { vm.open(Route.Stats) } }
         // ⛔ «تنزيلاتي» ليست هنا عمداً: مكانها **صفّ أدوات الشريط العلوي**
         // مع البحث والإشعارات والمساهمات (قرار صريح من صاحب التطبيق).
         // هذه الشرائح لمداخل الاستماع، وتلك لمداخل «ما يخصّني».
@@ -759,43 +769,52 @@ fun CategoryScreen(vm: AppViewModel, categoryId: String, state: ContentState) {
                 vm.content.lessonsForCategory(categoryId)
             }
             val active = bulk != null
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
                 if (active) {
-                    Text("${bulk?.done}/${bulk?.total}", style = MaterialTheme.typography.bodyMedium)
-                    // موقوف ⇒ لا دوّار: الدوّار المتحرّك بلا تقدّم يوحي بعمل جارٍ.
-                    if (bulk?.paused == true) {
-                        Icon(
-                            Icons.Filled.PauseCircleFilled,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("${bulk?.done}/${bulk?.total}", style = MaterialTheme.typography.bodyMedium)
+                        // موقوف ⇒ لا دوّار: الدوّار المتحرّك بلا تقدّم يوحي بعمل جارٍ.
+                        if (bulk?.paused == true) {
+                            Icon(
+                                Icons.Filled.PauseCircleFilled,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        } else {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        }
+                        Text(
+                            bulk?.label.orEmpty(),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
                         )
-                    } else {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        DownloadQueueControls(vm)
                     }
-                    Text(
-                        bulk?.label.orEmpty(),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    DownloadQueueControls(vm)
-                } else {
-                    DownloadAllButton(
-                        text = "تحميل القسم كاملاً (${lessonsCountLabel(categoryLessons.size)})",
-                        enabled = categoryLessons.isNotEmpty(),
-                        onClick = {
-                            val name = state.categoryById[categoryId]?.name ?: "القسم"
-                            vm.requestBulkDownload(name, categoryLessons)
-                        },
-                    )
                 }
+                // ⚠️ الزرّ يبقى ظاهراً ولو كان الطابور يعمل: `downloadLessons`
+                // تُلحق بالطابور الجاري وتُسقط المكرّر أصلاً، وكان إخفاؤه يمنع
+                // إضافة قسم كامل حتى ينتهي كلّ ما يجري — ولو كان درساً واحداً
+                // من قسم آخر على شبكة بطيئة.
+                DownloadAllButton(
+                    text = if (active) {
+                        "أضِف القسم كاملاً إلى الطابور"
+                    } else {
+                        "تحميل القسم كاملاً (${lessonsCountLabel(categoryLessons.size)})"
+                    },
+                    enabled = categoryLessons.isNotEmpty(),
+                    onClick = {
+                        val name = state.categoryById[categoryId]?.name ?: "القسم"
+                        vm.requestBulkDownload(name, categoryLessons)
+                    },
+                )
             }
         }
         // ⛔ لا `revision` في المفتاح — تبدّله كان يهدم تركيبة كل عنصر.
@@ -923,8 +942,10 @@ private fun CompletionCertificateDialog(vm: AppViewModel, subcategory: Subcatego
                             putExtra(
                                 android.content.Intent.EXTRA_TEXT,
                                 // سطر التطبيق يجعل الشهادة دعوةً لمن يقرأها.
+                                // «إليها» عائدة على السلسلة (مؤنّثة)، واسم
+                                // التطبيق مرّة واحدة لا في سطرين متتاليين.
                                 "أتممتُ سلسلة «${subcategory.name}» في تطبيق «منبر ادكصهك» 🎓\n" +
-                                    "استمع إليه في تطبيق منبر ادكصهك — " +
+                                    "استمع إليها من هنا:\n" +
                                     "https://play.google.com/store/apps/details?id=com.ali.menbaradkshk",
                             )
                         },
@@ -959,9 +980,15 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
     // ⚠️ العدّ والتحميل الجماعيّ على القائمة **الكاملة** لا المرشَّحة: ترشيح
     // العرض شأن الشاشة، أمّا «تنزيل كل دروس القسم» فيجب أن يبقى معناه كل
     // الدروس وإلّا صار زرّاً لا يفعل شيئاً.
-    val downloadedCount = remember(revision, all) {
-        val map = vm.downloads.all()
-        all.count { l -> map[l.id]?.let { java.io.File(it).isFile } == true }
+    // ⚠️ العدّ على خيط الإدخال/الإخراج لا أثناء التركيب: فكّ JSON + `isFile`
+    // لكل درس كان يقع على خيط الواجهة مع **كل** نبضة `revision` (كل قلب وكل
+    // تلميح) — نفس علاج rememberSavedOnlyIds في OfflineOnly.kt.
+    var downloadedCount by remember { mutableIntStateOf(0) }
+    LaunchedEffect(revision, all) {
+        downloadedCount = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val map = vm.downloads.all()
+            all.count { l -> map[l.id]?.let { java.io.File(it).isFile } == true }
+        }
     }
     // القسم الرئيسي قد لا يكون قد وصل بعد (رابط عميق/إشعار قبل اكتمال
     // المزامنة)، فالزرّ يُعطَّل بدل أن يبتلع الضغطة صامتاً.
@@ -1008,47 +1035,61 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
             }
         }
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                val active = bulk != null
+            val active = bulk != null
+            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
                 if (active) {
-                    Text("${bulk?.done}/${bulk?.total}", style = MaterialTheme.typography.bodyMedium)
-                    if (bulk?.paused == true) {
-                        Icon(
-                            Icons.Filled.PauseCircleFilled,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("${bulk?.done}/${bulk?.total}", style = MaterialTheme.typography.bodyMedium)
+                        if (bulk?.paused == true) {
+                            Icon(
+                                Icons.Filled.PauseCircleFilled,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        } else {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        }
+                        Text(
+                            bulk?.label.orEmpty(),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
                         )
-                    } else {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        DownloadQueueControls(vm)
                     }
-                    Text(
-                        bulk?.label.orEmpty(),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    DownloadQueueControls(vm)
-                } else {
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // ⚠️ الزرّ يبقى ظاهراً ولو كان الطابور يعمل: `downloadLessons`
+                    // تُلحق بالطابور الجاري وتُسقط المكرّر أصلاً، وكان إخفاؤه
+                    // يمنع إضافة قسم كامل حتى ينتهي كلّ ما يجري — ولو كان
+                    // درساً واحداً من قسم آخر على شبكة بطيئة.
                     DownloadAllButton(
-                        text = if (downloadedCount > 0) "تنزيل الكل ($downloadedCount/${all.size} محمّل)"
-                        else "تنزيل كل دروس القسم",
+                        text = when {
+                            active -> "أضِف دروس القسم إلى الطابور"
+                            downloadedCount > 0 -> "تنزيل الكل ($downloadedCount/${all.size} محمّل)"
+                            else -> "تنزيل كل دروس القسم"
+                        },
                         enabled = all.isNotEmpty(),
                         onClick = { vm.requestBulkDownload(sub?.name ?: "القسم", all) },
                     )
                     Spacer(Modifier.weight(1f))
-                }
-                IconButton(
-                    onClick = { parentId?.let { vm.open(Route.Category(it)) } },
-                    enabled = parentId != null,
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.DriveFileMove, contentDescription = "القسم الرئيسي")
+                    IconButton(
+                        onClick = { parentId?.let { vm.open(Route.Category(it)) } },
+                        enabled = parentId != null,
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.DriveFileMove, contentDescription = "القسم الرئيسي")
+                    }
                 }
             }
         }

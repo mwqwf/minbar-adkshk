@@ -105,7 +105,18 @@ private fun SectionQuestion(
                     name = sub.name,
                     subtitle = categoryNames[sub.categoryId],
                     onClick = {
-                        if (!vm.store.isFollowingSubcategory(sub.id)) vm.toggleFollow(sub.id)
+                        // ⚠️ متابعة **محلّية فوريّة** لا `toggleFollow`: تلك تعكس
+                        // المتابعة صامتةً إن فشل اشتراك FCM (شائع مع إنترنت
+                        // ضعيف عند أوّل تشغيل)، ورسالتها تُعرض تحت طبقة
+                        // الترحيب المعتمة فلا يراها أحد — فتبقى قائمة
+                        // المتابعات فارغة ويموت وعدا الشاشة (الإشعارات
+                        // والتنزيل التلقائي) معاً بصمت. هنا تُسجَّل المتابعة
+                        // أوّلاً، ثم يُحاوَل الاشتراك بلا عكسٍ عند الفشل —
+                        // ويُعاد تلقائياً عند أوّل عودة للتطبيق (MainActivity).
+                        if (!vm.store.isFollowingSubcategory(sub.id)) {
+                            vm.store.toggleFollowSubcategory(sub.id)
+                            vm.resubscribeFollowedTopics()
+                        }
                         // التحميل التلقائي — إن فُعِّل في السؤال التالي —
                         // يتبع «الأقسام التي أتابعها»، وهو الهدف الموجود أصلاً
                         // في الإعدادات بلا صيغة جديدة.

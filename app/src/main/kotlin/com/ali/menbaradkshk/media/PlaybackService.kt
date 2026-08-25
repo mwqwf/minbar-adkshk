@@ -131,7 +131,12 @@ class PlaybackService : MediaSessionService() {
                             // (انظر [countPlayIfListenedEnough]) — كانا يُحتسبان
                             // بمجرّد صيرورة الدرس حالياً، وعليهما تُبنى ريلات
                             // «الأكثر استماعاً» و«الرائج» وتحليلات اللوحة كلّها.
-                            store.addRecentPlayed(trackedLessonId)
+                            // ⚠️ الكتابة على خيط المخزن الواحد لا الرئيسي: كل
+                            // كتابة تفكّ JSON كاملاً وتعيد تسلسله (جانك)، وكانت
+                            // تتسابق مع كتابات نبضة storeScope على المفاتيح
+                            // نفسها (اقرأ-عدّل-اكتب من خيطين فيضيع تحديث).
+                            val id = trackedLessonId
+                            storeScope.launch { store.addRecentPlayed(id) }
                             com.ali.menbaradkshk.widget.NowPlayingWidget
                                 .refresh(this@PlaybackService)
                         }
@@ -146,22 +151,32 @@ class PlaybackService : MediaSessionService() {
                         val oldId = oldPosition.mediaItem?.mediaId.orEmpty()
                         if (oldId.isBlank() || oldId == newPosition.mediaItem?.mediaId) return
                         if (!isLesson(oldId)) return
+                        // القيم مُلتقطة هنا (خيط رئيسي) والكتابة على خيط المخزن
+                        // الواحد — كانت مباشرةً على الرئيسي فتتسابق مع نبضة
+                        // الخمس ثوانٍ على KEY_POSITIONS نفسه ويضيع موضع
+                        // الدرس المغادَر أو يرتدّ، فوق كلفة JSON على خيط الواجهة.
+                        val positionMs = oldPosition.positionMs
                         if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) {
-                            store.markCompleted(oldId)
+                            storeScope.launch { store.markCompleted(oldId) }
                         } else {
-                            store.setPosition(oldId, oldPosition.positionMs)
+                            storeScope.launch { store.setPosition(oldId, positionMs) }
                         }
                     }
 
                     override fun onPlaybackStateChanged(playbackState: Int) {
+                        // القراءة من المشغّل على الرئيسي (شرط ExoPlayer)
+                        // والكتابة على خيط المخزن الواحد — انظر تعليق
+                        // onPositionDiscontinuity أعلاه.
                         if (playbackState == Player.STATE_READY && duration > 0L) {
-                            currentMediaItem?.mediaId?.takeIf(::isLesson)
-                                ?.let { store.setDuration(it, duration) }
+                            val lessonDuration = duration
+                            currentMediaItem?.mediaId?.takeIf(::isLesson)?.let { id ->
+                                storeScope.launch { store.setDuration(id, lessonDuration) }
+                            }
                         }
                         if (playbackState == Player.STATE_ENDED) {
                             currentMediaItem?.mediaId
                                 ?.takeIf { it.isNotBlank() && isLesson(it) }
-                                ?.let(store::markCompleted)
+                                ?.let { id -> storeScope.launch { store.markCompleted(id) } }
                         }
                     }
                 },

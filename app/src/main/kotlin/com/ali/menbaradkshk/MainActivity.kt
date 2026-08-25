@@ -45,6 +45,10 @@ class MainActivity : ComponentActivity() {
         // على targetSdk 35+ العرض حتى الحافة مفروض من النظام أصلاً، فيكفي أن
         // نُخبر النافذة بألّا تُقلّم المحتوى، ثم نضبط تباين أيقونات الشريطين.
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        // 🔔 تصفية الاشتراكات المعلّقة مرّة عند أوّل عودة: متابعةٌ سُجّلت
+        // محلّياً (من شاشة الترحيب خاصّة) وقد يفشل اشتراك FCM لها لضعف
+        // الشبكة — الإعادة لا-عمل لمن اشتراكه سليم، فلا تُكرَّر مع كل عودة.
+        var resubscribedOnce = false
         lifecycle.addObserver(
             LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
@@ -54,6 +58,10 @@ class MainActivity : ComponentActivity() {
                     // فكان صاحبه لا يرى تذكيراً أبداً بعد أوّل تشغيل.
                     // (القراءة الشبكيّة نفسها تبقى محكومة بخانق الست ساعات.)
                     viewModel.checkForUpdate()
+                    if (!resubscribedOnce) {
+                        resubscribedOnce = true
+                        viewModel.resubscribeFollowedTopics()
+                    }
                 }
             },
         )

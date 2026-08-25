@@ -105,7 +105,17 @@ class ContentRepository private constructor(context: Context) {
                 val server = probe()
                 setLastProbeMs(now)
                 // فشل المسبار (انقطاع/رفض) يسقط إلى الجلب الكامل كما كان.
-                if (server != null && server == stored) return@withContext
+                if (server != null && server == stored) {
+                    // ✅ المسبار أكّد للتوّ أنّ المحفوظ مطابق للخادم: راية
+                    // offline ورسالة «نسخة محفوظة» من فشلٍ سابق صارتا كاذبتين
+                    // — كانتا تبقيان ظاهرتين حتى يتغيّر المحتوى فعلاً أو يسحب
+                    // المستخدم للتحديث يدوياً رغم أن الاتصال عاد.
+                    val current = _state.value
+                    if (current.offline || current.error != null) {
+                        _state.value = current.copy(offline = false, error = null)
+                    }
+                    return@withContext
+                }
                 // 🪶 تصحيح حرفٍ في اسم قسم كان يُنزّل المكتبة كلّها من جديد:
                 // أي اختلاف في البصمة يُسقط الكاش ويُعاد جلب مئات الوثائق —
                 // دقائق انتظار وميغابايتات من رصيدٍ مدفوع. الآن نجلب ما
@@ -214,10 +224,15 @@ class ContentRepository private constructor(context: Context) {
                 loading = false,
                 syncing = false,
                 offline = true,
-                error = if (cached.lessons.isEmpty()) {
-                    "تعذّر الاتصال ولا توجد بيانات محفوظة بعد."
-                } else {
-                    "أنت تستعرض نسخة محفوظة على الجهاز."
+                error = when {
+                    cached.lessons.isEmpty() -> "تعذّر الاتصال ولا توجد بيانات محفوظة بعد."
+                    // ⚠️ لم تكتمل مزامنة كاملة قط (أول تثبيت وصلت منه صفحة
+                    // دروس ثم انقطع): لا شيء حُفظ على القرص (الحفظ في
+                    // onSuccess وحده)، فادّعاء «نسخة محفوظة» كاذب ويطمئن
+                    // المستخدم إلى مكتبة ناقصة ستختفي عند إعادة الفتح بلا نت.
+                    store.lastSyncMs() == 0L ->
+                        "انقطع الاتصال قبل اكتمال التحميل — اسحب للتحديث."
+                    else -> "أنت تستعرض نسخة محفوظة على الجهاز."
                 },
             )
         }
@@ -450,12 +465,16 @@ class ContentRepository private constructor(context: Context) {
     /**
      * وثائق مجموعةٍ تغيّرت بعد [sinceMs].
      *
-     * ⚠️ أربعة استعلامات لا واحد، ولكلٍّ سببه:
+     * ⚠️ ستّة استعلامات لا واحد، ولكلٍّ سببه:
      * - **حقلان**: الوثائق القديمة المغلَّفة `{data:{…}}` تكتب الطابع في
      *   `data.updatedAt` لا في الجذر (نفس علّة [newestUpdatedBy]).
-     * - **نوعان**: Firestore يرتّب القيم بأنواعها أولاً، فحدٌّ من نوع
-     *   Timestamp لا يرى وثيقةً طابعها رقمٌ خام والعكس — والقاعدة فيها
-     *   الشكلان.
+     * - **ثلاثة أنواع**: Firestore يرتّب القيم بأنواعها أولاً، فحدٌّ من نوع
+     *   Timestamp لا يرى وثيقةً طابعها رقمٌ خام ولا نصٌّ والعكس — والقاعدة
+     *   فيها الأشكال الثلاثة: `updateCompat` في اللوحة كان يكتب `updatedAt`
+     *   **نصَّ ISO**، فتعديل عنوانٍ من اللوحة ما كان الدلتا يلتقطه أبداً
+     *   (والعدد لم يتغيّر فلا ينقذه حكم الأعداد) ولا يصل للمستخدمين إلا
+     *   بجلبة كاملة عرضيّة. والوثائق النصيّة القديمة باقية في القاعدة ولو
+     *   حُوِّلت اللوحة إلى Timestamp، فالحدّ النصي لازم دائماً.
      *
      * النتيجة تُدمج بمعرّف الوثيقة فلا تكرار. و`null` تعني فشلاً أو تجاوز
      * الحدّ — أي «ارجع إلى الجلب الكامل».
@@ -468,6 +487,9 @@ class ContentRepository private constructor(context: Context) {
             val bounds = listOf<Any>(
                 com.google.firebase.Timestamp(java.util.Date(sinceMs)),
                 sinceMs,
+                // حدّ النصّ: ISO بتوقيت UTC وميلي ثانية ثابتة العرض يقارَن
+                // معجمياً فيوافق الترتيب الزمني (انظر توثيق الدالة أعلاه).
+                isoUpdatedBound(sinceMs),
             )
             val jobs = listOf("updatedAt", "data.updatedAt").flatMap { field ->
                 bounds.map { bound -> async { changedBy(collection, field, bound) } }
@@ -739,6 +761,19 @@ class ContentRepository private constructor(context: Context) {
         runCatching { JSONObject(prefs.getString(KEY_PLAYLIST_ORDER, "{}").orEmpty()) }
             .getOrElse { JSONObject() }
 
+    /// 🧹 يمحو الآثار الشخصيّة المخزّنة في تفضيلات هذا المستودع (السجلّ
+    /// المخفي وطوابع السجل وترتيب القوائم). «حذف بياناتي» كان يمحو مخزن
+    /// التطبيق العام ويُبقي هذه — فدرسٌ أخفاه المستخدم من سجلّه قبل المحو
+    /// يظلّ محجوباً بعده مهما أعاد تشغيله، خلافاً لوعد «محو كل شيء».
+    /// (علامات المسبار وسجلّ الحذف تبقى: بيانات مزامنة لا أثر استخدام.)
+    fun clearPersonalData() {
+        prefs.edit()
+            .remove(KEY_HIDDEN_HISTORY)
+            .remove(KEY_HISTORY_STAMPS)
+            .remove(KEY_PLAYLIST_ORDER)
+            .apply()
+    }
+
     fun recommended(limit: Int = 50): List<Lesson> {
         val pool = withAudio()
         val subVisits = store.subcategoryVisits()
@@ -925,6 +960,18 @@ class ContentRepository private constructor(context: Context) {
  * في الآخر، وتُسقط ما ورد في [deleted] — والحذف مقدَّمٌ على التعديل لأن
  * وثيقةً حُذفت بعد تعديلها يجب ألّا تعود.
  */
+/**
+ * حدّ نصّي بصيغة ISO-8601 (UTC، ميلي ثانية بثلاث خانات دائماً) للاستعلام
+ * التفاضلي على وثائق كُتب طابعها نصّاً (`updateCompat` في اللوحة يكتب بصيغة
+ * `toISOString`). العرض الثابت شرط صحّة المقارنة المعجميّة زمنياً.
+ * دالّة خالصة بلا شبكة كي تُختبر وحدها.
+ */
+internal fun isoUpdatedBound(sinceMs: Long): String =
+    java.time.format.DateTimeFormatter
+        .ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+        .withZone(java.time.ZoneOffset.UTC)
+        .format(java.time.Instant.ofEpochMilli(sinceMs))
+
 internal fun <T> mergeById(
     base: List<T>,
     changed: List<T>,

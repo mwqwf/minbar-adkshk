@@ -65,7 +65,6 @@ class SupportStore private constructor(context: Context) {
         val isNew: Boolean,
         val text: String,
         val audioFile: String,
-        val imageFiles: List<String>,
         val deviceInfo: String,
         val createdAtMs: Long,
     )
@@ -75,7 +74,6 @@ class SupportStore private constructor(context: Context) {
         val array = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
         return (0 until array.length()).mapNotNull { index ->
             val o = array.optJSONObject(index) ?: return@mapNotNull null
-            val images = o.optJSONArray("imageFiles") ?: JSONArray()
             Pending(
                 id = o.optString("id"),
                 kind = o.optString("kind"),
@@ -83,7 +81,6 @@ class SupportStore private constructor(context: Context) {
                 isNew = o.optBoolean("isNew"),
                 text = o.optString("text"),
                 audioFile = o.optString("audioFile"),
-                imageFiles = (0 until images.length()).map { images.optString(it) },
                 deviceInfo = o.optString("deviceInfo"),
                 createdAtMs = o.optLong("createdAtMs"),
             )
@@ -96,7 +93,6 @@ class SupportStore private constructor(context: Context) {
         isNew: Boolean,
         text: String,
         audioFile: String,
-        imageFiles: List<String>,
         deviceInfo: String,
     ): Pending {
         val item = Pending(
@@ -106,7 +102,6 @@ class SupportStore private constructor(context: Context) {
             isNew = isNew,
             text = text,
             audioFile = audioFile,
-            imageFiles = imageFiles,
             deviceInfo = deviceInfo,
             createdAtMs = System.currentTimeMillis(),
         )
@@ -127,7 +122,6 @@ class SupportStore private constructor(context: Context) {
                     put("isNew", item.isNew)
                     put("text", item.text)
                     put("audioFile", item.audioFile)
-                    put("imageFiles", JSONArray(item.imageFiles))
                     put("deviceInfo", item.deviceInfo)
                     put("createdAtMs", item.createdAtMs)
                 },

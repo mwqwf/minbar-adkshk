@@ -13,20 +13,37 @@
          (أندرويد 14+) بدل خدمة أمامية من نوع dataSync. -->
     <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" />
 
-    <!-- «إرفاق آخر لقطة شاشة» في «ساهم بالنص»: قراءة الصور تُطلب كسولاً —
-         عند أوّل نقرة على البطاقة فقط، لا عند الإقلاع ولا عند فتح الشاشة.
-         VISUAL_USER_SELECTED تدعم «الوصول الجزئي للصور» في أندرويد 14+،
-         وREAD_EXTERNAL_STORAGE للأجهزة قبل أندرويد 13 فقط. -->
     <!-- «راسِل المطوّر»: تسجيل رسالة صوتيّة للمالك. الإذن يُطلب **عند أوّل
          ضغطة على زرّ التسجيل** لا عند فتح الشاشة ولا عند الإقلاع — فمن جاء
          ليكتب اقتراحاً لا يُسأل عن ميكروفونه بلا سبب ظاهر فيرفضه دائماً. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+    <!-- ⛔ أذونات الصور (READ_MEDIA_IMAGES و VISUAL_USER_SELECTED و
+         READ_EXTERNAL_STORAGE) حُذفت عمداً 2026-08-25: كانت تُلزمنا بنموذج
+         «الوظيفة الأساسيّة للصور والفيديوهات» في Play. كلّ اختيار للصور في
+         التطبيق يمرّ الآن بمنتقي النظام (Photo Picker / GetContent) وهو لا
+         يحتاج أيّ إذن على أيّ إصدار أندرويد. لا تُعِدها. -->
+
+    <!-- ⛔ لا تحذف هذه الكتلة: Play **يستنتج** عتاداً مطلوباً من الأذونات ما لم
+         نُصرّح بخلافه، فيُسقط من قائمة التوافق كل جهاز ينقصه ذلك العتاد.
+         `RECORD_AUDIO` تُوجب ميكروفوناً — وقد أسقطت 21 جهازاً فعلاً بعد إضافة
+         الرسالة الصوتيّة في «راسِل المطوّر». والتسجيل ميزة اختياريّة تماماً
+         (تبقى الكتابة)، فالميكروفون `required="false"` والكود يتحقّق من توفّره
+         عند الاستعمال لا قبله. وبقيّة العتاد مُعلَن احتياطاً لأنّ المكتبات قد
+         تدسّ أذونات في المانيفست المدموج (كما حدث في اللوحة مع البصمة). -->
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.fingerprint" android:required="false" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+    <uses-feature android:name="android.hardware.wifi" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.screen.portrait" android:required="false" />
+    <uses-feature android:name="android.hardware.screen.landscape" android:required="false" />
 
     <application
         android:name=".MinbarApplication"

@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -57,7 +56,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import coil3.compose.AsyncImage
 import com.ali.menbaradkshk.data.SupportMessage
 import com.ali.menbaradkshk.data.SupportRepository
 import com.ali.menbaradkshk.data.SupportThread
@@ -205,7 +203,6 @@ private fun SupportBubble(message: SupportMessage) {
             if (message.audioPath.isNotBlank()) {
                 SupportAudioPlayer(message.audioPath, message.pending)
             }
-            message.imagePaths.forEach { path -> SupportImage(path) }
             if (message.pending) {
                 // لا نقول «فشل الإرسال»: الرسالة محفوظة وستُرسل وحدها.
                 Text(
@@ -215,21 +212,6 @@ private fun SupportBubble(message: SupportMessage) {
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun SupportImage(path: String) {
-    val context = LocalContext.current
-    val repository = remember { SupportRepository.get(context) }
-    var uri by remember(path) { mutableStateOf<android.net.Uri?>(null) }
-    LaunchedEffect(path) { uri = runCatching { repository.attachmentUri(path) }.getOrNull() }
-    uri?.let {
-        AsyncImage(
-            model = it,
-            contentDescription = "صورة مرفقة",
-            modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp),
-        )
     }
 }
 

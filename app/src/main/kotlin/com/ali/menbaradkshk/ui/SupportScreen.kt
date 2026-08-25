@@ -2,8 +2,6 @@
 
 package com.ali.menbaradkshk.ui
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,7 +16,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Send
@@ -30,7 +27,6 @@ import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -42,9 +38,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
@@ -56,8 +50,6 @@ import com.ali.menbaradkshk.data.SupportKind
 import com.ali.menbaradkshk.data.SupportRepository
 import com.ali.menbaradkshk.data.SupportStore
 import com.ali.menbaradkshk.data.SupportThread
-import com.ali.menbaradkshk.util.ImageShrink
-import kotlinx.coroutines.launch
 import java.io.File
 
 /**
@@ -264,7 +256,6 @@ private fun SupportForm(kind: String, onBack: () -> Unit, onSent: () -> Unit) {
     val context = LocalContext.current
     val repository = remember { SupportRepository.get(context) }
     val store = remember { SupportStore.get(context) }
-    val scope = rememberCoroutineScope()
 
     var text by remember { mutableStateOf("") }
     // أسئلة «الإشراف» الثلاثة: ثلاثة أسطر قصيرة أسهل على من لا يكتب كثيراً من
@@ -273,25 +264,9 @@ private fun SupportForm(kind: String, onBack: () -> Unit, onSent: () -> Unit) {
     var relation by remember { mutableStateOf("") }
     var work by remember { mutableStateOf("") }
     var recorded by remember { mutableStateOf<File?>(null) }
-    val images = remember { mutableListOf<File>().toMutableStateList() }
     var shareDeviceInfo by remember { mutableStateOf(true) }
     var askIdentity by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
-
-    val picker = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetMultipleContents(),
-    ) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        scope.launch {
-            uris.take(SupportRepository.MAX_IMAGES - images.size).forEach { uri ->
-                // تُضغط فور اختيارها لا عند الرفع: يرى المستخدم النتيجة
-                // مبكراً، ولا ينتظر ضغط الصور كلّها وهو يظنّ الإرسال معلّقاً.
-                runCatching { ImageShrink.shrink(context, uri) }
-                    .onSuccess { images.add(it) }
-                    .onFailure { notice = it.message ?: "تعذّرت قراءة الصورة." }
-            }
-        }
-    }
 
     fun composedText(): String = if (kind == SupportKind.SUPERVISION) {
         listOf(
@@ -308,7 +283,6 @@ private fun SupportForm(kind: String, onBack: () -> Unit, onSent: () -> Unit) {
             kind = kind,
             text = composedText(),
             audioFile = recorded,
-            imageFiles = images.toList(),
             includeDeviceInfo = kind == SupportKind.BUG && shareDeviceInfo,
         )
         onSent()
@@ -354,27 +328,10 @@ private fun SupportForm(kind: String, onBack: () -> Unit, onSent: () -> Unit) {
                     label = { Text("أو اكتب هنا (اختياري)") },
                 )
             }
-            // صورٌ فقط (`image/*`) وبحدّ الخادم نفسه: لا فيديو ولا مستندات —
-            // كلاهما ثقيل على إنترنت ضعيف، والصورة تكفي لبيان أيّ عطل.
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(
-                    onClick = { picker.launch("image/*") },
-                    enabled = images.size < SupportRepository.MAX_IMAGES,
-                    modifier = Modifier.heightIn(min = 52.dp),
-                ) {
-                    Icon(Icons.Filled.AddPhotoAlternate, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (images.isEmpty()) "أضف صورة" else "أضف صورة أخرى")
-                }
-                Spacer(Modifier.width(10.dp))
-                if (images.isNotEmpty()) {
-                    Text("${images.size} من ${SupportRepository.MAX_IMAGES}")
-                    TextButton(onClick = {
-                        images.forEach { runCatching { it.delete() } }
-                        images.clear()
-                    }) { Text("أزل الصور") }
-                }
-            }
+            // ⛔ لا مرفقات صور هنا (قرار 2026-08-25): الصوت والكتابة يكفيان
+            // لكل ما تحتاجه هذه القناة، وحذفُ الصور أسقط إذن READ_MEDIA_IMAGES
+            // من التطبيق كلّه — وهو الإذن الذي يُلزم Play بنموذج «الوظيفة
+            // الأساسيّة للصور والفيديوهات».
             if (kind == SupportKind.BUG) {
                 // 🔍 مكشوفاً لا خفيةً: ما يُرسَل عن جهازه يقرؤه بعينه، وله أن
                 // يمنعه بمفتاح واحد — وحين يمنعه لا يُرسَل شيء منه إطلاقاً.

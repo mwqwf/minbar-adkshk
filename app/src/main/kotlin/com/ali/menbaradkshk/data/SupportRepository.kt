@@ -55,7 +55,6 @@ data class SupportMessage(
     val fromOwner: Boolean,
     val text: String,
     val audioPath: String,
-    val imagePaths: List<String>,
     val createdAtMs: Long,
     /** رسالة لم تُرفع بعد — تنتظر عودة الإنترنت. */
     val pending: Boolean = false,
@@ -131,7 +130,6 @@ class SupportRepository private constructor(context: Context) {
                     fromOwner = false,
                     text = it.text,
                     audioPath = it.audioFile,
-                    imagePaths = it.imageFiles,
                     createdAtMs = it.createdAtMs,
                     pending = true,
                 )
@@ -154,8 +152,6 @@ class SupportRepository private constructor(context: Context) {
                         fromOwner = document.getBoolean("fromOwner") ?: false,
                         text = document.getString("text").orEmpty(),
                         audioPath = document.getString("audioPath").orEmpty(),
-                        imagePaths = (document.get("imagePaths") as? List<*>)
-                            .orEmpty().map { it.toString() },
                         createdAtMs = document.getLong("createdAtMs") ?: 0L,
                     )
                 }
@@ -164,7 +160,7 @@ class SupportRepository private constructor(context: Context) {
         awaitClose { registration.remove() }
     }
 
-    /** رابط تشغيل مرفق صوتي أو صورة من التخزين (أو الملف المحلّي إن كان معلّقاً). */
+    /** رابط تشغيل المرفق الصوتي من التخزين (أو الملف المحلّي إن كان معلّقاً). */
     suspend fun attachmentUri(path: String): Uri {
         if (path.startsWith("/")) return Uri.fromFile(File(path))
         return storage.reference.child(path).downloadUrl.await()
@@ -183,7 +179,6 @@ class SupportRepository private constructor(context: Context) {
         isNew: Boolean = true,
         text: String = "",
         audioFile: File? = null,
-        imageFiles: List<File> = emptyList(),
         includeDeviceInfo: Boolean = false,
     ) {
         store.addPending(
@@ -192,7 +187,6 @@ class SupportRepository private constructor(context: Context) {
             isNew = isNew,
             text = text.trim().take(MAX_TEXT),
             audioFile = audioFile?.absolutePath.orEmpty(),
-            imageFiles = imageFiles.take(MAX_IMAGES).map(File::getAbsolutePath),
             // ⛔ حين يُطفئ المستخدم مفتاح معلومات الجهاز لا نرسل شيئاً عنه
             // إطلاقاً — لا صيغة مختصرة ولا حقلاً فارغاً باسمه.
             deviceInfo = if (includeDeviceInfo) deviceInfo() else "",
@@ -247,10 +241,6 @@ class SupportRepository private constructor(context: Context) {
         val audioPath = item.audioFile.takeIf { it.isNotBlank() }?.let { local ->
             upload(File(local), "$folder/${item.id}.m4a", "audio/mp4")
         }
-        val imagePaths = item.imageFiles.filter { it.isNotBlank() }
-            .mapIndexed { index, local ->
-                upload(File(local), "$folder/${item.id}_$index.jpg", "image/jpeg")
-            }
         // 🔔 بلا `fcmToken` لا يصل إشعار ردّ المالك إطلاقاً — فنُرسله مع كل
         // رسالة لا مع الإنشاء وحده: الرمز يتغيّر بإعادة التثبيت واستعادة
         // النسخة الاحتياطيّة، فتحديثه مجّاناً مع كل رسالة أضمن من رمز ميّت.
@@ -261,7 +251,6 @@ class SupportRepository private constructor(context: Context) {
             put("threadId", item.threadId)
             item.text.takeIf(String::isNotBlank)?.let { put("text", it) }
             audioPath?.let { put("audioPath", it) }
-            if (imagePaths.isNotEmpty()) put("imagePaths", imagePaths)
             if (fcmToken.isNotBlank()) put("fcmToken", fcmToken)
             if (item.isNew) {
                 put("kind", item.kind)
@@ -274,7 +263,6 @@ class SupportRepository private constructor(context: Context) {
         functions.getHttpsCallable(callable).call(payload).await()
         // المرفقات المحلّية أدّت غرضها — لا نُبقيها في الكاش تأكل مساحة الجهاز.
         runCatching { item.audioFile.takeIf { it.isNotBlank() }?.let { File(it).delete() } }
-        item.imageFiles.forEach { runCatching { File(it).delete() } }
     }
 
     private suspend fun upload(file: File, path: String, type: String): String {
@@ -289,9 +277,9 @@ class SupportRepository private constructor(context: Context) {
     companion object {
         const val MAX_TEXT = 1_000
 
-        /// الخادم يقبل أربع صور. نلتزم سقفه بلا زيادة من عندنا كي لا يُرفض
-        /// ما يقبله، ولا يُرسَل ما يرفضه.
-        const val MAX_IMAGES = 4
+        // ⛔ لا مرفقات صور في هذه القناة (قرار 2026-08-25): الصوت والكتابة
+        // يكفيان، وحذفُ الصور من العميل هو ما أتاح إسقاط إذن READ_MEDIA_IMAGES
+        // نهائياً. عقد الخادم يقبل `imagePaths` اختيارياً فلا يُكسر بعدم إرسالها.
 
         /// خيط واحد كل ٢٤ ساعة (حدّ الخادم) — الواجهة تمنع المحاولة أصلاً
         /// بدل أن تعرض رفضاً لا حيلة للمستخدم فيه.

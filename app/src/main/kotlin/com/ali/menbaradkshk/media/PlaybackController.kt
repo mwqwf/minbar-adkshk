@@ -40,6 +40,10 @@ data class PlaybackUiState(
     val hasNext: Boolean = false,
     val hasPrevious: Boolean = false,
     val sleepEndsAtMs: Long? = null,
+    /// 🌙 مؤقّت نوم بالمحتوى: عدد الأطراف الباقية (١ أو ٢)، أو
+    /// [com.ali.menbaradkshk.data.LocalStore.SLEEP_UNTIL_QUEUE_END] للتلاوة،
+    /// و0 = لا مؤقّت من هذا النوع. مستقلّ عن [sleepEndsAtMs] لأنّه لا موعد له.
+    val sleepAfterItems: Int = 0,
     val autoplay: Boolean = true,
     /// «تخطّي الصمت» — مطفأ افتراضياً عمداً: تقصير السكتات يغيّر المسموع في
     /// التلاوة وفي الدروس ذات الوقفات المقصودة، فمن يريده يفتحه بنفسه.
@@ -51,9 +55,43 @@ data class PlaybackUiState(
     val itemIndex: Int = 0,
 )
 
-/// «تشغيل تلقائي للتالي» — قيمة جلسة (تعود true عند إعادة تشغيل التطبيق) كما في الأصل.
+/**
+ * «تشغيل تلقائي للتالي» — قيمة جلسة (تعود true عند إعادة تشغيل التطبيق) كما في الأصل.
+ *
+ * 📚 **ولماذا عدٌّ تنازليّ معلن؟** لأنّ السلاسل هنا كتبٌ لا ملفّات متفرّقة:
+ * «شرح الأخضري» ستّون درساً مرقّمة، ومن أنهى السابع عشر يريد الثامن عشر لا
+ * قائمةً يبحث فيها. والانتقال كان يقع صامتاً، فلا يفهم المستمع ما جرى ولا
+ * يجد سبيلاً إلى منعه. فصار له إعلانٌ خمس ثوانٍ: يراه، ويوقفه إن شاء.
+ *
+ * [pending] يملؤه [PlaybackService] (هو من يرى الانتقال فعلاً) وتقرؤه شاشة
+ * المشغّل. والخدمة والواجهة في العمليّة نفسها — نمط [SkipSilenceState] نفسه.
+ */
 object AutoplayState {
     @Volatile var enabled: Boolean = true
+
+    /// [title] عنوان الدرس التالي، [endsAtMs] موعد انطلاقه، و[token] يميّز
+    /// هذا العدّ بعينه كي لا يُشغّل مؤقّتٌ متأخّرٌ درساً أُلغي عدّه.
+    data class Pending(val title: String, val endsAtMs: Long, val token: Long)
+
+    private val _pending = MutableStateFlow<Pending?>(null)
+    val pending: StateFlow<Pending?> = _pending.asStateFlow()
+
+    fun beginCountdown(title: String, endsAtMs: Long, token: Long) {
+        _pending.value = Pending(title, endsAtMs, token)
+    }
+
+    /// يُنهي العدّ ويُرجع هل كان [token] هو العدّ الجاري فعلاً — به وحده تعرف
+    /// الخدمة أنّ لها أن تُشغّل التالي.
+    fun consume(token: Long): Boolean {
+        val current = _pending.value ?: return false
+        if (current.token != token) return false
+        _pending.value = null
+        return true
+    }
+
+    fun clearCountdown() {
+        _pending.value = null
+    }
 }
 
 /// «تخطّي الصمت» — خلافاً لـ[AutoplayState] يبقى بين الجلسات، فله ملفّ تفضيلات
@@ -105,6 +143,8 @@ class PlaybackController(context: Context) {
             speed = store.playbackSpeed().toFloat(),
             // مؤقّت نوم قائم من جلسة سابقة يظهر فور إعادة فتح التطبيق.
             sleepEndsAtMs = store.sleepEndsAtMs().takeIf { it > System.currentTimeMillis() },
+            // ومؤقّت «إلى نهاية الدرس» كذلك: محفوظ فيظهر بعد إعادة الفتح.
+            sleepAfterItems = store.sleepAfterItems(),
             skipSilence = SkipSilenceState.load(appContext),
         ),
     )
@@ -380,24 +420,62 @@ class PlaybackController(context: Context) {
 
     fun setSleepTimer(minutes: Int) {
         val end = System.currentTimeMillis() + minutes.coerceAtLeast(1) * 60_000L
+        // مؤقّتان لا يجتمعان: اختيار الدقائق يلغي «إلى نهاية الدرس» وبالعكس،
+        // وإلّا توقّف التشغيل عند أوّلهما فيبدو أنّ الاختيار لم يُحترم.
+        store.clearSleepAfterItems()
         // الموعد يُحفظ ليقرأه `PlaybackService`: هذا النطاق يُحرَّر مع
         // `AppViewModel.onCleared`، فكان سحب التطبيق يقتل المؤقّت بينما يستمرّ
         // التشغيل عبر الخدمة الأمامية فيعمل الصوت طوال الليل.
         store.setSleepEndsAtMs(end)
-        _state.value = _state.value.copy(sleepEndsAtMs = end)
+        _state.value = _state.value.copy(sleepEndsAtMs = end, sleepAfterItems = 0)
         armSleepJob(end)
+    }
+
+    /**
+     * 🌙 «إلى نهاية الدرس» / «إلى نهاية درسين» — [count] عدد الأطراف الباقية.
+     *
+     * **لا مدّة تُحسب هنا**: لو حسبنا `durationMs - positionMs` مرّةً واحدة
+     * لأخطأ المؤقّت هدفه عند أوّل تغيّر — تشغيلٌ تلقائيّ ينقل إلى درسٍ أطول،
+     * أو تبديلُ سرعة، أو ترجيعٌ نصف دقيقة. فالمعنى المحفوظ هو الشرط نفسه:
+     * «قِف عند طرف الدرس الجاري»، ومن يُنفّذه [PlaybackService] عند كل طرف.
+     */
+    fun setSleepAfterItems(count: Int) {
+        // مدّة قائمة من قبل ⇒ تُلغى: انظر تعليق [setSleepTimer].
+        sleepJob?.cancel()
+        sleepJob = null
+        store.clearSleepTimer()
+        store.setSleepAfterItems(count)
+        _state.value = _state.value.copy(sleepEndsAtMs = null, sleepAfterItems = count)
     }
 
     fun cancelSleepTimer() {
         sleepJob?.cancel()
         sleepJob = null
         store.clearSleepTimer()
-        _state.value = _state.value.copy(sleepEndsAtMs = null)
+        store.clearSleepAfterItems()
+        _state.value = _state.value.copy(sleepEndsAtMs = null, sleepAfterItems = 0)
     }
 
     fun setAutoplay(enabled: Boolean) {
         AutoplayState.enabled = enabled
+        // إطفاؤه والعدّ جارٍ يعني «لا تنتقل» — فيُلغى العدّ معه لا أن يمضي.
+        if (!enabled) AutoplayState.clearCountdown()
         _state.value = _state.value.copy(autoplay = enabled)
+    }
+
+    /// «إيقاف» في شريط العدّ التنازليّ: لا ينتقل الآن، ويُحترم اختياره بقيّة
+    /// الجلسة — فلا يُسأل عند كل درس بعد أن أجاب مرّة.
+    fun stopAutoplayCountdown() {
+        setAutoplay(false)
+    }
+
+    /// «شغّل الآن» — **لا مسار تشغيل ثانٍ**: الدرس التالي محمَّل في المشغّل
+    /// أصلاً وينتظر انقضاء العدّ، فكلّ ما يلزم رفعُ اليد عنه.
+    fun startNextNow() {
+        AutoplayState.clearCountdown()
+        val player = controller ?: return replayLast()
+        prepareIfIdle(player)
+        player.play()
     }
 
     /// الخدمة هي من تُطبّقه على المشغّل (وتحرس المصحف منه)؛ هنا الحفظ والإبلاغ.
@@ -429,6 +507,9 @@ class PlaybackController(context: Context) {
             hasNext = player.hasNextMediaItem(),
             hasPrevious = player.hasPreviousMediaItem(),
             autoplay = AutoplayState.enabled,
+            // قراءة خريطة تفضيلات في الذاكرة — رخيصة، والخدمة هي من تُنقص
+            // العدّاد فلا سبيل آخر لتعرف الواجهة أنّه بلغ الصفر.
+            sleepAfterItems = store.sleepAfterItems(),
             skipSilence = SkipSilenceState.enabled,
             itemIndex = player.currentMediaItemIndex.coerceAtLeast(0),
         )

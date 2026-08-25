@@ -1700,6 +1700,15 @@ fun QuranSurahScreen(
                 onToggle = { vm.playback.toggle() },
                 onNext = { vm.playback.next() },
                 onSleep = { vm.playback.setSleepTimer(it) },
+                // 🌙 «إلى نهاية التلاوة»: نظير «إلى نهاية الدرس» في المشغّل.
+                // والآية عنصرٌ مستقلّ في القائمة، فطرفُ «الدرس» هنا هو طرف
+                // السورة كلّها — أي طرف قائمة التشغيل.
+                onSleepUntilEnd = {
+                    vm.playback.setSleepAfterItems(
+                        com.ali.menbaradkshk.data.LocalStore.SLEEP_UNTIL_QUEUE_END,
+                    )
+                },
+                sleepAfterItems = playback.sleepAfterItems,
                 sleepEndsAtMs = playback.sleepEndsAtMs,
                 onCancelSleep = { vm.playback.cancelSleepTimer() },
                 // شريط الموضع يلزم القارئ بملفّ السورة الكاملة وحده: مع
@@ -2022,6 +2031,10 @@ private fun QuranPlayerControls(
     onToggle: () -> Unit,
     onNext: () -> Unit,
     onSleep: (Int) -> Unit,
+    /// 🌙 «أوقِف عند نهاية التلاوة» — شرطٌ لا مدّة، فلا يقطع السورة في وسطها.
+    onSleepUntilEnd: () -> Unit,
+    /// مؤقّت النوم بالمحتوى (0 = لا شيء) — لا موعد له فلا يكفي [sleepEndsAtMs].
+    sleepAfterItems: Int,
     /// موعد انتهاء مؤقّت النوم إن كان مضبوطاً — به وحده يظهر «إلغاء المؤقّت».
     sleepEndsAtMs: Long?,
     onCancelSleep: () -> Unit,
@@ -2145,6 +2158,16 @@ private fun QuranPlayerControls(
                 modifier = Modifier.fillMaxWidth().padding(12.dp),
                 textAlign = TextAlign.Center,
             )
+            // 🌙 قبل الدقائق: من يستمع قبل نومه يريد أن تتمّ السورة لا أن
+            // يخمّن رقماً يقطعها. والمدّة معلومة للتطبيق لا للمستخدم.
+            ListItem(
+                modifier = Modifier.clickable {
+                    onSleepUntilEnd()
+                    sleepSheet = false
+                },
+                leadingContent = { Icon(Icons.Filled.Bedtime, null, tint = Teal) },
+                headlineContent = { Text("إلى نهاية التلاوة") },
+            )
             listOf(5, 10, 15, 30, 45, 60).forEach { minutes ->
                 ListItem(
                     modifier = Modifier.clickable {
@@ -2160,7 +2183,7 @@ private fun QuranPlayerControls(
             // ⚠️ **الإلغاء هنا كما في ورقة المشغّل**: كانت الورقة تضبط المؤقّت
             // ولا تلغيه، فمن ضبطه من المصحف لا سبيل له إلى إلغائه إلا بفتح
             // شاشة درسٍ لا يريده. والفعل موجود أصلاً في المشغّل.
-            if (sleepEndsAtMs != null) {
+            if (sleepEndsAtMs != null || sleepAfterItems != 0) {
                 ListItem(
                     modifier = Modifier.clickable {
                         onCancelSleep()

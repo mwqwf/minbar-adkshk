@@ -416,6 +416,45 @@ class LocalStore private constructor(context: Context) {
     fun setSleepEndsAtMs(value: Long) = write { putLong(KEY_SLEEP_ENDS_AT, value) }
     fun clearSleepTimer() = write { putLong(KEY_SLEEP_ENDS_AT, 0L) }
 
+    /**
+     * 🌙 مؤقّت نوم **بالمحتوى لا بالدقائق**.
+     *
+     * من يستمع قبل النوم لا يعرف كم بقي من الدرس، فيخمّن رقماً فيقطع الدرس
+     * في وسطه أو يترك الصوت يعمل بعده. القيمة هنا عدد الأطراف الباقية:
+     * 1 = «إلى نهاية الدرس»، 2 = «إلى نهاية درسين»، و[SLEEP_UNTIL_QUEUE_END]
+     * = «إلى نهاية التلاوة» في المصحف.
+     *
+     * ولماذا عدّاد لا موعد محسوب مرّة؟ لأنّ التشغيل التلقائيّ قد يبدّل الدرس
+     * وسرعة القراءة قد تتغيّر، فأيّ مدّة تُحسب سلفاً تُخطئ الهدف. والعدّ يقع
+     * في [com.ali.menbaradkshk.media.PlaybackService] عند كلّ طرفٍ فعليّ.
+     *
+     * ويُحفظ على القرص لا في الذاكرة: سحب التطبيق من التطبيقات الحديثة يقتل
+     * الواجهة وتبقى الخدمة تعمل — وهو حال من ضبط المؤقّت ثم نام.
+     */
+    fun sleepAfterItems(): Int = long(KEY_SLEEP_AFTER_ITEMS).toInt()
+    fun setSleepAfterItems(value: Int) = write { putLong(KEY_SLEEP_AFTER_ITEMS, value.toLong()) }
+    fun clearSleepAfterItems() = write { putLong(KEY_SLEEP_AFTER_ITEMS, 0L) }
+
+    /**
+     * 🖼️ حجم كاش صور Coil على القرص بالبايت.
+     *
+     * على جهازٍ ذاكرته صغيرة وبياناته مدفوعة، المستخدم يستحقّ أن يرى ماذا
+     * يشغل مساحته وأن يمسحه بنقرة. القراءة على القرص فتُنادى من خيط خلفيّ.
+     *
+     * (يستعملها سطر «مساحة الصور: … — امسح» في الإعدادات مع [clearImageCache].)
+     */
+    fun imageCacheBytes(): Long = runCatching {
+        File(appContext.cacheDir, IMAGE_CACHE_DIR)
+            .walkBottomUp()
+            .filter(File::isFile)
+            .sumOf(File::length)
+    }.getOrDefault(0L)
+
+    /// مسح كاش الصور — الصور تُعاد تنزيلها عند الحاجة فلا يضيع شيء دائم.
+    fun clearImageCache(): Boolean = runCatching {
+        File(appContext.cacheDir, IMAGE_CACHE_DIR).deleteRecursively()
+    }.getOrDefault(false)
+
     // المظهر الافتراضي: اتّباع النظام (طلب المستخدم 2026-07-23).
     fun themeMode(): String = string(KEY_THEME, "system")
     fun setThemeMode(value: String) = write { putString(KEY_THEME, value) }
@@ -1168,6 +1207,15 @@ class LocalStore private constructor(context: Context) {
         const val KEY_SPEED = "pref_speed"
         const val KEY_SKIP = "pref_skip_sec"
         const val KEY_SLEEP_ENDS_AT = "pref_sleep_ends_at"
+        /// عدّاد «إلى نهاية الدرس» — انظر [sleepAfterItems].
+        const val KEY_SLEEP_AFTER_ITEMS = "pref_sleep_after_items"
+
+        /// «إلى نهاية التلاوة»: طرفُ قائمة التشغيل كلّها لا طرفُ عنصرٍ واحد —
+        /// لأنّ آية المصحف عنصرٌ مستقلّ، و«نهاية آية» ليست معنىً يطلبه أحد.
+        const val SLEEP_UNTIL_QUEUE_END = -1
+
+        /// مجلّد كاش صور Coil — الاسم نفسه المستعمل في `MinbarApplication`.
+        const val IMAGE_CACHE_DIR = "image_cache"
         /// قيد «واي فاي فقط» لكل عنصر في طابور التحميل (يحلّ محلّ العلم العام).
         const val KEY_QUEUE_WIFI_IDS = "download_queue_wifi_ids"
         const val KEY_THEME = "theme_mode"

@@ -29,8 +29,10 @@ import androidx.compose.material.icons.filled.FactCheck
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.FolderShared
+import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.HistoryToggleOff
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.LocalFireDepartment
@@ -148,6 +150,11 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     var deleteDialog by remember { mutableStateOf(false) }
     var sectionSheet by remember { mutableStateOf(false) }
 
+    // «راسِل المطوّر»: ميزة قائمة بذاتها تُفتح فوق الإعدادات بلا مسار تنقّل
+    // خاصّ بها. والنقطة تظهر متى كان للمستخدم ردٌّ لم يقرأه.
+    var supportOpen by remember { mutableStateOf(false) }
+    val supportUnread = rememberSupportUnread()
+
     // نسخة احتياطية محلية عبر منتقي ملفات النظام (بلا أي رفع للسحابة).
     // ⚠️ التنفيذ كلّه في AppViewModel على خيط الإدخال/الإخراج: الكتابة
     // والقراءة هنا كانتا تقعان على خيط الواجهة من callback المُطلِق (والوجهة
@@ -251,6 +258,16 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                     },
                 )
                 SettingsTile(
+                    icon = Icons.Filled.Forum,
+                    title = if (supportUnread) "راسِل المطوّر 🔴" else "راسِل المطوّر",
+                    subtitle = if (supportUnread) {
+                        "وصلك ردّ من المطوّر"
+                    } else {
+                        "اقتراح، أو شيء لا يعمل، أو فكرة — بصوتك أو بالكتابة"
+                    },
+                    onClick = { supportOpen = true },
+                )
+                SettingsTile(
                     icon = Icons.Filled.Info,
                     title = "حول التطبيق",
                     subtitle = "التعريف، الوقف الخيري، نسخة الويب، المصدر المفتوح، الخصوصية",
@@ -268,6 +285,19 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                 )
             }
         }
+    }
+
+    // «راسِل المطوّر» فوق الإعدادات. و«عندي درس» منها يقود إلى مسار «شارك
+    // درساً» القائم لا إلى رفعٍ ثانٍ يوازيه.
+    if (supportOpen) {
+        SupportDialog(
+            onClose = { supportOpen = false },
+            onOpenContribute = {
+                supportOpen = false
+                vm.closeSettings()
+                vm.open(Route.Contribute)
+            },
+        )
     }
 
     // ---- ورقة «التنزيلات» ----
@@ -354,6 +384,25 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                     )
                 }
                 item(key = "dl-manage") {
+                    // 🖼️ مساحة الصور — كانت تكبر بلا أن يراها أحد ولا أن يملك
+                    // محوها. السقف صار خمسين ميغابايت، وهذا السطر يجعل ما
+                    // شغلته منها **ظاهراً** ومحوَها بضغطة: من يشحّ عليه
+                    // تخزين هاتفه يحتاج أن يرى أين ذهب.
+                    var imageCacheRevision by remember { mutableIntStateOf(0) }
+                    val imageCacheBytes by produceState(0L, imageCacheRevision) {
+                        value = withContext(Dispatchers.IO) { vm.store.imageCacheBytes() }
+                    }
+                    if (imageCacheBytes > 0L) {
+                        SettingsTile(
+                            icon = Icons.Filled.Image,
+                            title = "مساحة الصور",
+                            subtitle = "${formatStorage(imageCacheBytes)} — اضغط للمسح",
+                            onClick = {
+                                vm.clearImageCache()
+                                imageCacheRevision++
+                            },
+                        )
+                    }
                     SettingsTile(
                         icon = Icons.Filled.DownloadDone,
                         title = "إدارة التنزيلات",

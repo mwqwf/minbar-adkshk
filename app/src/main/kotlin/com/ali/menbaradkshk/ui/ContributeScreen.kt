@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -81,6 +82,10 @@ private const val FIELD_CATEGORY = "category"
 private const val FIELD_SUBCATEGORY = "subcategory"
 private const val FIELD_NAME = "name"
 
+/// تُلحق بملاحظة المساهمة حين يرسلها صاحبها بلا قسم — كي يقرأ المشرف
+/// السبب بلغته لا أن يظنّ الحقل ضاع أو أنّ المساهم أهمل.
+private const val NO_CATEGORY_NOTE = "المساهم لا يعرف القسم المناسب — اختر له قسماً عند النشر."
+
 /// حافظ قائمة الملفات المختارة عبر التدوير: uri + الاسم لكل ملف بالتسلسل.
 private val pickedFilesSaver = listSaver<SnapshotStateList<PickedFile>, String>(
     save = { list -> list.flatMap { listOf(it.uri.toString(), it.name) } },
@@ -116,6 +121,10 @@ fun ContributeScreen(vm: AppViewModel) {
     var note by rememberSaveable { mutableStateOf("") }
     var categoryId by rememberSaveable { mutableStateOf("") }
     var subcategoryId by rememberSaveable { mutableStateOf("") }
+    // 🏷️ «لا أعرف القسم — اتركوه للمشرف»: من لا يعرف أين يُصنَّف درسه كان
+    // يخمّن قسماً خاطئاً أو يترك المساهمة كلّها. الآن يُرسل بلا قسم،
+    // والمشرف يختار له القسم عند النشر.
+    var noCategory by rememberSaveable { mutableStateOf(false) }
     var rightsConfirmed by rememberSaveable { mutableStateOf(false) }
     var policyAccepted by rememberSaveable { mutableStateOf(false) }
     var policyDialog by rememberSaveable { mutableStateOf(false) }
@@ -146,6 +155,13 @@ fun ContributeScreen(vm: AppViewModel) {
         if (!sessionStarted) {
             sessionStarted = true
             if (!vm.contribution.value.submitting) vm.clearContributionState()
+        }
+        // من دخل عبر «عندي درس ولا أعرف قسمه» في «راسِل المطوّر» يجد الوضع
+        // مختاراً سلفاً، فلا يُعاد إلى الحيرة التي جاء منها.
+        if (ContributePrefill.consumeWithoutCategory()) {
+            noCategory = true
+            categoryId = ""
+            subcategoryId = ""
         }
     }
 
@@ -237,6 +253,8 @@ fun ContributeScreen(vm: AppViewModel) {
     fun firstMissing(): Pair<String, String>? = when {
         files.isEmpty() -> FIELD_FILES to "اختر ملفاً صوتياً أولاً."
         title.trim().length < 3 -> FIELD_TITLE to "اكتب عنوان الدرس (3 أحرف على الأقل)."
+        // اختار «اتركوه للمشرف» ⇒ القسم لم يعد مطلوباً منه أصلاً.
+        noCategory -> null
         category == null -> FIELD_CATEGORY to "اختر القسم الرئيسي."
         subcategory == null && subsForCategory.isEmpty() ->
             FIELD_SUBCATEGORY to
@@ -254,8 +272,17 @@ fun ContributeScreen(vm: AppViewModel) {
             formError = missing.second
             return
         }
-        val cat = category ?: return
-        val sub = subcategory ?: return
+        // بلا قسم: يُرسَل فارغاً، وتُلحق بالملاحظة عبارة تبيّن للمشرف أنّ
+        // المساهم لم يخطئ الاختيار بل طلب أن يُختار له.
+        val cat = if (noCategory) null else category ?: return
+        val sub = if (noCategory) null else subcategory ?: return
+        // العبارة **أوّلاً** ثم ملاحظة المساهم: الحقل محدود الطول، فلو قُصّ
+        // شيء عند الطرف الآخر قُصّ ذيله لا الجملة التي يحتاجها المشرف.
+        val finalNote = if (noCategory) {
+            (NO_CATEGORY_NOTE + "\n" + note.trim()).trim().take(300)
+        } else {
+            note
+        }
         missingField = ""
         formError = ""
         vm.submitContribution(
@@ -264,7 +291,7 @@ fun ContributeScreen(vm: AppViewModel) {
             category = cat,
             subcategory = sub,
             submitterName = name,
-            note = note,
+            note = finalNote,
             // كان الإقراران يضيعان هنا (لا يُمرَّران) فيصلان المشرف false دائماً
             // مهما اختار المستخدم — الآن يُنقلان كما اختارهما فعلاً.
             rightsConfirmed = rightsConfirmed,
@@ -409,18 +436,66 @@ fun ContributeScreen(vm: AppViewModel) {
             isError = missingField == FIELD_NAME,
             enabled = !submitting,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(12.dp))
+        // 💡 تلميح يظهر ما دام القسم غير مختار ويختفي بعده: من لا يعرف
+        // القسم لا يخطر له أنّ له مخرجاً، فيقف عند المنتقي أو ينصرف.
+        if (!noCategory && category == null) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .background(
+                        MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f),
+                        RoundedCornerShape(12.dp),
+                    )
+                    .padding(12.dp),
+            ) {
+                Text(
+                    "لا تعرف أي قسم تختار؟ اتركه لنا — علّم الخيار أسفله وأرسل، وسيضعه المشرف في قسمه.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+        // الخيار نفسه بجوار المنتقي مباشرة، وصفّه كلّه قابل للنقر بارتفاع
+        // لا يقلّ عن 48dp كي لا يُطلب من الإصبع أن يصيب مربّعاً صغيراً.
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .clickable(enabled = !submitting) {
+                    noCategory = !noCategory
+                    if (noCategory) {
+                        categoryId = ""
+                        subcategoryId = ""
+                    }
+                    clearMissing(FIELD_CATEGORY)
+                    clearMissing(FIELD_SUBCATEGORY)
+                },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Checkbox(
+                checked = noCategory,
+                onCheckedChange = null,
+                enabled = !submitting,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text("لا أعرف القسم المناسب — اتركوه للمشرف")
+        }
+        Spacer(Modifier.height(4.dp))
         var categoryMenu by remember { mutableStateOf(false) }
         ExposedDropdownMenuBox(expanded = categoryMenu, onExpandedChange = { categoryMenu = it }) {
             OutlinedTextField(
-                value = category?.name.orEmpty(),
+                // المنتقيان يبقيان ظاهرين حين يختار «اتركوه للمشرف» لكن
+                // معطّلَين ومكتوباً فيهما من يختار — إخفاؤهما يقفز بالنموذج
+                // ويترك المستخدم يشكّ هل ضاع شيء.
+                value = if (noCategory) "يختاره المشرف" else category?.name.orEmpty(),
                 onValueChange = {},
                 readOnly = true,
                 modifier = Modifier.fillMaxWidth().menuAnchor(),
                 label = { Text("القسم الرئيسي") },
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(categoryMenu) },
                 isError = missingField == FIELD_CATEGORY,
-                enabled = !submitting,
+                enabled = !submitting && !noCategory,
             )
             ExposedDropdownMenu(
                 expanded = categoryMenu,
@@ -443,14 +518,14 @@ fun ContributeScreen(vm: AppViewModel) {
         var subcategoryMenu by remember { mutableStateOf(false) }
         ExposedDropdownMenuBox(expanded = subcategoryMenu, onExpandedChange = { subcategoryMenu = it }) {
             OutlinedTextField(
-                value = subcategory?.name.orEmpty(),
+                value = if (noCategory) "يختاره المشرف" else subcategory?.name.orEmpty(),
                 onValueChange = {},
                 readOnly = true,
                 modifier = Modifier.fillMaxWidth().menuAnchor(),
                 label = { Text("القسم الفرعي") },
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(subcategoryMenu) },
                 isError = missingField == FIELD_SUBCATEGORY,
-                enabled = category != null && !submitting,
+                enabled = category != null && !submitting && !noCategory,
             )
             ExposedDropdownMenu(
                 expanded = subcategoryMenu,
@@ -660,6 +735,8 @@ fun ContributeScreen(vm: AppViewModel) {
             note = ""
             categoryId = ""
             subcategoryId = ""
+            // ولا يبقى وضع «بلا قسم» مرفوعاً لمساهمة تالية قد يعرف قسمها.
+            noCategory = false
             rightsConfirmed = false
             policyAccepted = false
             transcriptOpen = false

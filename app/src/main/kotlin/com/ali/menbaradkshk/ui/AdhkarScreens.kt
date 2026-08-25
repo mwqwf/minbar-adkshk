@@ -116,6 +116,84 @@ private fun iconFor(id: String): ImageVector = when (id) {
     else -> Icons.Filled.Widgets
 }
 
+// ----------------------------------------------------------------------------
+// 🕒 ذكر الوقت الحاضر
+// ----------------------------------------------------------------------------
+
+/// القسم الذي يوافق الساعة الحاضرة، ومعه سببٌ مكتوب يُقرأ على البطاقة.
+private class TimelyAdhkar(val id: String, val title: String, val reason: String)
+
+private fun currentHourOfDay(): Int =
+    java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+
+/**
+ * 🕒 أيّ الأذكار يوافق هذه الساعة؟
+ *
+ * **حدود الأوقات ولماذا هي هكذا** (بتوقيت جهاز المستخدم، وهي حدودٌ واسعة
+ * عمداً لأنّ التطبيق لا يحسب مواقيت الصلاة ولا يعرف موقع المستخدم):
+ *
+ * - **٤ ← ١٠:٥٩ صباحاً → أذكار الصباح**: وقتها من بعد الفجر إلى الضحى،
+ *   والفجر لا يتقدّم الرابعة ولا يمتدّ الضحى بعد الحادية عشرة في هذه البلاد.
+ * - **١٥ ← ١٩:٥٩ → أذكار المساء**: وقتها من بعد العصر إلى ما بعد المغرب،
+ *   والعصر لا يدخل قبل الثالثة ولا يتأخّر المغرب عن الثامنة.
+ * - **٢٠ ← ٣:٥٩ → أذكار النوم**: الليل كلّه، فمن نام مبكراً أو تأخّر يجدها.
+ * - **١١ ← ١٤:٥٩ (الظهيرة)** لا بطاقة: ليس في هذا الوقت ذكرٌ مؤقّت، وعرضُ
+ *   «أذكار الصباح» فيه خطأٌ صريح. غيابُ البطاقة أصدق من بطاقةٍ في غير وقتها،
+ *   والصفحة تبقى كاملة تحتها.
+ */
+private fun timelyAdhkarFor(hour: Int): TimelyAdhkar? = when (hour) {
+    in 4..10 -> TimelyAdhkar(Adhkar.MORNING_ID, "أذكار الصباح", "وقتها الآن — بعد الفجر إلى الضحى")
+    in 15..19 -> TimelyAdhkar(Adhkar.EVENING_ID, "أذكار المساء", "وقتها الآن — بعد العصر إلى المغرب")
+    in 20..23, in 0..3 -> TimelyAdhkar("sleep", "أذكار النوم", "قبل أن تنام")
+    else -> null
+}
+
+/// بطاقة ذكر الوقت — أبرز ما في الصفحة: لونُ هوية وأيقونة كبيرة وسطرٌ يقول
+/// **لماذا** ظهرت الآن، وهدف لمس يغطّي البطاقة كلّها.
+@Composable
+private fun TimelyAdhkarCard(
+    title: String,
+    reason: String,
+    icon: ImageVector,
+    done: Int,
+    total: Int,
+    onOpen: () -> Unit,
+) {
+    val accent = brandTintOnSurface(Teal)
+    Card(
+        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+        ),
+    ) {
+        Row(
+            Modifier.clickable(onClick = onOpen).padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier.size(52.dp).background(accent.copy(alpha = .16f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) { Icon(icon, null, tint = accent, modifier = Modifier.size(28.dp)) }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    reason,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            if (total > 0 && done >= total) {
+                Icon(Icons.Filled.Check, "مكتمل", tint = accent)
+            } else if (total > 0) {
+                Text("$done/$total", color = MaterialTheme.colorScheme.onSecondaryContainer)
+            }
+        }
+    }
+}
+
 /**
  * صفحة «الأذكار» — قائمة الأقسام.
  *
@@ -137,7 +215,36 @@ fun AdhkarScreen(vm: AppViewModel) {
         }
     }
 
+    // 🕒 «الأذكار تعرف وقتها»: الصفحة كانت تعرض الأقسام كلّها على حال واحدة
+    // في كل ساعة، والتطبيق يعرف الساعة. فيُقدَّم ذكرُ الوقت بطاقةً أولى —
+    // **تقديمٌ لا حذف**: البقيّة تحته كما هي بلا تغيير.
+    // الساعة تُقرأ كل خمس دقائق كي تتبدّل البطاقة والصفحة مفتوحة.
+    var hour by remember { mutableIntStateOf(currentHourOfDay()) }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(5 * 60_000L)
+            hour = currentHourOfDay()
+        }
+    }
+    val timely = remember(hour) { timelyAdhkarFor(hour) }
+
     LazyColumn(contentPadding = PaddingValues(vertical = 10.dp)) {
+        if (timely != null) {
+            item(key = "timely") {
+                val items = remember(timely.id) { Adhkar.itemsFor(timely.id) }
+                val totals = remember(timely.id) { items.map { it.repeat } }
+                val done = remember(revision, timely.id) { vm.store.adhkarCompleted(timely.id, totals) }
+                TimelyAdhkarCard(
+                    title = timely.title,
+                    reason = timely.reason,
+                    icon = iconFor(timely.id),
+                    done = done,
+                    total = items.size,
+                    onOpen = { vm.open(Route.AdhkarSection(timely.id)) },
+                )
+            }
+        }
+
         if (streak > 1) {
             item(key = "streak") {
                 Card(

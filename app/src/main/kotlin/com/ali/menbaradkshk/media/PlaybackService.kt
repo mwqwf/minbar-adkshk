@@ -56,6 +56,8 @@ class PlaybackService : MediaSessionService() {
     )
     private var trackingJob: Job? = null
     private var sleepJob: Job? = null
+    /// مؤقّت الخمس ثوانٍ المعلَن بين درسٍ والذي يليه — انظر [beginAutoplayCountdown].
+    private var autoplayJob: Job? = null
     private var trackedLessonId = ""
     private var lastTrackedPositionMs = 0L
     /// استماع فعليّ متراكم للدرس الحالي — أساس احتساب «استُمع إليه».
@@ -116,11 +118,26 @@ class PlaybackService : MediaSessionService() {
                         // لولا الاستثناء لتوقّفت التلاوة عند كل آية لمن عطّل
                         // «التشغيل التلقائي للتالي»، ولقفزت الآية إلى موضع
                         // محفوظ لدرسٍ يحمل معرّفاً مشابهاً.
+                        // انتقالٌ بيد المستخدم (زرّ التالي/اختيار درس) يُلغي أيّ
+                        // عدٍّ تنازليّ جارٍ: هو اختار بنفسه، فلا معنى لعدٍّ بعده.
+                        if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
+                            autoplayJob?.cancel()
+                            AutoplayState.clearCountdown()
+                        }
                         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO &&
                             isLesson(trackedLessonId)
                         ) {
+                            // 🌙 طرفُ درسٍ وقع فعلاً ⇒ يُنقَص عدّاد «إلى نهاية
+                            // الدرس»؛ وإن بلغ الصفر فالنوم أولى من التالي.
+                            val sleepNow = consumeSleepItem()
                             // «تشغيل تلقائي للتالي» معطّل → نقف عند نهاية الدرس كما في الأصل.
-                            if (!AutoplayState.enabled) pause()
+                            if (!AutoplayState.enabled || sleepNow) {
+                                pause()
+                            } else {
+                                // 📚 وإلّا: توقّفٌ قصير معلَن ثمّ انتقال — كي
+                                // يرى المستمع إلى أين يذهب وله أن يمنعه.
+                                beginAutoplayCountdown()
+                            }
                             // استئناف الدرس التالي من موضعه المحفوظ (نمط playLesson الأصلي).
                             val saved = store.position(trackedLessonId)
                             if (saved > 3_000L) seekTo(saved)
@@ -174,6 +191,13 @@ class PlaybackService : MediaSessionService() {
                             }
                         }
                         if (playbackState == Player.STATE_ENDED) {
+                            // 🌙 طرفُ القائمة كلّها: هنا ينتهي «إلى نهاية
+                            // التلاوة» في المصحف، وهنا أيضاً يُطوى أيّ عدّاد
+                            // نومٍ باقٍ فلا يبقى معلّقاً إلى جلسةٍ قادمة.
+                            if (store.sleepAfterItems() != 0) {
+                                store.clearSleepAfterItems()
+                                pause()
+                            }
                             currentMediaItem?.mediaId
                                 ?.takeIf { it.isNotBlank() && isLesson(it) }
                                 ?.let { id -> storeScope.launch { store.markCompleted(id) } }
@@ -271,6 +295,47 @@ class PlaybackService : MediaSessionService() {
         if (player.skipSilenceEnabled != wanted) player.skipSilenceEnabled = wanted
     }
 
+    /**
+     * 📚 توقّفٌ معلَن خمس ثوانٍ قبل الدرس التالي.
+     *
+     * **لماذا الوقفة أصلاً؟** الانتقال كان يقع صامتاً: يسمع المستمع صوتاً
+     * جديداً ولا يدري ما هو ولا كيف يمنعه. والوقفة القصيرة تكفي لأن يقرأ
+     * «التالي: …» ويضغط «إيقاف» إن أراد — ولا تكفي لأن تُشعره بالانقطاع.
+     *
+     * ولا مسار تشغيل ثانٍ هنا: القائمة والمشغّل كما هما، وكلّ ما نفعله
+     * `pause()` ثم `play()` على العنصر الذي انتقل إليه المشغّل بنفسه.
+     */
+    private fun beginAutoplayCountdown() {
+        val title = player.currentMediaItem?.mediaMetadata?.title?.toString().orEmpty()
+        player.pause()
+        val token = System.currentTimeMillis()
+        AutoplayState.beginCountdown(title, token + AUTOPLAY_DELAY_MS, token)
+        autoplayJob?.cancel()
+        autoplayJob = scope.launch {
+            delay(AUTOPLAY_DELAY_MS)
+            // `consume` يفشل إن ألغى المستخدم العدّ أو سبقه بـ«شغّل الآن» —
+            // فلا يُستأنف تشغيلٌ أوقفه صاحبه.
+            if (AutoplayState.consume(token)) player.play()
+        }
+    }
+
+    /**
+     * 🌙 يُنقص عدّاد «إلى نهاية الدرس» عند طرفٍ فعليّ، ويُرجع هل حان الإيقاف.
+     *
+     * «إلى نهاية التلاوة» ([LocalStore.SLEEP_UNTIL_QUEUE_END]) لا يُنقَص هنا:
+     * آية المصحف عنصرٌ مستقلّ، وطرفُها ليس طرف التلاوة — موعده `STATE_ENDED`.
+     */
+    private fun consumeSleepItem(): Boolean {
+        val remaining = store.sleepAfterItems()
+        if (remaining <= 0) return false
+        if (remaining == 1) {
+            store.clearSleepAfterItems()
+            return true
+        }
+        store.setSleepAfterItems(remaining - 1)
+        return false
+    }
+
     /// يحتسب الاستماع بعد [COUNT_AFTER_MS] من السماع الفعليّ لا بمجرّد الفتح.
     private fun countPlayIfListenedEnough() {
         val id = trackedLessonId
@@ -359,6 +424,9 @@ class PlaybackService : MediaSessionService() {
         persistPosition()
         trackingJob?.cancel()
         sleepJob?.cancel()
+        // عدٌّ معلّق بلا خدمة = شريطٌ في الواجهة لن ينطلق أبداً.
+        autoplayJob?.cancel()
+        AutoplayState.clearCountdown()
         mediaSession.release()
         player.release()
         scope.cancel()
@@ -389,5 +457,7 @@ class PlaybackService : MediaSessionService() {
         private const val SLEEP_POLL_MS = 15_000L
         /// 30 ثانية استماع فعليّ قبل احتساب الدرس «مسموعاً».
         private const val COUNT_AFTER_MS = 30_000L
+        /// خمس ثوانٍ معلَنة قبل الدرس التالي — انظر [beginAutoplayCountdown].
+        private const val AUTOPLAY_DELAY_MS = 5_000L
     }
 }

@@ -2,6 +2,8 @@
 
 package com.ali.menbaradkshk.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -34,6 +36,7 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.MicExternalOn
@@ -88,6 +91,7 @@ import com.ali.menbaradkshk.data.transcriptSearchAnchor
 import com.ali.menbaradkshk.data.transcriptSearchWords
 import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.normalizeArabic
+import com.ali.menbaradkshk.util.progress
 import com.ali.menbaradkshk.util.arabicCountLabel
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.flow.catch
@@ -148,6 +152,15 @@ fun HomeScreen(
     val visibleRails = deduped.first
     val visibleFeed = deduped.second
 
+    // ▶️ «تابع من حيث وقفت»: أكثر ما يفعله المستمع هو إكمال درس الأمس، وكان
+    // ذلك يكلّفه تذكّر اسم الدرس ثمّ البحث عنه. يُحسب هنا **مرّة واحدة** داخل
+    // `remember` لأنّ `position`/`duration` يفكّان JSON كاملاً عند كل نداء.
+    // `playback.mediaId` في المفتاح كي تتحدّث البطاقة عند تغيّر الدرس الجاري:
+    // حفظُ الموضع كتابةٌ «صامتة» لا ترفع `revision` (انظر LocalStore.setPosition).
+    val resume = remember(revision, state.lessons, savedIds, playback.mediaId) {
+        resumeItemOf(vm, state, savedIds)
+    }
+
     PullToRefreshBox(
         isRefreshing = state.syncing,
         onRefresh = { vm.content.requestDeepRefresh() },
@@ -178,6 +191,13 @@ fun HomeScreen(
             // يحجب شيئاً**: سطرٌ واحد فوق المحتوى. الإلحاح في البقاء لا في
             // الحجم، وهي الموازنة التي تجعله تذكيراً لا إزعاجاً.
             item { UpdateBanner(vm) }
+
+            // ▶️ أوّل ما يراه المستمع: الدرس الذي تركه في منتصفه. نقرة واحدة
+            // تعيده إلى الثانية نفسها، ولا تظهر البطاقة إن لم يكن هناك ما
+            // يُتابَع (انظر `resumeItemOf`).
+            if (resume != null) {
+                item(key = "resume") { ResumeCard(vm, resume) }
+            }
 
             // 📬 «ما يخصّني» — بطاقات مكتوبة بدل أيقونات الشريط العلوي.
             item { HomeInboxCards(vm) }
@@ -271,6 +291,128 @@ fun HomeScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// ▶️ تابع من حيث وقفت
+// ----------------------------------------------------------------------------
+
+/// الدرس الذي تركه المستمع في منتصفه، بموضعه ومدّته.
+class ResumeItem(val lesson: Lesson, val positionMs: Long, val durationMs: Long)
+
+/**
+ * ▶️ أحدث درس **لم يُكمَل** وله موضع استماع محفوظ.
+ *
+ * ⚠️ دالّة عاديّة لا قابلة للتركيب عن قصد: `positions()`/`durations()`
+ * و`completedIds()` تفكّ JSON كاملاً في كل نداء، فتُقرأ كلّها **مرّة واحدة**
+ * من داخل `remember` في الرئيسية، لا في جسم التركيب.
+ *
+ * ولا تُرجع شيئاً حين لا استماع سابق، ولا لدرسٍ اكتمل — سواء بعلامة «مكتمل»
+ * المحفوظة أو بموضعٍ بلغ آخر نصف دقيقة من المدّة.
+ */
+private fun resumeItemOf(
+    vm: AppViewModel,
+    state: ContentState,
+    savedIds: Set<String>?,
+): ResumeItem? {
+    val completed = vm.store.completedIds().toSet()
+    val positions = vm.store.positions()
+    val durations = vm.store.durations()
+    for (id in vm.store.recentPlayedIds()) {
+        if (id in completed) continue
+        // 📴 وضع «أظهر المحفوظ فقط»: بطاقةٌ كبيرة نقرتها تنتهي بخطأ تشغيل
+        // أسوأ من غيابها (نفس منطق «وِرد اليوم» أعلاه).
+        if (savedIds != null && id !in savedIds) continue
+        val lesson = state.lessonById[id] ?: continue
+        if (lesson.audioUrl.isBlank()) continue
+        val position = positions[id] ?: 0L
+        val duration = durations[id] ?: 0L
+        // أقلّ من نصف دقيقة: لم يبدأ فعلاً، وعرضُه «متابعة» مبالغة.
+        if (position < 30_000L) continue
+        // آخر نصف دقيقة: انتهى عملياً ولو لم يُعلَّم «مكتمل».
+        if (duration > 0L && position >= duration - 30_000L) continue
+        return ResumeItem(lesson, position, duration)
+    }
+    return null
+}
+
+/**
+ * ▶️ بطاقة «تابع من حيث وقفت» — أوّل ما يراه المستمع في الرئيسية.
+ *
+ * المواضع محفوظة أصلاً، لكنّ العودة إليها كانت تحتاج تذكّر اسم الدرس ثمّ
+ * البحث عنه. هنا: الاسم وشريط التقدّم ودقيقة التوقّف وزرّ تشغيل كبير — ونقرةٌ
+ * واحدة تعيده إلى الثانية نفسها عبر `Route.Lesson(id, startAtMs)`.
+ */
+@Composable
+private fun ResumeCard(vm: AppViewModel, item: ResumeItem) {
+    val lesson = item.lesson
+    val title = remember(lesson.id, lesson.title) { sectionAwareTitle(vm, lesson) }
+    val accent = brandTintOnSurface(GreenBrand)
+    val minutes = (item.positionMs / 60_000L).toInt()
+    // «الدقيقة 0» لا تعني شيئاً لمن يقرأ — تُقال «من أوّله» بدلها.
+    val where = if (minutes >= 1) "تابع من الدقيقة $minutes" else "تابع من أوّله"
+    val open = { vm.open(Route.Lesson(lesson.id, item.positionMs)) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(onClick = open)
+            .padding(14.dp),
+    ) {
+        Text(
+            "تابع من حيث وقفت",
+            style = MaterialTheme.typography.labelLarge,
+            color = accent,
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (lesson.speaker.isNotBlank()) {
+                    Text(
+                        lesson.speaker,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    where,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            // هدف لمس ٥٦dp — أكبر من الحدّ الأدنى، فهو الفعل الأهمّ في البطاقة.
+            IconButton(onClick = open, modifier = Modifier.size(56.dp)) {
+                Icon(
+                    Icons.Filled.PlayCircleFilled,
+                    contentDescription = "تشغيل من حيث وقفت",
+                    tint = accent,
+                    modifier = Modifier.size(48.dp),
+                )
+            }
+        }
+        if (item.durationMs > 0L) {
+            Spacer(Modifier.height(10.dp))
+            ClassicLinearProgress(
+                progress = progress(item.positionMs, item.durationMs),
+                modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+                color = accent,
+            )
         }
     }
 }
@@ -1171,6 +1313,41 @@ fun SearchScreen(vm: AppViewModel, initial: String, playback: PlaybackUiState) {
         if (q.length >= 2) vm.store.addSearchQuery(q)
     }
 
+    // 🎤 البحث الصوتي: من لا يكتب العربية بطلاقة كانت المكتبة كلّها مغلقة
+    // أمامه إلّا بالتصفّح. نستدعي محرّك التعرّف على الكلام **في النظام نفسه**
+    // — بلا مكتبة ولا إذن دائم ولا كلفة بيانات إضافيّة على المستخدم.
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val speechIntent = remember {
+        android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+            )
+            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, "ar")
+            putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "قل ما تبحث عنه")
+        }
+    }
+    // لا يوجد محرّك على الجهاز ⇒ تُخفى الأيقونة: زرٌّ يفشل عند أوّل ضغطة
+    // أسوأ من غيابه.
+    val canSpeak = remember {
+        speechIntent.resolveActivity(context.packageManager) != null
+    }
+    val voiceSearch = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val spoken = result.data
+            ?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+            ?.trim()
+            .orEmpty()
+        if (spoken.isNotEmpty()) {
+            // النتيجة تُنفَّذ فوراً: البحث هنا يجري مع تغيّر النصّ، ويُسجَّل
+            // الاستعلام كما لو نُفِّذ بزرّ البحث — فهو تنفيذٌ صريح لا كتابة.
+            query = spoken
+            if (spoken.length >= 2) vm.store.addSearchQuery(spoken)
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
         OutlinedTextField(
             value = query,
@@ -1180,9 +1357,28 @@ fun SearchScreen(vm: AppViewModel, initial: String, playback: PlaybackUiState) {
             singleLine = true,
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
             trailingIcon = {
-                if (query.isNotEmpty()) {
-                    IconButton(onClick = { query = "" }) {
-                        Icon(Icons.Filled.Clear, contentDescription = "مسح")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { query = "" }, modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Filled.Clear, contentDescription = "مسح")
+                        }
+                    }
+                    if (canSpeak) {
+                        IconButton(
+                            onClick = {
+                                // محرّك النظام قد يغيب فجأةً (تعطيله من
+                                // الإعدادات) — فلا يسقط التطبيق بها.
+                                runCatching { voiceSearch.launch(speechIntent) }
+                                    .onFailure { vm.showMessage("البحث بالصوت غير متاح على هذا الجهاز.") }
+                            },
+                            modifier = Modifier.size(48.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.Mic,
+                                contentDescription = "ابحث بصوتك",
+                                tint = brandTintOnSurface(Teal),
+                            )
+                        }
                     }
                 }
             },

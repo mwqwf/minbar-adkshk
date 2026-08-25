@@ -39,12 +39,17 @@ class MinbarApplication : Application(), Configuration.Provider, SingletonImageL
         ImageLoader.Builder(context)
             .diskCache {
                 DiskCache.Builder()
-                    .directory(File(context.cacheDir, "image_cache"))
+                    // الاسم من [LocalStore] كي لا يفترق ما يُكتب عمّا يُقاس ويُمسح.
+                    .directory(File(context.cacheDir, LocalStore.IMAGE_CACHE_DIR))
                     .maxSizeBytes(IMAGE_CACHE_BYTES)
                     .build()
             }
             .memoryCache {
-                MemoryCache.Builder().maxSizePercent(context, 0.20).build()
+                // 🪶 ١٥٪ من ذاكرة العمليّة لا ٢٠٪: أجهزة جمهورنا متواضعة،
+                // وكاش صورٍ سمينٌ يعني ضغطاً على جامع القمامة وتقطّعاً في
+                // التمرير — والصور هنا أغلفةٌ وصفحات مصحف تُقرأ واحدةً واحدة،
+                // فلا يحتاج بقاؤها في الذاكرة إلى خُمس الجهاز.
+                MemoryCache.Builder().maxSizePercent(context, 0.15).build()
             }
             .build()
 
@@ -116,7 +121,12 @@ class MinbarApplication : Application(), Configuration.Provider, SingletonImageL
 
     companion object {
         private const val MEDIA_CACHE_BYTES = 256L * 1_024 * 1_024
-        private const val IMAGE_CACHE_BYTES = 64L * 1_024 * 1_024
+        /// 🖼️ سقفٌ صريح ٥٠ م.ب لكاش الصور — أقلّ من السابق (٦٤) عمداً:
+        /// المساحة على أجهزة جمهورنا شحيحة، والصورة المطرودة تُعاد بضغطة
+        /// شبكةٍ واحدة صغيرة، أمّا مئة ميغا محجوزة فتُشعِر المستخدم بأنّ
+        /// التطبيق «يأكل جهازه». والمجلّد نفسه يقرؤه
+        /// `LocalStore.imageCacheBytes()` ليعرضه في الإعدادات.
+        private const val IMAGE_CACHE_BYTES = 50L * 1_024 * 1_024
 
         @Volatile
         private var cacheInstance: SimpleCache? = null

@@ -1289,8 +1289,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun submitContribution(
         files: List<PickedFile>,
         title: String,
-        category: com.ali.menbaradkshk.data.Category,
-        subcategory: com.ali.menbaradkshk.data.Subcategory,
+        // القسمان اختياريان: من لا يعرف قسم درسه يرسله بلا قسم، ويختاره
+        // المشرف عند النشر — بدل أن يخمّن المساهم أو يترك المساهمة كلّها.
+        category: com.ali.menbaradkshk.data.Category? = null,
+        subcategory: com.ali.menbaradkshk.data.Subcategory? = null,
         submitterName: String,
         note: String,
         // إقرارا الحقوق والضوابط اختياريان: يُنقَلان كما اختارهما المستخدم
@@ -1481,6 +1483,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /// التنفيذ من نطاق الدرج كان يُقطع بتدوير الشاشة في منتصف الحذف (بعد حذف
     /// السحابة وقبل المحو المحلي مثلاً) فيترك حالة غير متسقة بصمت — نفس
     /// العلّة التي أُصلحت في [submitTranscript] بالضبط.
+    /// 🖼️ مسح كاش الصور — على خيط الإدخال/الإخراج لا على الواجهة: المسح
+    /// يحذف مجلّداً قد يبلغ خمسين ميغابايت، ونداؤه من نقرة كان يجمّد الشاشة.
+    fun clearImageCache() {
+        viewModelScope.launch {
+            val freed = withContext(Dispatchers.IO) { store.clearImageCache() }
+            showMessage(if (freed) "مُسحت الصور المؤقّتة." else "لا توجد صور مؤقّتة لمسحها.")
+        }
+    }
+
     fun deleteMyDataAsync() {
         viewModelScope.launch {
             runCatching { deleteMyData() }
@@ -1569,5 +1580,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             store.toggleFavorite(id)
             store.toggleFavorite(id)
         }
+    }
+}
+
+/**
+ * 🔗 وصلة صغيرة بين «راسِل المطوّر» و«شارك درساً».
+ *
+ * لماذا كائن عامّ لا معامل في المسار؟ فتح «شارك درساً» يجري من شاشة
+ * الإعدادات (خارج نطاق هذا التعديل)، فتمرير معامل عبرها يكسر مستدعياً
+ * قائماً بلا فائدة. علمٌ واحد يُرفع ثم **يُستهلَك مرّة واحدة** أبسط وأخفّ،
+ * ولا يبقى أثره لفتحة تالية.
+ */
+internal object ContributePrefill {
+    /// `true` = افتح النموذج وقد اختير سلفاً وضع «لا أعرف القسم».
+    private var withoutCategory: Boolean = false
+
+    fun requestWithoutCategory() {
+        withoutCategory = true
+    }
+
+    fun consumeWithoutCategory(): Boolean {
+        val value = withoutCategory
+        withoutCategory = false
+        return value
     }
 }

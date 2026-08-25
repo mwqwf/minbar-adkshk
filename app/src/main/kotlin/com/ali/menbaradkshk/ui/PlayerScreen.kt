@@ -303,6 +303,12 @@ fun PlayerScreen(
                 }
                 Spacer(Modifier.height(8.dp))
             }
+            // 📚 شريط «التالي» — أعلى الشاشة كي يُرى بلا بحث. لا يظهر إلّا
+            // أثناء العدّ التنازليّ، ويزول من نفسه بعده.
+            AutoplayNextBar(
+                onStop = vm.playback::stopAutoplayCountdown,
+                onPlayNow = vm.playback::startNextNow,
+            )
             if (playback.loading && active) {
                 LinearProgressIndicator(Modifier.fillMaxWidth().padding(bottom = 12.dp), color = Teal)
             }
@@ -353,6 +359,32 @@ fun PlayerScreen(
                     textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            // 📚 موضع الدرس في سلسلته — «شرح الأخضري» ستّون درساً مرقّمة، ومن
+            // فتح واحداً منها لا يعرف أين هو منها. الترتيب هو ترتيب القسم
+            // الفرعيّ نفسه (الأقدم أوّلاً) وهو ترتيب رفع الدروس أصلاً.
+            val seriesPlace = remember(current.id, content.lessons) {
+                if (current.subcategoryId.isBlank()) {
+                    null
+                } else {
+                    val items = content.lessons
+                        .filter { it.subcategoryId == current.subcategoryId && it.audioUrl.isNotBlank() }
+                        .sortedBy(Lesson::createdAtMs)
+                    val index = items.indexOfFirst { it.id == current.id }
+                    // درسٌ وحيد في قسمه ليس «سلسلة»، فالسطر يُخفى.
+                    if (index < 0 || items.size < 2) null else (index + 1) to items.size
+                }
+            }
+            seriesPlace?.let { (place, total) ->
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "أنت في الدرس $place من $total",
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Teal,
+                    fontWeight = FontWeight.SemiBold,
                 )
             }
             Spacer(Modifier.height(12.dp))
@@ -584,6 +616,22 @@ fun PlayerScreen(
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
+            // 🌙 مؤقّت «نهاية الدرس» لا موعد له يُعدّ، فيُعلَن بشرطه نصّاً —
+            // وإلّا ظنّ المستخدم أنّ اختياره ضاع.
+            if (playback.sleepAfterItems > 0) {
+                Text(
+                    // العدد لا يتجاوز اثنين، فالصيغة صحيحة بلا جمعٍ ملحون.
+                    if (playback.sleepAfterItems == 1) {
+                        "سيتوقف التشغيل عند نهاية هذا الدرس"
+                    } else {
+                        "سيتوقف التشغيل عند نهاية الدرس الذي يليه"
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    textAlign = TextAlign.Center,
+                    color = OrangeBrand,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
             HorizontalDivider(Modifier.padding(vertical = 16.dp))
 
             // التنقّل إلى القسم الفرعي/الرئيسي.
@@ -648,6 +696,22 @@ fun PlayerScreen(
                 modifier = Modifier.fillMaxWidth().padding(12.dp),
                 textAlign = TextAlign.Center,
             )
+            // 🌙 **قبل الدقائق عمداً**: من يستمع قبل نومه يريد أن يُتمّ الدرس
+            // لا أن يخمّن رقماً يقطعه في وسطه أو يتركه يعمل بعده. والخياران
+            // شرطٌ لا مدّة — «قِف عند طرف الدرس» — فلا يُخطئان مهما تبدّل
+            // الدرس بالتشغيل التلقائيّ أو تبدّلت السرعة.
+            listOf(1 to "إلى نهاية الدرس", 2 to "إلى نهاية درسين").forEach { (count, label) ->
+                ListItem(
+                    modifier = Modifier.clickable {
+                        vm.playback.setSleepAfterItems(count)
+                        sleepSheet = false
+                        vm.showMessage("سيتوقف التشغيل $label")
+                    },
+                    leadingContent = { Icon(Icons.Filled.Bedtime, null, tint = Teal) },
+                    headlineContent = { Text(label) },
+                )
+            }
+            HorizontalDivider()
             listOf(5, 10, 15, 30, 45, 60).forEach { minutes ->
                 ListItem(
                     modifier = Modifier.clickable {
@@ -664,7 +728,9 @@ fun PlayerScreen(
                     },
                 )
             }
-            if (playback.sleepEndsAtMs != null) {
+            // الإلغاء يظهر لأيّ من المؤقّتين — مؤقّت «نهاية الدرس» بلا موعد
+            // فلا يكفي `sleepEndsAtMs` وحده دليلاً على وجود مؤقّت.
+            if (playback.sleepEndsAtMs != null || playback.sleepAfterItems != 0) {
                 ListItem(
                     modifier = Modifier.clickable {
                         vm.playback.cancelSleepTimer()
@@ -894,3 +960,82 @@ fun PlayerScreen(
         )
     }
 }
+
+/**
+ * 📚 شريط «التالي: … يبدأ بعد كذا» — إعلانُ الانتقال التلقائيّ بين دروس
+ * السلسلة الواحدة.
+ *
+ * **لماذا شريطٌ لا مجرّد انتقال صامت؟** لأنّ السلاسل هنا كتبٌ لا ملفّات:
+ * من أنهى الدرس السابع عشر يريد الثامن عشر، لكنّه يريد أن يعرف أنّه ذاهب
+ * إليه وأن يملك منعه. وقبل هذا الشريط كان الصوت يتبدّل بلا خبر، ومفتاحُ
+ * التعطيل مدفونٌ أسفل الشاشة لا يصل إليه من لا يتقن التقنية.
+ *
+ * الزرّان كبيران (≥ ٤٨) لأنّهما يُضغطان في خمس ثوانٍ وربّما في الظلام.
+ * ولا حالة تشغيل هنا: الشريط يقرأ [AutoplayState] ويأمر [PlaybackController]،
+ * فلا مسار تشغيلٍ ثانٍ يُنشَأ.
+ */
+@Composable
+private fun AutoplayNextBar(onStop: () -> Unit, onPlayNow: () -> Unit) {
+    val pending by com.ali.menbaradkshk.media.AutoplayState.pending.collectAsState()
+    val next = pending ?: return
+    // العدّ يُشتقّ من الموعد المحفوظ لا من عدّادٍ محلّيّ: إعادةُ تركيب الشاشة
+    // أو الرجوع إليها لا تُعيد الخمس ثوانٍ من أوّلها.
+    var seconds by remember(next.token) {
+        mutableIntStateOf(remainingSeconds(next.endsAtMs))
+    }
+    LaunchedEffect(next.token) {
+        while (seconds > 0) {
+            delay(250L)
+            seconds = remainingSeconds(next.endsAtMs)
+        }
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Teal.copy(alpha = 0.14f))
+            .padding(12.dp),
+    ) {
+        Text(
+            "التالي: ${next.title}",
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            // صيغة العدد العربيّة: «ثانيتان»/«٥ ثوانٍ» لا «5 ثانية».
+            "يبدأ بعد " + com.ali.menbaradkshk.util.arabicCountLabel(
+                seconds,
+                "ثانية واحدة",
+                "ثانيتين",
+                "ثوانٍ",
+                "ثانية",
+            ),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            // «إيقاف» أوّلاً وأعرض: هو الفعل الذي يُطلب على عجل.
+            FilledTonalButton(
+                onClick = onStop,
+                modifier = Modifier.weight(1.4f).height(52.dp),
+            ) {
+                Icon(Icons.Filled.Close, contentDescription = null)
+                Text(" إيقاف")
+            }
+            FilledTonalButton(
+                onClick = onPlayNow,
+                modifier = Modifier.weight(1f).height(52.dp),
+            ) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                Text(" شغّل الآن")
+            }
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+}
+
+/// الثواني الباقية إلى موعد الانتقال — تقريبٌ لأعلى كي لا يظهر «0» قبل الحدث.
+private fun remainingSeconds(endsAtMs: Long): Int =
+    (((endsAtMs - System.currentTimeMillis()) + 999L) / 1_000L).coerceIn(0L, 99L).toInt()

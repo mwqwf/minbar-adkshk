@@ -39,8 +39,11 @@ data class SubmissionDraft(
     val audioUri: Uri,
     val fileName: String,
     val title: String,
-    val category: Category,
-    val subcategory: Subcategory,
+    // ⚠️ القسمان **اختياريان**: كثير ممن يملك درساً لا يعرف أين يُصنَّف،
+    // وإلزامه بالتخمين يجعله يختار قسماً خاطئاً أو يترك المساهمة كلّها.
+    // الخادم يقبل مساهمةً بلا قسم، والمشرف يختار لها القسم عند النشر.
+    val category: Category? = null,
+    val subcategory: Subcategory? = null,
     val submitterName: String,
     val note: String,
     val rightsConfirmed: Boolean,
@@ -142,10 +145,12 @@ class SubmissionRepository private constructor(context: Context) {
                 "uid" to user.uid,
                 "submitterName" to draft.submitterName.trim(),
                 "title" to draft.title.trim(),
-                "categoryId" to draft.category.id,
-                "categoryName" to draft.category.name,
-                "subcategoryId" to draft.subcategory.id,
-                "subcategoryName" to draft.subcategory.name,
+                // بلا قسم = حقول فارغة تصل الخادم (وهو يقبلها)، فتظهر
+                // المساهمة عند المشرف موسومة «بلا قسم» ليختار لها.
+                "categoryId" to draft.category?.id.orEmpty(),
+                "categoryName" to draft.category?.name.orEmpty(),
+                "subcategoryId" to draft.subcategory?.id.orEmpty(),
+                "subcategoryName" to draft.subcategory?.name.orEmpty(),
                 "note" to draft.note.trim(),
                 "audioUrl" to audioUrl,
                 "storagePath" to storagePath,

@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ali.menbaradkshk.data.Lesson
 import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.formatDuration
@@ -740,6 +741,12 @@ fun ConfirmBulkDownloadDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // 📶 التقدير يُحسب من **مدد الدروس المحفوظة** لا من رقم ثابت للدرس:
+    // من يدفع ثمن الميغابايت يحتاج الرقم **قبل** أن يضغط، والقسم الذي دروسه
+    // خمس دقائق ليس كالقسم الذي دروسه ساعة. يُحسب مرّة واحدة داخل `remember`
+    // لأنّ `durations()` تفكّ JSON كاملاً.
+    val vm: AppViewModel = viewModel()
+    val estimate = remember(label, count) { bulkDownloadEstimate(vm, count) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("تحميل «$label»؟") },
@@ -758,8 +765,14 @@ fun ConfirmBulkDownloadDialog(
                         },
                     )
                     append(" للاستماع دون إنترنت")
-                    // تقدير محافظ (≈8 ميغابايت للدرس) — الغرض تنبيه لا دقّة.
-                    append("، بحجم تقريبيّ ${count * 8} ميغابايت.\n")
+                    // «نحو» لا رقم قاطع: المعدّل مفترض والملفّات تتفاوت.
+                    if (estimate.megabytes > 0L) {
+                        append("، بحجم نحو ${estimate.megabytes} م.ب")
+                    }
+                    append(".\n")
+                    if (estimate.unknown > 0) {
+                        append("(وبعضها مدّته غير معروفة، فقد يزيد الحجم.)\n")
+                    }
                     append("يستمر التحميل في الخلفية، ويمكنك إيقافه أو إلغاؤه ")
                     append("في أيّ لحظة. إن كنت على بيانات الجوّال فانتبه للاستهلاك.")
                 },
@@ -772,6 +785,46 @@ fun ConfirmBulkDownloadDialog(
             TextButton(onClick = onDismiss) { Text("تراجع") }
         },
     )
+}
+
+/**
+ * 📶 معدّل البتّ المفترض لتقدير حجم التحميل: **64 كيلوبت في الثانية**، أي
+ * ٨٠٠٠ بايت لكل ثانية صوت.
+ *
+ * **مصدره:** دروس المنبر كلّها كلامٌ منطوق بصوتٍ أحاديّ (لا موسيقى ولا
+ * ستيريو)، و64 kbps هو المعدّل الشائع لهذا النوع من التسجيلات. وهو يوافق
+ * تقريباً التقدير الثابت القديم (٨ م.ب للدرس ≈ ١٧ دقيقة)، لكنّه يتبع مدّة كل
+ * درس بدل أن يفترضها. تقديرٌ لا قياس — ولهذا يُقال «نحو».
+ */
+private const val ESTIMATED_AUDIO_BYTES_PER_SECOND = 8_000L
+
+/// نتيجة التقدير: الحجم بالميغابايت، وعدد الدروس التي لا نعرف مدّتها بعد.
+private class BulkDownloadEstimate(val megabytes: Long, val unknown: Int)
+
+/**
+ * تقدير حجم التحميل الجماعي من المدد المحفوظة محلياً.
+ *
+ * الدروس التي لا مدّة محفوظة لها (لم تُشغَّل قطّ) **تُستثنى من الحساب** ويُذكر
+ * وجودها للمستخدم صراحةً، فلا يُبنى رقمٌ على تخمين مضاعف.
+ *
+ * وحين لا تُعرف مدّة أيّ درس منها يسقط الرقم كلّه: «لا رقم» أصدق من رقمٍ
+ * مختلَق.
+ */
+private fun bulkDownloadEstimate(vm: AppViewModel, count: Int): BulkDownloadEstimate {
+    val pending = vm.pendingBulkDownload.value?.lessons.orEmpty()
+        .filter { it.audioUrl.isNotBlank() && !vm.downloads.isDownloaded(it.id) }
+    if (pending.isEmpty()) return BulkDownloadEstimate(0L, count)
+    val durations = vm.store.durations()
+    var seconds = 0L
+    var unknown = 0
+    pending.forEach { lesson ->
+        val ms = durations[lesson.id] ?: 0L
+        if (ms <= 0L) unknown++ else seconds += ms / 1_000L
+    }
+    val bytes = seconds * ESTIMATED_AUDIO_BYTES_PER_SECOND
+    // تقريبٌ لأعلى: «نحو 0 م.ب» على درسٍ قصير كلامٌ لا معنى له.
+    val megabytes = if (bytes <= 0L) 0L else maxOf(1L, (bytes + 999_999L) / 1_000_000L)
+    return BulkDownloadEstimate(megabytes, unknown)
 }
 
 /// كبسولة «تنزيل الكل» المتدرّجة (تركواز → أخضر) — الزر البارز للتحميل الجماعي.

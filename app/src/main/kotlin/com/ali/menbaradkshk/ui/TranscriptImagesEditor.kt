@@ -69,6 +69,10 @@ fun TranscriptImagesEditor(
     images: SnapshotStateList<Uri>,
     enabled: Boolean,
     onError: (String) -> Unit,
+    // 📸 اقتراح آخر لقطة شاشة يُعرض هنا كي يظهر في **كل** نماذج النصّ
+    // المشروح بلا تكرار الشيفرة. النموذج الذي يعرض البطاقة بنفسه يمرّر
+    // false كي لا تظهر مرّتين في شاشة واحدة.
+    showScreenshotChip: Boolean = true,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -179,6 +183,17 @@ fun TranscriptImagesEditor(
         onImage = { uri -> pendingNew.add(uri) },
         modifier = Modifier.padding(bottom = 8.dp),
     )
+    // 📸 فوق شبكة الصور تماماً كاقتراح الحافظة، وبنفس شرط السقف: اللقطة
+    // تدخل من مسار الإضافة الوحيد (pendingNew ⇒ شاشة القصّ ⇒ الإدراج)
+    // فلا يوجد مسار ثانٍ يختلف سلوكه.
+    if (showScreenshotChip) {
+        RecentScreenshotChip(
+            enabled = enabled &&
+                images.size + pendingNew.size < TranscriptRepository.MAX_IMAGES,
+            onPick = { uri -> pendingNew.add(uri) },
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+    }
     if (images.isNotEmpty()) {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             items(images.size) { i ->

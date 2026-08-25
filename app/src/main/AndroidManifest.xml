@@ -17,6 +17,11 @@
          عند أوّل نقرة على البطاقة فقط، لا عند الإقلاع ولا عند فتح الشاشة.
          VISUAL_USER_SELECTED تدعم «الوصول الجزئي للصور» في أندرويد 14+،
          وREAD_EXTERNAL_STORAGE للأجهزة قبل أندرويد 13 فقط. -->
+    <!-- «راسِل المطوّر»: تسجيل رسالة صوتيّة للمالك. الإذن يُطلب **عند أوّل
+         ضغطة على زرّ التسجيل** لا عند فتح الشاشة ولا عند الإقلاع — فمن جاء
+         ليكتب اقتراحاً لا يُسأل عن ميكروفونه بلا سبب ظاهر فيرفضه دائماً. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
     <uses-permission
@@ -240,6 +245,12 @@
         <intent>
             <action android:name="android.intent.action.SENDTO" />
             <data android:scheme="mailto" />
+        </intent>
+        <!-- 🎤 البحث الصوتي: بدون هذا البند يُرجع resolveActivity قيمة فارغة
+             على أندرويد 11 فما فوق، فتختفي أيقونة الميكروفون ولو كان على
+             الجهاز محرّك تعرّف على الكلام. -->
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
         </intent>
     </queries>
 </manifest>

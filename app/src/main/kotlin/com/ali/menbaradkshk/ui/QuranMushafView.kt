@@ -20,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -174,6 +175,8 @@ private fun MushafPage(
     var imageState by remember(pageNumber) {
         androidx.compose.runtime.mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty)
     }
+    /// عدّاد «إعادة المحاولة»: رفعه يغيّر مفتاح النموذج فيُعاد جلب الصفحة.
+    var retryKey by remember(pageNumber) { mutableIntStateOf(0) }
 
     val highlight = SecondaryGold.copy(alpha = .28f)
 
@@ -253,8 +256,11 @@ private fun MushafPage(
         ) {
             AsyncImage(
                 // الملفّ المنزَّل يسبق الشبكة؛ وإلا فالرابط، وكاش coil يتكفّل
-                // بألّا تُجلب الصفحة مرّتين.
-                model = localPath?.let { "file://$it" } ?: MushafRepository.pageUrl(riwayaId, pageNumber),
+                // بألّا تُجلب الصفحة مرّتين. لاحقة `#retryN` تُغيّر مفتاح الكاش
+                // عند «إعادة المحاولة» فيُعاد الجلب فعلاً (الجزء بعد `#` لا
+                // يُرسَل إلى الخادم أصلاً).
+                model = (localPath?.let { "file://$it" } ?: MushafRepository.pageUrl(riwayaId, pageNumber)) +
+                    if (retryKey > 0) "#retry$retryKey" else "",
                 contentDescription = "صفحة $pageNumber من المصحف",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = androidx.compose.ui.layout.ContentScale.FillBounds,
@@ -301,6 +307,7 @@ private fun MushafPage(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
                 )
+                TextButton(onClick = { retryKey += 1 }) { Text("إعادة المحاولة") }
                 TextButton(onClick = onChromeToggle) { Text("أظهر الأدوات") }
             }
             else -> Unit

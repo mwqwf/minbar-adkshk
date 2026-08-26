@@ -5,6 +5,7 @@ package com.ali.menbaradkshk.ui
 import android.Manifest
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -201,9 +202,21 @@ private fun SupportBubble(message: SupportMessage) {
                 Text(message.text, color = textColor, style = MaterialTheme.typography.bodyLarge)
             }
             if (message.audioPath.isNotBlank()) {
-                SupportAudioPlayer(message.audioPath, message.pending)
+                SupportAudioPlayer(message.audioPath, message.pending || message.failed)
             }
-            if (message.pending) {
+            if (message.failed) {
+                // رفضٌ قاطع من الخادم: نقولها صراحةً مع مخرجٍ بنقرة واحدة.
+                val context2 = LocalContext.current
+                val repo = remember { SupportRepository.get(context2) }
+                Text(
+                    "تعذّر الإرسال",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                TextButton(onClick = { repo.retryFailed(message.id) }) {
+                    Text("أعد المحاولة")
+                }
+            } else if (message.pending) {
                 // لا نقول «فشل الإرسال»: الرسالة محفوظة وستُرسل وحدها.
                 Text(
                     "ستُرسل عند عودة الإنترنت",
@@ -224,8 +237,68 @@ private fun SupportAudioPlayer(path: String, pending: Boolean) {
     var playing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
+    // 🔉 بؤرة صوتيّة **عابرة**: طلبُها يوقف درساً جارياً مؤقّتاً بدل أن تعلو
+    // الرسالة فوقه، وتُعاد للنظام فور التوقّف/الاكتمال فيستأنف المشغّل.
+    val audioManager = remember {
+        context.getSystemService(android.media.AudioManager::class.java)
+    }
+    val audioAttributes = remember {
+        android.media.AudioAttributes.Builder()
+            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+    }
+    val focusListener = remember {
+        android.media.AudioManager.OnAudioFocusChangeListener { change ->
+            if (change != android.media.AudioManager.AUDIOFOCUS_GAIN) {
+                runCatching { player.stop() }
+                playing = false
+            }
+        }
+    }
+    // ⛔ minSdk 23 دون `AudioFocusRequest` (API 26)، فالنداء القديم — وهو
+    // مهجور لا مكسور — يخدم الأجهزة كلّها بلا مكتبة إضافيّة.
+    val focusRequest = remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            android.media.AudioFocusRequest.Builder(
+                android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT,
+            )
+                .setAudioAttributes(audioAttributes)
+                .setOnAudioFocusChangeListener(focusListener)
+                .build()
+        } else {
+            null
+        }
+    }
+    fun requestFocus(): Boolean {
+        val manager = audioManager ?: return true
+        val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && focusRequest != null) {
+            manager.requestAudioFocus(focusRequest)
+        } else {
+            @Suppress("DEPRECATION")
+            manager.requestAudioFocus(
+                focusListener,
+                android.media.AudioManager.STREAM_MUSIC,
+                android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT,
+            )
+        }
+        return result != android.media.AudioManager.AUDIOFOCUS_REQUEST_FAILED
+    }
+    fun abandonFocus() {
+        val manager = audioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && focusRequest != null) {
+            manager.abandonAudioFocusRequest(focusRequest)
+        } else {
+            @Suppress("DEPRECATION")
+            manager.abandonAudioFocus(focusListener)
+        }
+    }
+
     DisposableEffect(Unit) {
-        onDispose { runCatching { player.release() } }
+        onDispose {
+            abandonFocus()
+            runCatching { player.release() }
+        }
     }
 
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -234,18 +307,35 @@ private fun SupportAudioPlayer(path: String, pending: Boolean) {
                 if (playing) {
                     runCatching { player.stop() }
                     playing = false
+                    abandonFocus()
                     return@IconButton
                 }
                 scope.launch {
                     val uri = runCatching { repository.attachmentUri(path) }.getOrNull()
                         ?: return@launch
+                    // ⚠️ `prepareAsync` لا `prepare`: التحضير المتزامن على رابط
+                    // شبكي يجمّد خيط الواجهة (ANR على شبكة ضعيفة). التشغيل يبدأ
+                    // في مستمع الجاهزيّة، والفشل يُطوى بهدوء بلا تجمّد.
                     runCatching {
                         player.reset()
+                        player.setAudioAttributes(audioAttributes)
                         player.setDataSource(context, uri)
-                        player.setOnCompletionListener { playing = false }
-                        player.prepare()
-                        player.start()
-                        playing = true
+                        player.setOnCompletionListener {
+                            playing = false
+                            abandonFocus()
+                        }
+                        player.setOnErrorListener { _, _, _ ->
+                            playing = false
+                            abandonFocus()
+                            true
+                        }
+                        player.setOnPreparedListener {
+                            if (requestFocus()) {
+                                player.start()
+                                playing = true
+                            }
+                        }
+                        player.prepareAsync()
                     }
                 }
             },

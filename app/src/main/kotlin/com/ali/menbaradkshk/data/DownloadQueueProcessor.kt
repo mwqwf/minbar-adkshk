@@ -160,6 +160,7 @@ class DownloadQueueProcessor(private val context: Context) {
                     }
                 }
                 store.removeFromDownloadQueue(id)
+                store.clearDownloadAttempts(id)
             } catch (paused: DownloadPausedException) {
                 // الدرس يبقى في رأس الطابور وملفّه الجزئي محفوظ.
                 publishPaused(lesson.displayTitle)
@@ -168,6 +169,16 @@ class DownloadQueueProcessor(private val context: Context) {
                 downloads.clearCancel(id)
                 store.removeFromDownloadQueue(id)
             } catch (retryable: RetryableDownloadException) {
+                // 🛑 سقفٌ للمحاولات: درس رأسيّ يفشل باستمرار (رابط معطوب على
+                // خادم حيّ مثلاً) كان يحجب الطابور كلّه ويستهلك بيانات المستخدم
+                // بلا نهاية. بعد السقف يُصنَّف فاشلاً ويُتجاوز — وإعادة تحميله
+                // يدوياً تصفّر عدّاده فتبقى ممكنة دائماً.
+                if (store.recordDownloadAttempt(id) >= MAX_ATTEMPTS_PER_LESSON) {
+                    failures++
+                    store.removeFromDownloadQueue(id)
+                    store.clearDownloadAttempts(id)
+                    continue
+                }
                 // انقطاع اتصال: يبقى الدرس في الطابور ويُستأنف الملف الجزئي لاحقاً.
                 // نسبة الملفّ الجاري تُحفظ كما في «موقوف مؤقّتاً»: إسقاطها كان
                 // يرتدّ بالشريط إلى الوراء رغم أنّ ما نزل باقٍ على القرص.
@@ -193,6 +204,7 @@ class DownloadQueueProcessor(private val context: Context) {
             } catch (permanent: Throwable) {
                 failures++
                 store.removeFromDownloadQueue(id)
+                store.clearDownloadAttempts(id)
             }
         }
 
@@ -329,5 +341,8 @@ class DownloadQueueProcessor(private val context: Context) {
         /// مهلة انتظار القفل: تكفي لخروج السابق من قراءةٍ جارية، وتبقى أقصر
         /// من أن تُعطّل مسار الإعادة إن كان السابق عالقاً فعلاً.
         private const val LOCK_WAIT_MS = 5_000L
+
+        /// أقصى محاولات قابلة للإعادة للدرس الواحد قبل تصنيفه فاشلاً وتجاوزه.
+        private const val MAX_ATTEMPTS_PER_LESSON = 5
     }
 }

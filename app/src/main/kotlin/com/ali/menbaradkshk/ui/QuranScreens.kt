@@ -151,7 +151,9 @@ fun QuranIndexScreen(vm: AppViewModel) {
 
     var tab by rememberSaveable { mutableStateOf(0) }
     var query by rememberSaveable { mutableStateOf("") }
-    val lastAyah = remember(revision) { vm.store.quranLastAyah() }
+    // موضع القراءة يُكتب كتابةً صامتة (positionRevision) لا ترفع revision.
+    val positionRevision by vm.store.positionRevision.collectAsState()
+    val lastAyah = remember(revision, positionRevision) { vm.store.quranLastAyah() }
     val bookmarks = remember(revision) { vm.store.quranBookmarks() }
     // البحث والعلامات يُفتحان من الشريط العلوي، فحالتهما في الـViewModel.
     val searchOpen by vm.quranSearchOpen.collectAsState()

@@ -443,9 +443,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun openStore(url: String) {
         val context = getApplication<android.app.Application>()
         val target = url.ifBlank { AppConfigRepository.PLAY_URL }
-        val intents = listOf(
+        // رابط مخصّص من app_config (ليس Play) وُضع عمداً — يُفتح هو أوّلاً
+        // بدل أن يتجاهله مسار market:// دائماً.
+        val custom = url.takeIf { it.isNotBlank() && !it.contains("play.google.com") }
+        val intents = listOfNotNull(
+            custom,
             "market://details?id=${AppConfigRepository.STORE_PACKAGE}",
-            target,
+            target.takeIf { it != custom },
         ).map { uri ->
             android.content.Intent(
                 android.content.Intent.ACTION_VIEW,
@@ -1125,6 +1129,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /// الملفات الواردة إلى كاش التطبيق. النسخ مقصود: إذن قراءة `content://`
     /// القادم من تطبيق آخر مؤقّت ولا يقبل `takePersistableUriPermission`،
     /// فينتهي مع النيّة وقد يسقط الرفع بعده — النسخة المحليّة تُبقيه سليماً.
+    /// أقصى حجم لملفّ صوتي مشارَك يُنسخ إلى الكاش (100 م.ب).
+    private val maxSharedAudioBytes = 100L * 1024 * 1024
+
     fun receiveSharedAudio(uris: List<Uri>) {
         if (uris.isEmpty()) return
         if (_route.value != Route.Contribute) open(Route.Contribute)
@@ -1135,14 +1142,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val overflow = uris.size - accepted.size
         viewModelScope.launch {
             val context = getApplication<Application>()
-            val prepared = withContext(Dispatchers.IO) {
+            val (prepared, oversized) = withContext(Dispatchers.IO) {
                 val dir = File(context.cacheDir, "shared_intake").apply { mkdirs() }
                 // نسخ مشاركات سابقة لم تُستعمل تُحذف بعد يوم كي لا يتضخّم الكاش.
                 val cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000
                 dir.listFiles()?.forEach { old ->
                     if (old.lastModified() < cutoff) runCatching { old.delete() }
                 }
-                accepted.mapNotNull { uri ->
+                // ⚠️ فحص الحجم **قبل** النسخ: ملفّ مشارَك عملاق (فيديو طويل
+                // مثلاً) كان يُنسخ كاملاً إلى الكاش فيلتهم مساحة الجهاز.
+                val fitting = accepted.filter { uri ->
+                    runCatching { sizeOf(context, uri) }.getOrDefault(-1L) <= maxSharedAudioBytes
+                }
+                fitting.mapNotNull { uri ->
                     runCatching {
                         val name = displayNameOf(context, uri)
                         val safe = name.replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").takeLast(80)
@@ -1152,24 +1164,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         PickedFile(Uri.fromFile(target), name)
                     }.getOrNull()
-                }
+                } to (accepted.size - fitting.size)
             }
             _sharedAudio.value = if (prepared.isEmpty()) {
                 SharedAudioState(
-                    error = "تعذّرت قراءة الملف المشارَك — اختره من زر اختيار الملفات بالأعلى.",
+                    error = if (oversized > 0) {
+                        "الملف المشارَك أكبر من الحدّ (100 م.ب) — شارك ملفاً صوتياً أصغر."
+                    } else {
+                        "تعذّرت قراءة الملف المشارَك — اختره من زر اختيار الملفات بالأعلى."
+                    },
                     originalCount = uris.size,
                 )
             } else {
                 SharedAudioState(files = prepared, originalCount = uris.size)
             }
             if (prepared.isNotEmpty()) {
-                val unreadable = accepted.size - prepared.size
+                val unreadable = accepted.size - oversized - prepared.size
                 val notes = buildList {
                     if (overflow > 0) {
                         add(
                             "شاركتَ ${com.ali.menbaradkshk.util.filesCountLabel(uris.size)} والحدّ الأقصى ${com.ali.menbaradkshk.util.filesCountLabel(AudioMerger.maxFiles)} " +
                                 "للدرس الواحد — أُدرجت أول ${accepted.size}، وأرسل البقية في مساهمة أخرى.",
                         )
+                    }
+                    if (oversized > 0) {
+                        add("تُرك $oversized من الملفات لأنّه أكبر من الحدّ (100 م.ب).")
                     }
                     if (unreadable > 0) {
                         add("تعذّرت قراءة $unreadable من الملفات المشارَكة — أضِفها من زر اختيار الملفات.")

@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -155,7 +156,9 @@ class LocalStore private constructor(context: Context) {
 
     private fun write(block: SharedPreferences.Editor.() -> Unit) {
         preferences.edit().apply(block).apply()
-        _revision.value += 1L
+        // `update` لا `value += 1`: الزيادة غير الذرّية بين خيوط الواجهة والعمّال
+        // كانت قد تبتلع نبضة فتفوت الواجهةَ كتابةٌ حدثت فعلاً.
+        _revision.update { it + 1L }
     }
 
     /// ⚠️ كتابة لا تُحرّك [revision]: الموضع والثواني المستمعة تُكتبان كل خمس
@@ -164,7 +167,7 @@ class LocalStore private constructor(context: Context) {
     /// ما يراه المستخدم فوراً (مفضّلة/تنزيل/قائمة/إعداد/إتمام درس).
     private fun writeQuiet(block: SharedPreferences.Editor.() -> Unit) {
         preferences.edit().apply(block).apply()
-        _positionRevision.value += 1L
+        _positionRevision.update { it + 1L }
     }
 
     private fun jsonArray(key: String): JSONArray =
@@ -182,7 +185,9 @@ class LocalStore private constructor(context: Context) {
 
     private fun putCache(key: String, value: JSONArray) {
         cachePrefs.edit().putString(key, value.toString()).apply()
-        _revision.value += 1L
+        // `update` لا `value += 1`: الزيادة غير الذرّية بين خيوط الواجهة والعمّال
+        // كانت قد تبتلع نبضة فتفوت الواجهةَ كتابةٌ حدثت فعلاً.
+        _revision.update { it + 1L }
     }
 
     fun categories(): List<Category> = cacheArray(KEY_CACHE_CATEGORIES).objects(Category::fromJson)
@@ -568,7 +573,10 @@ class LocalStore private constructor(context: Context) {
      * تمييز «لا شيء» عن «أوّل المصحف» شرطُ صحّة لا تجميل.
      */
     fun quranLastAyah(): Int = long(KEY_QURAN_LAST, -1L).toInt()
-    fun setQuranLastAyah(value: Int) = write { putLong(KEY_QURAN_LAST, value.toLong()) }
+    /// كتابة «صامتة» كموضع الدروس: تُكتب مع كل استقرار تمرير في المصحف، ورفع
+    /// `revision` كان يُبطل كل `remember(revision,…)` في التطبيق مع كل توقّف.
+    /// بطاقة «تابع القراءة» تتابع `positionRevision`.
+    fun setQuranLastAyah(value: Int) = writeQuiet { putLong(KEY_QURAN_LAST, value.toLong()) }
 
     /**
      * ⭐ علامات الآيات — فهارس مسطّحة يحفظها القارئ ليرجع إليها.
@@ -893,10 +901,14 @@ class LocalStore private constructor(context: Context) {
             val restricted = downloadQueueWifiOnlyIds().toMutableSet()
             if (wifiOnly) restricted += added
             current += added
+            // إعادة إضافة يدويّة = عدّ محاولات جديد للدرس.
+            val attempts = jsonObject(KEY_QUEUE_ATTEMPTS)
+            added.forEach { attempts.remove(it) }
             write {
                 putString("download_queue", JSONArray(current).toString())
                 putString("download_queue_label", label)
                 putLong("download_queue_total", (downloadQueueTotal() + added.size).toLong())
+                putString(KEY_QUEUE_ATTEMPTS, attempts.toString())
                 putString(KEY_QUEUE_WIFI_IDS, JSONArray(restricted.toList()).toString())
                 // العلم العام يبقى للتوافق فقط ولا يُخفَّض: «هل في الطابور مقيَّد؟».
                 putBoolean("download_queue_wifi_only", restricted.isNotEmpty())
@@ -933,6 +945,7 @@ class LocalStore private constructor(context: Context) {
         remove("download_queue")
         remove("download_queue_wifi_only")
         remove(KEY_QUEUE_WIFI_IDS)
+        remove(KEY_QUEUE_ATTEMPTS)
         putLong("download_queue_total", 0L)
     }
 
@@ -945,6 +958,29 @@ class LocalStore private constructor(context: Context) {
 
     fun setDownloadQueuePaused(paused: Boolean) = write {
         putBoolean("download_queue_paused", paused)
+    }
+
+    /// 🔁 عدّاد الإخفاقات القابلة للإعادة لكل درس في الطابور: درسٌ رأسيّ
+    /// رابطُه معطوب كان يحجب من خلفه ويستهلك بيانات المستخدم إلى الأبد.
+    /// كتابة صامتة — عدّاد داخلي لا تُبنى عليه واجهة.
+    fun downloadAttempts(id: String): Int =
+        jsonObject(KEY_QUEUE_ATTEMPTS).optInt(id, 0)
+
+    fun recordDownloadAttempt(id: String): Int = synchronized(queueLock) {
+        val root = jsonObject(KEY_QUEUE_ATTEMPTS)
+        val next = root.optInt(id, 0) + 1
+        root.put(id, next)
+        writeQuiet { putString(KEY_QUEUE_ATTEMPTS, root.toString()) }
+        next
+    }
+
+    /// يُصفَّر عند النجاح وعند إعادة الإضافة يدوياً — فالمحاولة اليدويّة تبدأ بعدّ جديد.
+    fun clearDownloadAttempts(id: String) = synchronized(queueLock) {
+        val root = jsonObject(KEY_QUEUE_ATTEMPTS)
+        if (root.has(id)) {
+            root.remove(id)
+            writeQuiet { putString(KEY_QUEUE_ATTEMPTS, root.toString()) }
+        }
     }
 
     fun downloadQueueLabel(): String = string("download_queue_label")
@@ -1083,6 +1119,11 @@ class LocalStore private constructor(context: Context) {
         KEY_DURATIONS, KEY_BOOKMARKS, KEY_FOLLOWED_SUBS, KEY_SEARCH_HISTORY,
         KEY_CATEGORY_VISITS, KEY_SUBCATEGORY_VISITS, KEY_PLAY_COUNTS,
         KEY_DAILY_SECONDS, KEY_STREAK, KEY_LAST_LISTEN_DATE, KEY_WEEKLY_GOAL,
+        // بيانات المصحف والأذكار شخصيّة كذلك (وهي في PERSONAL_KEYS): إسقاطها
+        // من النسخة كان يعني ضياع العلامات والموضع والسلسلة عند الاستعادة.
+        KEY_QURAN_BOOKMARKS, KEY_QURAN_LAST,
+        KEY_QURAN_WARD_DAY, KEY_QURAN_WARD_LAST_PAGE, KEY_QURAN_WARD_COUNT,
+        "adhkar_counts", "adhkar_day", "adhkar_streak", "adhkar_streak_day",
     )
 
     /// يصدّر البيانات الشخصية كنص JSON (بلا تنزيلات ولا كاش المحتوى).
@@ -1142,7 +1183,9 @@ class LocalStore private constructor(context: Context) {
         legacyEditor.apply()
         // ⛔ اللقطة تُبطَل هنا وإلّا عادت القيم الممحوّة من الملفّ القديم للظهور.
         legacySnapshot = null
-        _revision.value += 1L
+        // `update` لا `value += 1`: الزيادة غير الذرّية بين خيوط الواجهة والعمّال
+        // كانت قد تبتلع نبضة فتفوت الواجهةَ كتابةٌ حدثت فعلاً.
+        _revision.update { it + 1L }
     }
 
     fun migrationSummary(): MigrationSummary = MigrationSummary(
@@ -1218,6 +1261,7 @@ class LocalStore private constructor(context: Context) {
         const val IMAGE_CACHE_DIR = "image_cache"
         /// قيد «واي فاي فقط» لكل عنصر في طابور التحميل (يحلّ محلّ العلم العام).
         const val KEY_QUEUE_WIFI_IDS = "download_queue_wifi_ids"
+        const val KEY_QUEUE_ATTEMPTS = "download_queue_attempts"
         const val KEY_THEME = "theme_mode"
         const val KEY_FONT_SCALE = "font_scale"
         const val KEY_ADHKAR_FONT = "adhkar_font_sp"

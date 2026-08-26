@@ -359,7 +359,16 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         topBar = {
             if (!fullScreen) {
                 CenterAlignedTopAppBar(
-                    title = { Text(titleFor(route, vm, content)) },
+                    title = {
+                        // `titleFor` يفكّ JSON قوائم التشغيل في بعض المسارات،
+                        // وإعادة التركيب تنبض مرّتين كل ثانية أثناء التشغيل —
+                        // فيُحسب مرّة ويُعاد فقط عند تغيّر مدخلاته الفعلية.
+                        val storeRevision by vm.store.revision.collectAsState()
+                        val title = remember(route, content, storeRevision) {
+                            titleFor(route, vm, content)
+                        }
+                        Text(title)
+                    },
                     colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                         containerColor = if (isDarkTheme(vm.store.themeMode())) AppBarBackgroundDark else AppBarBackgroundLight,
                         titleContentColor = AppBarForeground,

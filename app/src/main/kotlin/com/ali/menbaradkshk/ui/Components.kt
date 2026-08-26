@@ -163,7 +163,10 @@ fun AudioItem(
     // السمة الداكنة تُستبدل بدرجات فاتحة (انظر brandTintOnSurface أعلاه).
     val dark = onDarkSurfaces()
     // العناوين الرقميّة الخام تُعرض باسم قسمها الفرعي (انظر sectionAwareTitle).
-    val title = remember(lesson.id, lesson.title) { sectionAwareTitle(vm, lesson) }
+    // اسم القسم الفرعي في المفتاح: قد يصل بعد أوّل تركيب فيتحدّث العنوان معه.
+    val sectionName = vm.content.state.collectAsState().value
+        .subcategoryById[lesson.subcategoryId]?.name
+    val title = remember(lesson.id, lesson.title, sectionName) { sectionAwareTitle(vm, lesson) }
 
     Card(
         modifier = Modifier
@@ -307,7 +310,10 @@ fun AudioCard(
         0f
     }
     // العناوين الرقميّة الخام تُعرض باسم قسمها الفرعي (انظر sectionAwareTitle).
-    val title = remember(lesson.id, lesson.title) { sectionAwareTitle(vm, lesson) }
+    // اسم القسم الفرعي في المفتاح: قد يصل بعد أوّل تركيب فيتحدّث العنوان معه.
+    val sectionName = vm.content.state.collectAsState().value
+        .subcategoryById[lesson.subcategoryId]?.name
+    val title = remember(lesson.id, lesson.title, sectionName) { sectionAwareTitle(vm, lesson) }
     Column(
         modifier = Modifier
             .width(150.dp)

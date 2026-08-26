@@ -29,7 +29,8 @@ class MushafRepository private constructor(context: Context) {
     private val loadLock = Mutex()
 
     /// مفكوكٌ لكل رواية على حدة — الروايات ثلاث، ولكلٍّ تخطيط صفحاتها.
-    private val cache = mutableMapOf<String, Layout>()
+    /// ⚠️ يُقرأ خارج القفل (المسار السريع في [layout]) فلا تصلح HashMap عادية.
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, Layout>()
 
     /**
      * تخطيط مصحف رواية: مستطيلات الآيات لكل صفحة (٦٠٤ صفحة، الفهرس 0 = صفحة 1).

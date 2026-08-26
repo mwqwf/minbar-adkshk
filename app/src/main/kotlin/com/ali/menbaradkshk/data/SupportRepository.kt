@@ -14,12 +14,14 @@ import androidx.work.WorkerParameters
 import com.ali.menbaradkshk.BuildConfig
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.functions.FirebaseFunctions
 import com.google.firebase.storage.FirebaseStorage
 import com.google.firebase.storage.StorageMetadata
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.tasks.await
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -58,6 +60,8 @@ data class SupportMessage(
     val createdAtMs: Long,
     /** رسالة لم تُرفع بعد — تنتظر عودة الإنترنت. */
     val pending: Boolean = false,
+    /** رفضها الخادم رفضاً قاطعاً — تُعرض بزرّ «أعد المحاولة». */
+    val failed: Boolean = false,
 )
 
 /**
@@ -80,48 +84,58 @@ class SupportRepository private constructor(context: Context) {
 
     /** محادثاتي مرتّبة بالأحدث. تعود فارغة قبل إنشاء الهوية المجهولة. */
     fun myThreads(): Flow<List<SupportThread>> = callbackFlow {
-        val uid = auth.currentUser?.uid
-        if (uid == null) {
-            trySend(emptyList())
-            awaitClose { }
-            return@callbackFlow
-        }
-        // بلا `orderBy` في الاستعلام: يحتاج فهرساً مركّباً مع `whereEqualTo`،
-        // وعدد محادثات المستخدم الواحد صغير فالترتيب محلياً أرخص وأضمن.
-        val registration = db.collection(COLLECTION)
-            .whereEqualTo("uid", uid)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    trySend(emptyList())
-                    return@addSnapshotListener
-                }
-                trySend(
-                    snapshot?.documents.orEmpty().map { document ->
-                        SupportThread(
-                            id = document.id,
-                            kind = document.getString("kind").orEmpty(),
-                            status = document.getString("status").orEmpty(),
-                            lastMessageAtMs = document.getLong("lastMessageAtMs")
-                                ?: document.getLong("createdAtMs") ?: 0L,
-                            createdAtMs = document.getLong("createdAtMs") ?: 0L,
-                            lastMessagePreview = document.getString("lastMessagePreview").orEmpty(),
-                            userUnread = document.getBoolean("userUnread") ?: false,
-                            ownerReplied = document.getBoolean("ownerReplied") ?: false,
-                            closed = document.getBoolean("closed") ?: false,
-                            blocked = document.getBoolean("blocked") ?: false,
-                            messageCount = (document.getLong("messageCount") ?: 0L).toInt(),
-                        )
-                    }.sortedByDescending(SupportThread::lastMessageAtMs),
-                )
+        // ⚠️ الهوية المجهولة تُنشأ بعد الإقلاع بلحظات: لو قرأنا `currentUser`
+        // مرّة واحدة لحظة التجميع لبقي التدفّق فارغاً للأبد عند من فتح الشاشة
+        // قبل اكتمال الدخول — فنتابع تغيّرات الهوية (نمط NotificationsRepository).
+        var registration: ListenerRegistration? = null
+        val authListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+            registration?.remove()
+            val uid = firebaseAuth.currentUser?.uid
+            if (uid == null) {
+                trySend(emptyList())
+                return@AuthStateListener
             }
-        awaitClose { registration.remove() }
+            // بلا `orderBy` في الاستعلام: يحتاج فهرساً مركّباً مع `whereEqualTo`،
+            // وعدد محادثات المستخدم الواحد صغير فالترتيب محلياً أرخص وأضمن.
+            registration = db.collection(COLLECTION)
+                .whereEqualTo("uid", uid)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        trySend(emptyList())
+                        return@addSnapshotListener
+                    }
+                    trySend(
+                        snapshot?.documents.orEmpty().map { document ->
+                            SupportThread(
+                                id = document.id,
+                                kind = document.getString("kind").orEmpty(),
+                                status = document.getString("status").orEmpty(),
+                                lastMessageAtMs = document.getLong("lastMessageAtMs")
+                                    ?: document.getLong("createdAtMs") ?: 0L,
+                                createdAtMs = document.getLong("createdAtMs") ?: 0L,
+                                lastMessagePreview = document.getString("lastMessagePreview").orEmpty(),
+                                userUnread = document.getBoolean("userUnread") ?: false,
+                                ownerReplied = document.getBoolean("ownerReplied") ?: false,
+                                closed = document.getBoolean("closed") ?: false,
+                                blocked = document.getBoolean("blocked") ?: false,
+                                messageCount = (document.getLong("messageCount") ?: 0L).toInt(),
+                            )
+                        }.sortedByDescending(SupportThread::lastMessageAtMs),
+                    )
+                }
+        }
+        auth.addAuthStateListener(authListener)
+        awaitClose {
+            auth.removeAuthStateListener(authListener)
+            registration?.remove()
+        }
     }
 
     /**
      * رسائل محادثة واحدة: المرفوعة من الخادم، ويُلحق بها ما ينتظر الإرسال من
      * الطابور — كي يرى المستخدم رسالته في مكانها فور ضغطه «أرسل».
      */
-    fun messages(threadId: String): Flow<List<SupportMessage>> = callbackFlow {
+    fun messages(threadId: String): Flow<List<SupportMessage>> {
         fun queued(): List<SupportMessage> = store.pending()
             .filter { it.threadId == threadId }
             .map {
@@ -131,33 +145,43 @@ class SupportRepository private constructor(context: Context) {
                     text = it.text,
                     audioPath = it.audioFile,
                     createdAtMs = it.createdAtMs,
-                    pending = true,
+                    pending = !it.failed,
+                    failed = it.failed,
                 )
             }
-        if (threadId.isBlank()) {
-            trySend(queued())
-            awaitClose { }
-            return@callbackFlow
-        }
-        val registration = db.collection(COLLECTION).document(threadId)
-            .collection("messages")
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    trySend(queued())
-                    return@addSnapshotListener
-                }
-                val sent = snapshot?.documents.orEmpty().map { document ->
-                    SupportMessage(
-                        id = document.id,
-                        fromOwner = document.getBoolean("fromOwner") ?: false,
-                        text = document.getString("text").orEmpty(),
-                        audioPath = document.getString("audioPath").orEmpty(),
-                        createdAtMs = document.getLong("createdAtMs") ?: 0L,
+        val sent: Flow<List<SupportMessage>> = callbackFlow {
+            if (threadId.isBlank()) {
+                trySend(emptyList())
+                awaitClose { }
+                return@callbackFlow
+            }
+            val registration = db.collection(COLLECTION).document(threadId)
+                .collection("messages")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        trySend(emptyList())
+                        return@addSnapshotListener
+                    }
+                    trySend(
+                        snapshot?.documents.orEmpty().map { document ->
+                            SupportMessage(
+                                id = document.id,
+                                fromOwner = document.getBoolean("fromOwner") ?: false,
+                                text = document.getString("text").orEmpty(),
+                                audioPath = document.getString("audioPath").orEmpty(),
+                                createdAtMs = document.getLong("createdAtMs") ?: 0L,
+                            )
+                        },
                     )
                 }
-                trySend((sent + queued()).sortedBy(SupportMessage::createdAtMs))
-            }
-        awaitClose { registration.remove() }
+            awaitClose { registration.remove() }
+        }
+        // 🔀 الدمج مع مراجعة الطابور لا القراءة داخل ردّ Firestore وحده: بلا
+        // إنترنت لا يصل ردّ أصلاً، فكانت الرسالة الجديدة لا تظهر حتى تعود
+        // الشبكة رغم أنها محفوظة على الجهاز.
+        return combine(sent, store.outboxRevision) { uploaded, _ ->
+            (uploaded + queued()).sortedBy(SupportMessage::createdAtMs)
+        }
     }
 
     /** رابط تشغيل المرفق الصوتي من التخزين (أو الملف المحلّي إن كان معلّقاً). */
@@ -211,6 +235,12 @@ class SupportRepository private constructor(context: Context) {
     }
 
     fun markSeen(thread: SupportThread) = store.markSeen(thread.id, thread.lastMessageAtMs)
+
+    /// «أعد المحاولة» على رسالة فشلت: تعود إلى الطابور ويُجدول الإرسال.
+    fun retryFailed(messageId: String) {
+        store.retryFailed(messageId)
+        schedule(appContext)
+    }
 
     /**
      * المحادثة التي تمنع فتح محادثة جديدة الآن (إن وُجدت): إمّا أنشئت خلال
@@ -315,8 +345,9 @@ class SupportRepository private constructor(context: Context) {
  * 📤 عامل الإرسال: يفرغ الطابور رسالةً رسالةً بالترتيب.
  *
  * الفشل العابر (انقطاع/مهلة) ⇒ `retry` فتبقى الرسالة وتُرسَل عند عودة الشبكة.
- * والرفض القاطع من الخادم (رسالة قبل ردّ المالك مثلاً) ⇒ تُسقَط الرسالة:
- * إعادتها إلى الأبد تستهلك بطارية وبيانات المستخدم بلا أمل في النجاح.
+ * والرفض القاطع من الخادم (رسالة قبل ردّ المالك مثلاً) ⇒ تُعلَّم «فشلت» لا
+ * تُحذف: تبقى ظاهرة للمستخدم بزرّ إعادة محاولة، والعامل يتجاوزها فلا تستهلك
+ * بطاريته وبياناته بمحاولات لا أمل فيها.
  */
 class SupportSendWorker(
     context: Context,
@@ -330,11 +361,13 @@ class SupportSendWorker(
             // الطابور يُقرأ من القرص في كل دورة، فقد يكون هذا العنصر التحق
             // بمحادثة أُنشئت في الدورة نفسها — نأخذ نسخته الحديثة.
             val fresh = store.pending().firstOrNull { it.id == item.id } ?: continue
+            // الفاشلة قطعيّاً تنتظر «أعد المحاولة» من المستخدم — لا تُعاد آليّاً.
+            if (fresh.failed) continue
             val outcome = runCatching { repository.deliver(fresh) }
             when {
                 outcome.isSuccess -> store.removePending(fresh.id)
                 isTransientFailure(outcome.exceptionOrNull()!!) -> return Result.retry()
-                else -> store.removePending(fresh.id)
+                else -> store.markFailed(fresh.id)
             }
         }
         return Result.success()

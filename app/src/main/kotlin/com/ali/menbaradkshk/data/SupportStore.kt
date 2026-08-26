@@ -1,6 +1,10 @@
 package com.ali.menbaradkshk.data
 
 import android.content.Context
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -53,6 +57,16 @@ class SupportStore private constructor(context: Context) {
 
     // ─── الطابور ────────────────────────────────────────────────
 
+    /// 🔒 دورة قراءة-تعديل-كتابة الطابور تُستدعى من خيط الواجهة (إضافة رسالة)
+    /// ومن عامل الإرسال الخلفي معاً — بلا قفل كانت الكتابتان تتسابقان فتضيع
+    /// رسالة أو تتكرّر (نمط `LocalStore.queueLock` نفسه).
+    private val outboxLock = Any()
+
+    /// 📣 يرتفع مع كل تغيّر في الطابور كي تلتقطه الواجهة فوراً (رسالة جديدة
+    /// بلا إنترنت مثلاً) بدل انتظار ردّ مستمع Firestore الذي قد لا يأتي.
+    private val _outboxRevision = MutableStateFlow(0L)
+    val outboxRevision: StateFlow<Long> = _outboxRevision.asStateFlow()
+
     /** رسالة تنتظر الإرسال. */
     data class Pending(
         val id: String,
@@ -67,6 +81,9 @@ class SupportStore private constructor(context: Context) {
         val audioFile: String,
         val deviceInfo: String,
         val createdAtMs: Long,
+        /// رفضها الخادم رفضاً قاطعاً — تبقى معروضة بزرّ إعادة محاولة بدل
+        /// أن تُحذف بصمت، والعامل يتجاوزها حتى يعيدها المستخدم إلى الطابور.
+        val failed: Boolean = false,
     )
 
     fun pending(): List<Pending> {
@@ -83,6 +100,7 @@ class SupportStore private constructor(context: Context) {
                 audioFile = o.optString("audioFile"),
                 deviceInfo = o.optString("deviceInfo"),
                 createdAtMs = o.optLong("createdAtMs"),
+                failed = o.optBoolean("failed"),
             )
         }
     }
@@ -105,11 +123,23 @@ class SupportStore private constructor(context: Context) {
             deviceInfo = deviceInfo,
             createdAtMs = System.currentTimeMillis(),
         )
-        save(pending() + item)
+        synchronized(outboxLock) { save(pending() + item) }
         return item
     }
 
-    fun removePending(id: String) = save(pending().filterNot { it.id == id })
+    fun removePending(id: String) = synchronized(outboxLock) {
+        save(pending().filterNot { it.id == id })
+    }
+
+    /// يعلّم الرسالة «فشلت» بدل حذفها — فتبقى ظاهرة بزرّ إعادة المحاولة.
+    fun markFailed(id: String) = synchronized(outboxLock) {
+        save(pending().map { if (it.id == id) it.copy(failed = true) else it })
+    }
+
+    /// «أعد المحاولة»: يمسح علامة الفشل فيلتقطها عامل الإرسال من جديد.
+    fun retryFailed(id: String) = synchronized(outboxLock) {
+        save(pending().map { if (it.id == id) it.copy(failed = false) else it })
+    }
 
     private fun save(items: List<Pending>) {
         val array = JSONArray()
@@ -124,10 +154,12 @@ class SupportStore private constructor(context: Context) {
                     put("audioFile", item.audioFile)
                     put("deviceInfo", item.deviceInfo)
                     put("createdAtMs", item.createdAtMs)
+                    put("failed", item.failed)
                 },
             )
         }
         prefs.edit().putString(KEY_OUTBOX, array.toString()).apply()
+        _outboxRevision.update { it + 1L }
     }
 
     companion object {

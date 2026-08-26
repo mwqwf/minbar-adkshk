@@ -781,3 +781,17 @@ internal fun displayNameOf(context: android.content.Context, uri: Uri): String {
     }
     return uri.lastPathSegment?.substringAfterLast('/') ?: "lesson_audio.mp3"
 }
+
+/// حجم الملف بالبايت من مزوّده، أو -1 إن لم يُصرّح به. يُستعمل قبل نسخ
+/// الملفات المشارَكة إلى الكاش كي لا يُنسخ عملاقٌ يملأ مساحة الجهاز.
+private val sizeProjection = arrayOf(android.provider.OpenableColumns.SIZE)
+
+internal fun sizeOf(context: android.content.Context, uri: Uri): Long {
+    context.contentResolver.query(uri, sizeProjection, null, null, null)?.use { cursor ->
+        val index = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+        if (index >= 0 && cursor.moveToFirst() && !cursor.isNull(index)) {
+            return cursor.getLong(index)
+        }
+    }
+    return -1L
+}

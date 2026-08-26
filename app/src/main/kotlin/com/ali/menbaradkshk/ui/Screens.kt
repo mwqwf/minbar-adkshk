@@ -70,6 +70,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -94,14 +95,24 @@ import com.ali.menbaradkshk.util.normalizeArabic
 import com.ali.menbaradkshk.util.progress
 import com.ali.menbaradkshk.util.arabicCountLabel
 import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import com.ali.menbaradkshk.util.subcategoriesCountLabel
 import com.ali.menbaradkshk.util.lessonsCountLabel
 
 // ----------------------------------------------------------------------------
 // الرئيسية
 // ----------------------------------------------------------------------------
+
+/// نتائج حساب ريلات الرئيسية — تُحسب دفعة واحدة خارج الخيط الرئيسي.
+private data class HomeRailsData(
+    val ward: Lesson? = null,
+    val rails: List<Triple<String, List<Lesson>, Boolean>> = emptyList(),
+    val hasHistory: Boolean = false,
+    val feed: List<Lesson> = emptyList(),
+)
 
 @Composable
 fun HomeScreen(
@@ -111,27 +122,40 @@ fun HomeScreen(
 ) {
     val revision by vm.store.revision.collectAsState()
 
-    // الريلات تُحسب هنا (سياق قابل للتركيب) ثم تُعرض داخل القائمة — نمط الأصل
-    // حيث ContentRepository يعيد حساب الريلات ويُخطر الشاشات.
-    val ward = remember(revision, state.lessons) { vm.content.dailyWard() }
-    val rails = remember(revision, state.lessons) {
-        listOf(
-            Triple(featuredRailTitle, vm.content.featured(), false),
-            Triple("تابع الاستماع", vm.content.continueListening(), true),
-            Triple("لم تُكمله بعد", vm.content.unfinished(), true),
-            Triple("الأكثر استماعاً هذا الأسبوع 🔥", vm.content.trending(), false),
-            Triple("الأكثر استماعاً", vm.content.mostListened(), false),
-            Triple("الأحدث", vm.content.newest(), false),
-            Triple("استكمل قسمك", vm.content.continueSection(), false),
-            Triple("قسم اليوم", vm.content.randomSectionToday(), false),
-        )
+    // الريلات تُحسب خارج الخيط الرئيسي: ثمانية استعلامات فوق فكّ JSON مع كل
+    // نبضة `revision` كانت تقطّع الواجهة. `produceState` يعيد الحساب على
+    // Dispatchers.Default عند تغيّر المفاتيح **مبقياً النتيجة السابقة** ظاهرةً
+    // أثناء الحساب — فلا وميض ولا قائمة تفرغ ثم تمتلئ.
+    val home by produceState(
+        initialValue = HomeRailsData(),
+        revision,
+        state.lessons,
+    ) {
+        value = withContext(Dispatchers.Default) {
+            val hasHistory = vm.content.hasHistory()
+            HomeRailsData(
+                ward = vm.content.dailyWard(),
+                rails = listOf(
+                    Triple(featuredRailTitle, vm.content.featured(), false),
+                    Triple("تابع الاستماع", vm.content.continueListening(), true),
+                    Triple("لم تُكمله بعد", vm.content.unfinished(), true),
+                    Triple("الأكثر استماعاً هذا الأسبوع 🔥", vm.content.trending(), false),
+                    Triple("الأكثر استماعاً", vm.content.mostListened(), false),
+                    Triple("الأحدث", vm.content.newest(), false),
+                    Triple("استكمل قسمك", vm.content.continueSection(), false),
+                    Triple("قسم اليوم", vm.content.randomSectionToday(), false),
+                ),
+                hasHistory = hasHistory,
+                // بلا أي سجل تكون «مقترح لك» نسخة طبق الأصل من «الأحدث» (ثالث
+                // قائمة متطابقة للوافد الجديد)، فتُستبدل بـ«ابدأ من هنا».
+                feed = if (hasHistory) vm.content.recommended() else vm.content.shortStation(),
+            )
+        }
     }
-    // بلا أي سجل تكون «مقترح لك» نسخة طبق الأصل من «الأحدث» (ثالث قائمة
-    // متطابقة للوافد الجديد)، فتُستبدل بـ«ابدأ من هنا»: محطّة الدروس القصيرة.
-    val hasHistory = remember(revision, state.lessons) { vm.content.hasHistory() }
-    val feed = remember(revision, state.lessons, hasHistory) {
-        if (hasHistory) vm.content.recommended() else vm.content.shortStation()
-    }
+    val ward = home.ward
+    val rails = home.rails
+    val hasHistory = home.hasHistory
+    val feed = home.feed
     val feedTitle = if (hasHistory) "مقترح لك" else "ابدأ من هنا"
 
     // 📴 وضع «أظهر المحفوظ فقط»: يُرشَّح **قبل** إسقاط المكرّر كي لا يحتجز
@@ -348,7 +372,10 @@ private fun resumeItemOf(
 @Composable
 private fun ResumeCard(vm: AppViewModel, item: ResumeItem) {
     val lesson = item.lesson
-    val title = remember(lesson.id, lesson.title) { sectionAwareTitle(vm, lesson) }
+    // اسم القسم الفرعي في المفتاح: قد يصل بعد أوّل تركيب فيتحدّث العنوان معه.
+    val sectionName = vm.content.state.collectAsState().value
+        .subcategoryById[lesson.subcategoryId]?.name
+    val title = remember(lesson.id, lesson.title, sectionName) { sectionAwareTitle(vm, lesson) }
     val accent = brandTintOnSurface(GreenBrand)
     val minutes = (item.positionMs / 60_000L).toInt()
     // «الدقيقة 0» لا تعني شيئاً لمن يقرأ — تُقال «من أوّله» بدلها.
@@ -489,7 +516,10 @@ private fun FeaturedCard(
     val accent = colorForCategory(lesson.categoryId)
     val active = playback.mediaId == lesson.id && lesson.id.isNotBlank()
     // العناوين الرقميّة الخام تُعرض باسم قسمها الفرعي (انظر sectionAwareTitle).
-    val title = remember(lesson.id, lesson.title) { sectionAwareTitle(vm, lesson) }
+    // اسم القسم الفرعي في المفتاح: قد يصل بعد أوّل تركيب فيتحدّث العنوان معه.
+    val sectionName = vm.content.state.collectAsState().value
+        .subcategoryById[lesson.subcategoryId]?.name
+    val title = remember(lesson.id, lesson.title, sectionName) { sectionAwareTitle(vm, lesson) }
     Box(
         modifier = Modifier
             .width(238.dp)

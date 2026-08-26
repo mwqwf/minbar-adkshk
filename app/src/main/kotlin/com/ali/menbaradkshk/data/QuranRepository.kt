@@ -26,7 +26,8 @@ class QuranRepository private constructor(context: Context) {
 
     @Volatile
     private var index: QuranIndex? = null
-    private val texts = mutableMapOf<String, List<String>>()
+    // ⚠️ تُقرأ خارج القفل (المسار السريع أعلاه) فلا تصلح HashMap عادية.
+    private val texts = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
 
     /** فهرس المصحف (سور/أجزاء/أحزاب/صفحات/روايات). يُقرأ مرّة واحدة. */
     suspend fun index(): QuranIndex {

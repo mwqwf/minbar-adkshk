@@ -228,13 +228,18 @@ class SubmissionRepository private constructor(context: Context) {
         }
 
     fun mine(): Flow<List<LessonSubmission>> = callbackFlow {
-        val uid = auth.currentUser?.uid
-        if (uid == null) {
-            trySend(emptyList())
-            close()
-            return@callbackFlow
-        }
-        val registration = db.collection(COLLECTION)
+        // ⚠️ الهوية المجهولة قد لا تكون جاهزة لحظة التجميع: القراءة المفردة
+        // كانت تُغلق التدفّق فارغاً للأبد — فنتابع تغيّرات الهوية بمستمعٍ
+        // (نمط NotificationsRepository نفسه).
+        var registration: com.google.firebase.firestore.ListenerRegistration? = null
+        val authListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+            registration?.remove()
+            val uid = firebaseAuth.currentUser?.uid
+            if (uid == null) {
+                trySend(emptyList())
+                return@AuthStateListener
+            }
+            registration = db.collection(COLLECTION)
             .whereEqualTo("uid", uid)
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
@@ -264,7 +269,12 @@ class SubmissionRepository private constructor(context: Context) {
                 }.sortedByDescending(LessonSubmission::createdAtMs)
                 trySend(list)
             }
-        awaitClose { registration.remove() }
+        }
+        auth.addAuthStateListener(authListener)
+        awaitClose {
+            auth.removeAuthStateListener(authListener)
+            registration?.remove()
+        }
     }
 
     /**

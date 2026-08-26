@@ -84,7 +84,7 @@ import com.ali.menbaradkshk.util.audiosCountLabel
 /// تبويب كي يجدها من اعتادها فوراً؛ ولم تفقد شيئاً من وظائفها.
 /// [initialTab] يجعل فتح مسار «المفضّلة» القديم يهبط عليها مباشرةً.
 @Composable
-fun MyListsScreen(vm: AppViewModel, playback: PlaybackUiState, initialTab: Int = 1) {
+fun MyListsScreen(vm: AppViewModel, playback: PlaybackUiState, initialTab: Int = 0) {
     var tab by rememberSaveable(initialTab) { mutableIntStateOf(initialTab) }
     Column(Modifier.fillMaxSize()) {
         TabRow(selectedTabIndex = tab) {

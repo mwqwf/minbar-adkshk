@@ -56,7 +56,10 @@ class MinbarMessagingService : FirebaseMessagingService() {
         // محلّ الآخر. وبقيّة الأنواع تبقى فريدة عمداً كي لا يُخفي بعضها بعضاً.
         // ويلزم تمييز `requestCode` كذلك: وجهة التحديث فارغة، فكان يتصادم مع
         // حمولة `manual` الفارغة الوجهة (كلتاهما hashCode = 0).
-        val uniqueId = (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
+        // معرّف من `messageId` (فريد لكل رسالة FCM) لا من الميلي ثانية التي قد
+        // تتصادم لرسالتين وصلتا معاً؛ وعدّاد ذرّي احتياطاً لو غاب المعرّف.
+        val uniqueId = message.messageId?.hashCode()
+            ?: fallbackNotificationId.incrementAndGet()
         val notifId = if (update) UPDATE_NOTIFICATION_ID else uniqueId
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -159,6 +162,12 @@ class MinbarMessagingService : FirebaseMessagingService() {
         /// معرّف إشعار التحديث — واحد في التطبيق كلّه: يتقاسمه هذا المستقبل
         /// و`UpdateCheckWorker` كي يحلّ أحدهما محلّ الآخر لا أن يتكدّسا.
         const val UPDATE_NOTIFICATION_ID = 950
+
+        /// احتياط توليد معرّف إشعار حين تغيب `messageId`: البذرة من اللحظة
+        /// الحالية والزيادة ذرّية فلا يتصادم إشعاران في العملية الواحدة.
+        private val fallbackNotificationId = java.util.concurrent.atomic.AtomicInteger(
+            (System.currentTimeMillis() % Int.MAX_VALUE).toInt(),
+        )
 
         /**
          * «الحمولة ← وجهة» — مصدر الحقيقة الوحيد للتوجيه، يستعمله هذا

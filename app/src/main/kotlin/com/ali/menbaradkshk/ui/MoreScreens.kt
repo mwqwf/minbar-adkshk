@@ -271,13 +271,14 @@ fun CarScreen(vm: AppViewModel, playback: PlaybackUiState) {
                     val target = (playback.positionMs - 30_000L).coerceAtLeast(0L)
                     vm.playback.seekTo(target)
                 },
-                size = 116.dp,
+                size = 124.dp,
                 tint = Color.White,
                 background = Color.White.copy(alpha = 0.16f),
             )
+            // ⭐ زرّ التشغيل أضخم ما في التطبيق كلّه (١٦٤dp): يُضغط بلا نظر.
             Box(
                 modifier = Modifier
-                    .size(140.dp)
+                    .size(164.dp)
                     .background(GreenBrand, CircleShape)
                     .clickable { vm.playback.toggle() },
                 contentAlignment = Alignment.Center,
@@ -286,7 +287,7 @@ fun CarScreen(vm: AppViewModel, playback: PlaybackUiState) {
                     if (playback.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                     contentDescription = if (playback.playing) "إيقاف" else "تشغيل",
                     tint = Color.White,
-                    modifier = Modifier.size(90.dp),
+                    modifier = Modifier.size(108.dp),
                 )
             }
         }
@@ -301,38 +302,96 @@ fun CarScreen(vm: AppViewModel, playback: PlaybackUiState) {
             // ⚠️ «السابق/التالي» يتعطّلان عند طرفي القائمة مع تعتيم ظاهر —
             // نفس ما أُصلح في شاشة المشغّل: زرٌّ بكامل التباين لا يفعل شيئاً
             // يوحي للسائق (الذي يضغط بلا نظر) أنّ التطبيق معلّق.
+            // 🔎 أهداف لمسٍ أكبر للسائق: ٨٨dp للزرّ و٦٢dp للأيقونة —
+            // القفز (بمقدار الإعداد، افتراضه ١٥ث) أكثر ما يُضغط بلا نظر.
             IconButton(
                 onClick = vm.playback::previous,
                 enabled = playback.hasPrevious,
-                modifier = Modifier.size(72.dp),
+                modifier = Modifier.size(88.dp),
             ) {
                 Icon(
                     Icons.Filled.SkipPrevious,
                     "السابق",
                     tint = if (playback.hasPrevious) Color.White else Color.White.copy(alpha = 0.3f),
-                    modifier = Modifier.size(50.dp),
+                    modifier = Modifier.size(62.dp),
                 )
             }
-            IconButton(onClick = vm.playback::skipBackward, modifier = Modifier.size(72.dp)) {
-                Icon(Icons.Filled.Replay, "رجوع", tint = Color.White, modifier = Modifier.size(50.dp))
+            IconButton(onClick = vm.playback::skipBackward, modifier = Modifier.size(88.dp)) {
+                Icon(Icons.Filled.Replay, "رجوع", tint = Color.White, modifier = Modifier.size(62.dp))
             }
-            IconButton(onClick = vm.playback::skipForward, modifier = Modifier.size(72.dp)) {
-                Icon(Icons.Filled.FastForward, "تقديم", tint = Color.White, modifier = Modifier.size(50.dp))
+            IconButton(onClick = vm.playback::skipForward, modifier = Modifier.size(88.dp)) {
+                Icon(Icons.Filled.FastForward, "تقديم", tint = Color.White, modifier = Modifier.size(62.dp))
             }
             IconButton(
                 onClick = vm.playback::next,
                 enabled = playback.hasNext,
-                modifier = Modifier.size(72.dp),
+                modifier = Modifier.size(88.dp),
             ) {
                 Icon(
                     Icons.Filled.SkipNext,
                     "التالي",
                     tint = if (playback.hasNext) Color.White else Color.White.copy(alpha = 0.3f),
-                    modifier = Modifier.size(50.dp),
+                    modifier = Modifier.size(62.dp),
                 )
             }
         }
         Spacer(Modifier.weight(1f))
+        // 🚗 «افتح وضع القيادة تلقائياً عند اتصال بلوتوث السيارة» — معطَّل
+        // افتراضياً، وإعداده **هنا** حيث يعنيه صاحبه لا في قوائم الإعدادات.
+        // إذن BLUETOOTH_CONNECT (أندرويد 12+) يُطلب عند التفعيل وحده — لا
+        // عند الإقلاع ولا لغير المهتمّين. والميزة تعمل والتطبيق حيّ فقط
+        // (مستقبِل مسجَّل في MainActivity، لا مستقبِل بيان يوقظ التطبيق).
+        BluetoothCarModeRow(vm)
+    }
+}
+
+/// صفّ مفتاح البلوتوث في أسفل وضع القيادة — ألوان صريحة على السواد كالبقية.
+@Composable
+private fun BluetoothCarModeRow(vm: AppViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val revision by vm.store.revision.collectAsState()
+    val enabled = remember(revision) { vm.store.bluetoothCarModeEnabled() }
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            vm.setBluetoothCarMode(true)
+        } else {
+            vm.showMessage("يلزم إذن البلوتوث لرصد اتصال السيارة.")
+        }
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "افتح وضع القيادة تلقائياً عند اتصال بلوتوث السيارة",
+            color = Color.White.copy(alpha = 0.6f),
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f),
+        )
+        androidx.compose.material3.Switch(
+            checked = enabled,
+            onCheckedChange = { wanted ->
+                if (!wanted) {
+                    vm.setBluetoothCarMode(false)
+                    return@Switch
+                }
+                val needsPermission =
+                    android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
+                        androidx.core.content.ContextCompat.checkSelfPermission(
+                            context,
+                            android.Manifest.permission.BLUETOOTH_CONNECT,
+                        ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                if (needsPermission) {
+                    permission.launch(android.Manifest.permission.BLUETOOTH_CONNECT)
+                } else {
+                    vm.setBluetoothCarMode(true)
+                }
+            },
+        )
     }
 }
 

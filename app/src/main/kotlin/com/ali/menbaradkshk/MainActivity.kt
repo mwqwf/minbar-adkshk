@@ -102,6 +102,49 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 🚗 مستقبِل اتصال البلوتوث — يعمل **والتطبيق حيّ فقط** (لا مستقبِل بيان
+     * يوقظه من موته، ولا إذن يُطلب عند الإقلاع). حين يتّصل جهاز بلوتوث
+     * والإعداد مفعَّل يُفتح وضع القيادة. الفحص الحقيقيّ داخل
+     * [AppViewModel.openCarModeFromBluetooth]، فالمستقبِل نفسه بلا منطق.
+     */
+    private val bluetoothReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: Intent?) {
+            if (intent?.action == android.bluetooth.BluetoothDevice.ACTION_ACL_CONNECTED) {
+                viewModel.openCarModeFromBluetooth()
+            }
+        }
+    }
+    private var bluetoothReceiverRegistered = false
+
+    override fun onStart() {
+        super.onStart()
+        // التسجيل غير المشروط بالإعداد رخيص (لا شيء يُنفَّذ والإعداد مطفأ)،
+        // وبه يسري تفعيل الإعداد فوراً بلا إعادة تشغيل. أخطاء المنصّات
+        // الغريبة لا تُسقط التطبيق.
+        if (!bluetoothReceiverRegistered) {
+            runCatching {
+                androidx.core.content.ContextCompat.registerReceiver(
+                    this,
+                    bluetoothReceiver,
+                    android.content.IntentFilter(
+                        android.bluetooth.BluetoothDevice.ACTION_ACL_CONNECTED,
+                    ),
+                    androidx.core.content.ContextCompat.RECEIVER_EXPORTED,
+                )
+                bluetoothReceiverRegistered = true
+            }
+        }
+    }
+
+    override fun onStop() {
+        if (bluetoothReceiverRegistered) {
+            runCatching { unregisterReceiver(bluetoothReceiver) }
+            bluetoothReceiverRegistered = false
+        }
+        super.onStop()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)

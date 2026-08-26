@@ -1125,6 +1125,77 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         BackgroundScheduler.scheduleAutoDownload(getApplication())
     }
 
+    /// 🧠 «التنزيل الذكي» — جديد المتابعات عبر الواي فاي (انظر SmartDownloadWorker).
+    fun setSmartDownloadEnabled(enabled: Boolean) {
+        store.setSmartDownloadEnabled(enabled)
+        BackgroundScheduler.scheduleSmartDownload(getApplication())
+    }
+
+    /// 🚗 «افتح وضع القيادة تلقائياً عند اتصال بلوتوث السيارة».
+    fun setBluetoothCarMode(enabled: Boolean) {
+        store.setBluetoothCarModeEnabled(enabled)
+    }
+
+    /// نداء مستقبِل البلوتوث في MainActivity: لا يفتح فوق وضع القيادة نفسه.
+    fun openCarModeFromBluetooth() {
+        if (!store.bluetoothCarModeEnabled()) return
+        if (_route.value == Route.Car) return
+        open(Route.Car)
+    }
+
+    // ---- ⬆️ إظهار/إخفاء زرّ «شارك درساً» العائم مع اتجاه تمرير الرئيسية ----
+    private val _homeFabVisible = MutableStateFlow(true)
+    val homeFabVisible: StateFlow<Boolean> = _homeFabVisible.asStateFlow()
+
+    fun setHomeFabVisible(visible: Boolean) {
+        _homeFabVisible.value = visible
+    }
+
+    // ---- 🎉 احتفال إتمام قسم فرعي (مرّة واحدة لكل قسم) ----
+    private val _celebration = MutableStateFlow<com.ali.menbaradkshk.data.Subcategory?>(null)
+    val celebration: StateFlow<com.ali.menbaradkshk.data.Subcategory?> = _celebration.asStateFlow()
+
+    fun dismissCelebration() {
+        _celebration.value = null
+    }
+
+    /// يراقب علامات «مكتمل»: درسٌ اكتمل للتوّ **وأتمّ قسمه الفرعيّ كلَّه**
+    /// ⇒ حوار تهنئة واحد لذلك القسم في العمر. الحساب على Dispatchers.Default
+    /// ويقتصر على الدروس الجديدة في الفرق لا على كلّ الأقسام.
+    private fun watchSectionCompletion() {
+        viewModelScope.launch(Dispatchers.Default) {
+            var known = store.completedIds().toSet()
+            store.revision.collect {
+                val current = store.completedIds().toSet()
+                val fresh = current - known
+                known = current
+                if (fresh.isEmpty()) return@collect
+                val state = content.state.value
+                val celebrated = store.celebratedSubcategories().toSet()
+                for (id in fresh) {
+                    val lesson = state.lessonById[id] ?: continue
+                    val subId = lesson.subcategoryId.takeIf { s -> s.isNotBlank() } ?: continue
+                    if (subId in celebrated) continue
+                    val (done, total) = content.seriesProgress(subId)
+                    if (total > 0 && done >= total) {
+                        val sub = state.subcategoryById[subId] ?: continue
+                        store.markSubcategoryCelebrated(subId)
+                        _celebration.value = sub
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    // ⚠️ `init` ثانٍ **بعد** إعلان `_celebration` عمداً (نفس علّة `init` الأوّل
+    // الموثّقة أعلاه): الاستدعاء قبل تهيئة الخاصيّة كان سيقرأ null فينهار.
+    init {
+        // عدّاد الجلسات (كتابة صامتة) — عليه يُبنى اقتراح تنزيل القسم المفضّل.
+        store.incrementAppSession()
+        watchSectionCompletion()
+    }
+
     /// «شارك إلى منبر» من تطبيق خارجي: يفتح نموذج المساهمة فوراً، ثم ينسخ
     /// الملفات الواردة إلى كاش التطبيق. النسخ مقصود: إذن قراءة `content://`
     /// القادم من تطبيق آخر مؤقّت ولا يقبل `takePersistableUriPermission`،

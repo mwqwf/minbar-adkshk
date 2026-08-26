@@ -261,6 +261,25 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
             vm.consumeMessage()
         }
     }
+    // 📴 إشعار المشغّل («انقطع الإنترنت — أُكمل التشغيل من التنزيلات»)
+    // — خبرُ نجاةٍ لا خطأ، فيمرّ Snackbar عادياً في كل الشاشات.
+    val playbackNotice by vm.playback.notice.collectAsState()
+    LaunchedEffect(playbackNotice) {
+        playbackNotice?.let {
+            snackbar.showSnackbar(it)
+            vm.playback.consumeNotice()
+        }
+    }
+    // 🎉 احتفال إتمام قسم فرعي — مرّة واحدة لكل قسم (انظر AppViewModel).
+    val celebration by vm.celebration.collectAsState()
+    celebration?.let { sub ->
+        CompletionCertificateDialog(
+            vm = vm,
+            subcategory = sub,
+            onDismiss = { vm.dismissCelebration() },
+            celebratory = true,
+        )
+    }
     // ↩️ شريط «تراجع» للأفعال القابلة للرجوع (الإزالة من قائمة تشغيل مثلاً).
     val undo by vm.undo.collectAsState()
     LaunchedEffect(undo) {
@@ -438,13 +457,24 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         },
         snackbarHost = { SnackbarHost(snackbar) },
         floatingActionButton = {
-            // 📤 «شارك درساً» يظهر في تبويب الرئيسية فقط (نمط الأصل).
+            // 📤 «شارك درساً» يظهر في تبويب الرئيسية فقط (نمط الأصل) —
+            // ويتوارى مع التمرير للأسفل ويعود مع الصعود (نمط FAB القياسيّ):
+            // كان يبقى فوق بطاقة «وِرد اليوم» فيغطّيها على الشاشات القصيرة.
+            val fabVisible by vm.homeFabVisible.collectAsState()
             if (route == Route.Home) {
-                ExtendedFloatingActionButton(
-                    onClick = { vm.open(Route.Contribute) },
-                    icon = { Icon(Icons.Filled.MicExternalOn, contentDescription = null) },
-                    text = { Text("شارك درساً") },
-                )
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = fabVisible,
+                    enter = androidx.compose.animation.fadeIn() +
+                        androidx.compose.animation.scaleIn(initialScale = .8f),
+                    exit = androidx.compose.animation.fadeOut() +
+                        androidx.compose.animation.scaleOut(targetScale = .8f),
+                ) {
+                    ExtendedFloatingActionButton(
+                        onClick = { vm.open(Route.Contribute) },
+                        icon = { Icon(Icons.Filled.MicExternalOn, contentDescription = null) },
+                        text = { Text("شارك درساً") },
+                    )
+                }
             }
         },
         bottomBar = {

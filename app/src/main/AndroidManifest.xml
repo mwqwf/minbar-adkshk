@@ -18,6 +18,12 @@
          ليكتب اقتراحاً لا يُسأل عن ميكروفونه بلا سبب ظاهر فيرفضه دائماً. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- 🚗 «افتح وضع القيادة تلقائياً عند اتصال بلوتوث السيارة»: إذن وقت
+         التشغيل يُطلب **عند تفعيل الإعداد وحده** (وهو معطّل افتراضياً)، ولا
+         مستقبِل بيان يوقظ التطبيق — الرصد والتطبيق حيّ فقط (MainActivity).
+         عتاد البلوتوث مُعلَن required=false أدناه فلا يُسقط Play أيّ جهاز. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
     <!-- ⛔ أذونات الصور (READ_MEDIA_IMAGES و VISUAL_USER_SELECTED و
          READ_EXTERNAL_STORAGE) حُذفت عمداً 2026-08-25: كانت تُلزمنا بنموذج
          «الوظيفة الأساسيّة للصور والفيديوهات» في Play. كلّ اختيار للصور في

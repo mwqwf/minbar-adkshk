@@ -30,6 +30,8 @@ import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.DownloadForOffline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
@@ -79,6 +81,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -135,11 +138,13 @@ fun HomeScreen(
             val hasHistory = vm.content.hasHistory()
             HomeRailsData(
                 ward = vm.content.dailyWard(),
+                // الترتيب هنا هو ترتيب الأولويّة في إسقاط المكرّر **والعرض**:
+                // المختارات والرائج يظهران دائماً، والبقيّة خلف «المزيد».
                 rails = listOf(
                     Triple(featuredRailTitle, vm.content.featured(), false),
+                    Triple(trendingRailTitle, vm.content.trending(), false),
                     Triple("تابع الاستماع", vm.content.continueListening(), true),
                     Triple("لم تُكمله بعد", vm.content.unfinished(), true),
-                    Triple("الأكثر استماعاً هذا الأسبوع 🔥", vm.content.trending(), false),
                     Triple("الأكثر استماعاً", vm.content.mostListened(), false),
                     Triple("الأحدث", vm.content.newest(), false),
                     Triple("استكمل قسمك", vm.content.continueSection(), false),
@@ -185,6 +190,35 @@ fun HomeScreen(
         resumeItemOf(vm, state, savedIds)
     }
 
+    // ⬆️ زرّ «شارك درساً» العائم يتوارى مع التمرير للأسفل ويعود مع الصعود
+    // (نمط FAB القياسيّ): كان يغطّي بطاقة «وِرد اليوم» على الشاشات القصيرة.
+    // الحالة تُبلَّغ إلى MinbarApp (مالك الزرّ) عبر الـViewModel.
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    LaunchedEffect(listState) {
+        var lastIndex = listState.firstVisibleItemIndex
+        var lastOffset = listState.firstVisibleItemScrollOffset
+        androidx.compose.runtime.snapshotFlow {
+            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+        }.collect { (index, offset) ->
+            when {
+                index > lastIndex || (index == lastIndex && offset > lastOffset + 6) ->
+                    vm.setHomeFabVisible(false)
+                index < lastIndex || (index == lastIndex && offset < lastOffset - 6) ->
+                    vm.setHomeFabVisible(true)
+            }
+            lastIndex = index
+            lastOffset = offset
+        }
+    }
+    DisposableEffect(Unit) { onDispose { vm.setHomeFabVisible(true) } }
+
+    // ⤵️ حالة «المزيد» — تُقرأ مرّة عند الدخول وتُحفظ بكتابة صامتة عند التبديل.
+    val homeMoreExpandedState = remember { mutableStateOf(vm.store.homeMoreExpanded()) }
+
+    // 📥 اقتراح تنزيل القسم المفضّل — مرّة واحدة في العمر، ومن الجلسة الثالثة
+    // فصاعداً فقط (⛔ لا في أوّل جلسة بعد التثبيت)، ولمن لم يُنزّل بنفسه بعد.
+    SectionDownloadSuggestion(vm, state)
+
     PullToRefreshBox(
         isRefreshing = state.syncing,
         onRefresh = { vm.content.requestDeepRefresh() },
@@ -192,7 +226,11 @@ fun HomeScreen(
     ) {
         // ٨٨dp أسفل القائمة: زرّ «شارك درساً» العائم (٥٦dp + ١٦dp هامشه) كان
         // يغطّي آخر بطاقة، والحشوة تُبقيها كاملةً فوقه.
-        LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 88.dp),
+        ) {
             // ⚠️ حين لا شبكة أصلاً يظهر SavedOnlyBar وحده: كان الشريطان
             // يتكدّسان معاً — رسالتا انقطاع متلاصقتان بنفس اللون والأيقونة —
             // و«إعادة المحاولة» بلا شبكة عبث. شريط الخطأ لفشل المزامنة
@@ -223,7 +261,15 @@ fun HomeScreen(
                 item(key = "resume") { ResumeCard(vm, resume) }
             }
 
+            // وِرد اليوم **ثانياً بعد «تابع من حيث وقفت» مباشرة** — تخفيفاً
+            // لأعلى الشاشة. ويسقط في وضع «المحفوظ فقط» إن لم يكن منزَّلاً:
+            // بطاقةٌ كبيرة نقرتها تنتهي بخطأ تشغيل أسوأ من غيابها.
+            if (ward != null && (savedIds == null || ward.id in savedIds)) {
+                item(key = "ward") { DailyWardCard(vm, ward, feed) }
+            }
+
             // 📬 «ما يخصّني» — بطاقات مكتوبة بدل أيقونات الشريط العلوي.
+            // تحت الوِرد (لا فوقه) تخفيفاً لأعلى الشاشة — بلا حذف شيء.
             item { HomeInboxCards(vm) }
 
             // إجراءات سريعة: إذاعة منبر، وضع القيادة، حصادك.
@@ -273,15 +319,11 @@ fun HomeScreen(
                 }
             }
 
-            // وِرد اليوم يسقط في وضع «المحفوظ فقط» إن لم يكن منزَّلاً: بطاقةٌ
-            // كبيرة نقرتها تنتهي بخطأ تشغيل أسوأ من غيابها.
-            if (ward != null && (savedIds == null || ward.id in savedIds)) {
-                item { DailyWardCard(vm, ward, feed) }
-            }
-
+            // ريلان ظاهران دائماً: «مختارات المنبر» ثم «الأكثر استماعاً هذا
+            // الأسبوع» — والبقيّة خلف «المزيد» تخفيفاً للازدحام بلا حذف شيء.
+            val alwaysShown = setOf(featuredRailTitle, trendingRailTitle)
             visibleRails.forEach { (title, lessons, showProgress) ->
-                // «مختارات المنبر» ريلٌ ببطاقات كبيرة مكتوبة (انظر
-                // `FeaturedCard`)، وبقيّة الريلات على حالها.
+                if (title !in alwaysShown) return@forEach
                 if (title == featuredRailTitle) {
                     featuredRailItem(vm, title, lessons, playback)
                 } else {
@@ -289,12 +331,31 @@ fun HomeScreen(
                 }
             }
 
-            if (visibleFeed.isNotEmpty()) {
-                item { RailHeader(feedTitle) }
-                // ⛔ لا يدخل `revision` في المفتاح: كان تبدّله (نبضتان كل خمس
-                // ثوانٍ أثناء التشغيل) يُتلف تركيبة كل صفّ ويعيد بناءها.
-                items(visibleFeed, key = { "feed-${it.id}" }) { lesson ->
-                    AudioItem(vm, lesson, visibleFeed, playback, showActions = false)
+            // ⤵️ «المزيد»: رأسٌ قابل للطيّ يخبّئ بقيّة الريلات و«مقترح لك».
+            // حالته تُحفظ بكتابة صامتة فلا تُبطل remember(revision,…) للتطبيق.
+            val hiddenRails = visibleRails.filter {
+                it.first !in alwaysShown && it.second.isNotEmpty()
+            }
+            if (hiddenRails.isNotEmpty() || visibleFeed.isNotEmpty()) {
+                item(key = "more-header") {
+                    HomeMoreHeader(homeMoreExpandedState.value) {
+                        val next = !homeMoreExpandedState.value
+                        homeMoreExpandedState.value = next
+                        vm.store.setHomeMoreExpanded(next)
+                    }
+                }
+            }
+            if (homeMoreExpandedState.value) {
+                hiddenRails.forEach { (title, lessons, showProgress) ->
+                    railItem(vm, title, lessons, playback, showProgress = showProgress)
+                }
+                if (visibleFeed.isNotEmpty()) {
+                    item { RailHeader(feedTitle) }
+                    // ⛔ لا يدخل `revision` في المفتاح: كان تبدّله (نبضتان كل خمس
+                    // ثوانٍ أثناء التشغيل) يُتلف تركيبة كل صفّ ويعيد بناءها.
+                    items(visibleFeed, key = { "feed-${it.id}" }) { lesson ->
+                        AudioItem(vm, lesson, visibleFeed, playback, showActions = false)
+                    }
                 }
             }
 
@@ -470,6 +531,121 @@ private fun androidx.compose.foundation.lazy.LazyListScope.railItem(
 /// عنوان ريل «مختارات المنبر» — مكتوب مرّة واحدة كي يبقى الريل وبطاقته
 /// المخصّصة مرتبطين ولو تغيّر العنوان.
 const val featuredRailTitle = "مختارات المنبر ⭐"
+
+/// عنوان ريل «الأكثر استماعاً هذا الأسبوع» — ثاني الريلين الظاهرين دائماً.
+const val trendingRailTitle = "الأكثر استماعاً هذا الأسبوع 🔥"
+
+/**
+ * ⤵️ رأس «المزيد» — يطوي بقيّة ريلات الرئيسية ويفتحها.
+ *
+ * الرئيسية كانت ثمانية ريلات متتالية تُغرق الجديدَ والقديم معاً. صار الظاهر
+ * دائماً: المتابعة والوِرد والمختارات والرائج، والبقيّة خلف هذا الرأس —
+ * **بلا حذف أي ريل**. والحالة تُحفظ فمن فتحها مرّة تبقى مفتوحة له.
+ */
+@Composable
+private fun HomeMoreHeader(expanded: Boolean, onToggle: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .6f))
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            if (expanded) "أخفِ القوائم الإضافية" else "المزيد من القوائم",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.weight(1f),
+        )
+        Icon(
+            if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+            contentDescription = if (expanded) "طيّ" else "توسيع",
+            tint = brandTintOnSurface(Teal),
+        )
+    }
+}
+
+/**
+ * 📥 اقتراح تنزيل القسم المفضّل — **مرّة واحدة في العمر**.
+ *
+ * لجمهورٍ إنترنته ضعيف، أنفع نصيحة هي: نزّل ما تسمعه كثيراً وأنت متّصل.
+ * يظهر الحوار من **الجلسة الثالثة** فصاعداً (⛔ لا في أوّل جلسة بعد
+ * التثبيت)، ويقترح القسم الفرعيّ الأكثر زيارةً — أو أوّل متابعاته — الذي
+ * فيه دروس غير منزَّلة. ومن ينزّل بنفسه أصلاً (عشرة دروس فأكثر) لا يُقترح
+ * عليه شيء: هو لا يحتاج الدرس.
+ */
+@Composable
+private fun SectionDownloadSuggestion(vm: AppViewModel, state: ContentState) {
+    var suggestion by remember {
+        mutableStateOf<Pair<Subcategory, List<Lesson>>?>(null)
+    }
+    LaunchedEffect(state.lessons.isEmpty()) {
+        if (state.lessons.isEmpty()) return@LaunchedEffect
+        if (vm.store.sectionDownloadOffered()) return@LaunchedEffect
+        if (vm.store.appSessionCount() < 3) return@LaunchedEffect
+        val found = withContext(Dispatchers.Default) {
+            val downloaded = vm.downloads.all()
+            // ينزّل بنفسه ⇒ لا وصاية عليه.
+            if (downloaded.size >= 10) return@withContext null
+            val visits = vm.store.subcategoryVisits()
+            // الأكثر زيارةً (ثلاث زيارات فأكثر — أقلّ منها ليس «كثيراً»)،
+            // ثم المتابعات. لا سجلّ كافياً ⇒ لا اقتراح أصلاً.
+            val candidates = (
+                visits.entries
+                    .filter { it.value >= 3L }
+                    .sortedByDescending { it.value }
+                    .map { it.key } +
+                    vm.store.followedSubcategories()
+                ).distinct()
+            for (subId in candidates) {
+                val sub = state.subcategoryById[subId] ?: continue
+                val lessons = state.lessons.filter {
+                    it.subcategoryId == subId && it.audioUrl.isNotBlank()
+                }
+                if (lessons.isEmpty()) continue
+                if (lessons.all { it.id in downloaded }) continue
+                return@withContext sub to lessons
+            }
+            null
+        } ?: return@LaunchedEffect
+        // تُعلَّم «عُرض» فور العرض: مرّة واحدة في العمر مهما كان الجواب.
+        vm.store.markSectionDownloadOffered()
+        suggestion = found
+    }
+    suggestion?.let { (sub, lessons) ->
+        AlertDialog(
+            onDismissRequest = { suggestion = null },
+            icon = {
+                Icon(
+                    Icons.Filled.DownloadForOffline,
+                    contentDescription = null,
+                    tint = brandTintOnSurface(Teal),
+                    modifier = Modifier.size(40.dp),
+                )
+            },
+            title = { Text("للاستماع بلا إنترنت") },
+            text = {
+                Text(
+                    "تستمع كثيراً إلى «${sub.name}». " +
+                        "أتريد تنزيله كاملاً للاستماع بلا إنترنت؟",
+                    textAlign = TextAlign.Center,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    suggestion = null
+                    vm.downloadLessons(sub.name, lessons)
+                }) { Text("نعم، نزّله") }
+            },
+            dismissButton = {
+                TextButton(onClick = { suggestion = null }) { Text("لاحقاً") }
+            },
+        )
+    }
+}
 
 /// ريل «مختارات المنبر» ببطاقاته الكبيرة المكتوبة.
 private fun androidx.compose.foundation.lazy.LazyListScope.featuredRailItem(
@@ -1084,19 +1260,44 @@ fun CategoryScreen(vm: AppViewModel, categoryId: String, state: ContentState) {
     }
 }
 
+/**
+ * 🎓 حوار شهادة الإتمام — يُفتح من زرّ الشهادة في قائمة الأقسام، **ويُعاد
+ * استعماله حرفياً** حواراً للاحتفال التلقائيّ عند إتمام آخر درس في قسم
+ * (انظر `AppViewModel.celebration`) — [celebratory] يبدّل الصياغة وحدها.
+ *
+ * «شارك الإنجاز» يولّد **صورة شهادة محليّاً** (Bitmap بألوان الهوية: الاسم إن
+ * وُجد، اسم القسم، عدد الدروس، أيقونة التطبيق) ويشاركها بآليّة FileProvider
+ * القائمة نفسها — وإن تعذّر الرسم لأيّ سبب ارتدّت المشاركة نصّاً بلا انهيار.
+ */
 @Composable
-private fun CompletionCertificateDialog(vm: AppViewModel, subcategory: Subcategory, onDismiss: () -> Unit) {
+fun CompletionCertificateDialog(
+    vm: AppViewModel,
+    subcategory: Subcategory,
+    onDismiss: () -> Unit,
+    celebratory: Boolean = false,
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val lessonsCount = remember(subcategory.id) {
+        vm.content.seriesProgress(subcategory.id).second
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         text = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(Icons.Filled.WorkspacePremium, contentDescription = null, tint = GoldOnDark, modifier = Modifier.size(64.dp))
                 Spacer(Modifier.height(12.dp))
-                Text("شهادة إتمام", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    if (celebratory) "أتممتَ «${subcategory.name}» كاملاً 🎉" else "شهادة إتمام",
+                    style = MaterialTheme.typography.titleLarge,
+                    textAlign = TextAlign.Center,
+                )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "أتممت الاستماع إلى سلسلة\n«${subcategory.name}»",
+                    if (celebratory) {
+                        "استمعتَ إلى دروس السلسلة كلّها — هنيئاً لك."
+                    } else {
+                        "أتممت الاستماع إلى سلسلة\n«${subcategory.name}»"
+                    },
                     textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.bodyLarge,
                 )
@@ -1107,29 +1308,180 @@ private fun CompletionCertificateDialog(vm: AppViewModel, subcategory: Subcatego
         confirmButton = {
             TextButton(onClick = {
                 onDismiss()
-                context.startActivity(
-                    android.content.Intent.createChooser(
-                        android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(
-                                android.content.Intent.EXTRA_TEXT,
-                                // سطر التطبيق يجعل الشهادة دعوةً لمن يقرأها.
-                                // «إليها» عائدة على السلسلة (مؤنّثة)، واسم
-                                // التطبيق مرّة واحدة لا في سطرين متتاليين.
-                                "أتممتُ سلسلة «${subcategory.name}» في تطبيق «منبر ادكصهك» 🎓\n" +
-                                    "استمع إليها من هنا:\n" +
-                                    "https://play.google.com/store/apps/details?id=com.ali.menbaradkshk",
-                            )
-                        },
-                        "مشاركة",
-                    ),
+                shareCompletionCertificate(
+                    context = context,
+                    userName = vm.store.submitterName(),
+                    sectionName = subcategory.name,
+                    lessonsCount = lessonsCount,
                 )
-            }) { Text("مشاركة") }
+            }) { Text(if (celebratory) "شارك الإنجاز" else "مشاركة") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("إغلاق") }
         },
     )
+}
+
+/// نصّ الدعوة المصاحب للشهادة — واحد للمسارين (صورة أو نصّ خالص).
+private fun certificateShareText(sectionName: String): String =
+    // سطر التطبيق يجعل الشهادة دعوةً لمن يقرأها. «إليها» عائدة على
+    // السلسلة (مؤنّثة)، واسم التطبيق مرّة واحدة لا في سطرين متتاليين.
+    "أتممتُ سلسلة «$sectionName» في تطبيق «منبر ادكصهك» 🎓\n" +
+        "استمع إليها من هنا:\n" +
+        "https://play.google.com/store/apps/details?id=com.ali.menbaradkshk"
+
+/// يرسم صورة الشهادة ويشاركها؛ الفشل في أي خطوة يرتدّ إلى مشاركة النصّ.
+private fun shareCompletionCertificate(
+    context: android.content.Context,
+    userName: String,
+    sectionName: String,
+    lessonsCount: Int,
+) {
+    val text = certificateShareText(sectionName)
+    val intent = runCatching {
+        val bitmap = drawCertificateBitmap(context, userName, sectionName, lessonsCount)
+        val directory = java.io.File(context.cacheDir, "share").apply { mkdirs() }
+        val file = java.io.File(directory, "شهادة إتمام.png")
+        file.outputStream().use { out ->
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+        }
+        bitmap.recycle()
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file,
+        )
+        android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "image/png"
+            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            putExtra(android.content.Intent.EXTRA_TEXT, text)
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    }.getOrElse {
+        android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_TEXT, text)
+        }
+    }
+    runCatching {
+        context.startActivity(android.content.Intent.createChooser(intent, "مشاركة"))
+    }
+}
+
+/**
+ * 🖼️ رسم صورة الشهادة محليّاً — **بألوان الهوية حصراً** (حبر ليليّ + ذهب +
+ * جوهر سماويّ من Theme.kt) وبأيقونة التطبيق نفسها. لا شبكة ولا مكتبات.
+ */
+private fun drawCertificateBitmap(
+    context: android.content.Context,
+    userName: String,
+    sectionName: String,
+    lessonsCount: Int,
+): android.graphics.Bitmap {
+    val width = 1080
+    val height = 1350
+    val bitmap = android.graphics.Bitmap.createBitmap(
+        width, height, android.graphics.Bitmap.Config.ARGB_8888,
+    )
+    val canvas = android.graphics.Canvas(bitmap)
+    val centerX = width / 2f
+
+    // الخلفيّة: تدرّج الحبر الليليّ نفسه المشتقّ من أيقونة التطبيق.
+    val background = android.graphics.Paint().apply {
+        shader = android.graphics.LinearGradient(
+            0f, 0f, 0f, height.toFloat(),
+            Ink800.toArgb(),
+            Ink600.toArgb(),
+            android.graphics.Shader.TileMode.CLAMP,
+        )
+    }
+    canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), background)
+
+    // إطار ذهبيّ مزدوج — بساطة الهوية: خطّان لا زخرفة.
+    val gold = Gold400.toArgb()
+    val frame = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        style = android.graphics.Paint.Style.STROKE
+        color = gold
+        strokeWidth = 6f
+    }
+    canvas.drawRoundRect(40f, 40f, width - 40f, height - 40f, 36f, 36f, frame)
+    frame.strokeWidth = 2f
+    canvas.drawRoundRect(58f, 58f, width - 58f, height - 58f, 28f, 28f, frame)
+
+    // أيقونة التطبيق في الأعلى.
+    runCatching {
+        androidx.core.content.ContextCompat.getDrawable(
+            context, com.ali.menbaradkshk.R.mipmap.ic_launcher,
+        )?.let { drawable ->
+            val size = 180
+            val left = (width - size) / 2
+            drawable.setBounds(left, 120, left + size, 120 + size)
+            drawable.draw(canvas)
+        }
+    }
+
+    fun textPaint(sizePx: Float, colorInt: Int, bold: Boolean) =
+        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            textAlign = android.graphics.Paint.Align.CENTER
+            textSize = sizePx
+            color = colorInt
+            typeface = if (bold) {
+                android.graphics.Typeface.create(
+                    android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD,
+                )
+            } else {
+                android.graphics.Typeface.DEFAULT
+            }
+        }
+
+    val white = android.graphics.Color.WHITE
+    val soft = android.graphics.Color.argb(200, 255, 255, 255)
+    canvas.drawText("منبر ادكصهك", centerX, 400f, textPaint(52f, soft, false))
+    canvas.drawText("شهادة إتمام", centerX, 520f, textPaint(88f, gold, true))
+    var y = 660f
+    if (userName.isNotBlank()) {
+        canvas.drawText(userName, centerX, y, textPaint(64f, white, true))
+        y += 110f
+    }
+    canvas.drawText("أتمّ الاستماع إلى سلسلة", centerX, y, textPaint(48f, soft, false))
+    y += 110f
+    // اسم القسم قد يطول — يُقسم على سطرين عند الحاجة بقصٍّ بسيط على الكلمات.
+    val namePaint = textPaint(66f, white, true)
+    val name = "«$sectionName»"
+    if (namePaint.measureText(name) <= width - 160f) {
+        canvas.drawText(name, centerX, y, namePaint)
+        y += 120f
+    } else {
+        val words = name.split(' ')
+        val first = StringBuilder()
+        var index = 0
+        while (index < words.size) {
+            val next = if (first.isEmpty()) words[index] else "$first ${words[index]}"
+            if (namePaint.measureText(next) > width - 160f) break
+            first.setLength(0)
+            first.append(next)
+            index++
+        }
+        canvas.drawText(first.toString(), centerX, y, namePaint)
+        y += 90f
+        canvas.drawText(
+            words.drop(index).joinToString(" "), centerX, y, namePaint,
+        )
+        y += 120f
+    }
+    if (lessonsCount > 0) {
+        canvas.drawText(
+            "كاملةً — ${arabicCountLabel(lessonsCount, "درسٌ واحد", "درسان", "دروس", "درساً")}",
+            centerX, y, textPaint(48f, soft, false),
+        )
+        y += 130f
+    }
+    canvas.drawText("نسأل الله له العلم النافع 🌿", centerX, y, textPaint(44f, gold, false))
+    canvas.drawText(
+        "play.google.com/store/apps/details?id=com.ali.menbaradkshk",
+        centerX, height - 110f, textPaint(28f, soft, false),
+    )
+    return bitmap
 }
 
 // ----------------------------------------------------------------------------

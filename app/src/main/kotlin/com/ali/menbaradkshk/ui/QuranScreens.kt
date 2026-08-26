@@ -167,6 +167,54 @@ fun QuranIndexScreen(vm: AppViewModel) {
         }
     }
 
+    // 📥 عرض «نزّل المصحف كاملاً؟» — **مرّة واحدة في العمر**، ومن الزيارة
+    // الثانية فصاعداً فقط (⛔ لا عند أوّل فتح للتطبيق ولا أوّل زيارة للمصحف)،
+    // وفقط إن لم تكن صور المصحف منزَّلة كاملةً. «نعم» يسلك مسار زرّ
+    // «بلا إنترنت» القائم نفسه (downloadMushafPages).
+    var offlineOffer by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        val previousVisits = vm.store.quranVisitCount()
+        vm.store.incrementQuranVisit()
+        if (previousVisits < 1 || vm.store.quranOfflineOffered()) return@LaunchedEffect
+        val complete = withContext(Dispatchers.IO) {
+            vm.quranDownloads.downloadedPageCount(riwaya) >=
+                com.ali.menbaradkshk.data.MushafRepository.PAGE_COUNT
+        }
+        if (complete) return@LaunchedEffect
+        // تُعلَّم «عُرض» فور العرض: لا يعود أبداً مهما كان الجواب.
+        vm.store.markQuranOfflineOffered()
+        offlineOffer = true
+    }
+    if (offlineOffer) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { offlineOffer = false },
+            icon = {
+                Icon(
+                    Icons.Filled.Download,
+                    contentDescription = null,
+                    tint = Teal,
+                    modifier = Modifier.size(40.dp),
+                )
+            },
+            title = { Text("المصحف بلا إنترنت") },
+            text = {
+                Text(
+                    "أتريد تنزيل المصحف كاملاً للقراءة بلا إنترنت؟",
+                    textAlign = TextAlign.Center,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    offlineOffer = false
+                    vm.downloadMushafPages(riwaya)
+                }) { Text("نعم، نزّله") }
+            },
+            dismissButton = {
+                TextButton(onClick = { offlineOffer = false }) { Text("لاحقاً") }
+            },
+        )
+    }
+
     Column(Modifier.fillMaxSize()) {
         RiwayaSelector(loaded, riwaya) { vm.setRiwaya(it) }
 

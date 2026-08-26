@@ -353,6 +353,19 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                         )
                     }
                 }
+                item(key = "smartdl") {
+                    // 🧠 مستقلّ عن «التنزيل التلقائي» أعلاه: مفعَّل افتراضياً
+                    // لأنّه واي فاي فقط + بطارية غير منخفضة، فلا كلفة بيانات.
+                    val smart = remember(revision) { vm.store.smartDownloadEnabled() }
+                    SettingsTile(
+                        icon = Icons.Filled.Wifi,
+                        title = "التنزيل الذكي",
+                        subtitle = "نزّل الجديد من متابعاتي تلقائياً عبر الواي فاي",
+                        trailing = {
+                            Switch(checked = smart, onCheckedChange = vm::setSmartDownloadEnabled)
+                        },
+                    )
+                }
                 item(key = "dl-favs") {
                     SettingsTile(
                         icon = Icons.Filled.Favorite,

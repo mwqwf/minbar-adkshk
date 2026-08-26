@@ -163,6 +163,9 @@ class PlaybackController(context: Context) {
         override fun onEvents(player: Player, events: Player.Events) = publish(player)
 
         override fun onPlayerError(error: PlaybackException) {
+            // 📴 انقطاع شبكة ودرسٌ منزَّل في المتناول؟ نُكمل من التنزيلات
+            // تلقائياً بدل شاشة خطأ — انظر [tryOfflineFallback].
+            if (isNetworkError(error) && tryOfflineFallback()) return
             // بعد أيّ خطأ يعود المشغّل إلى STATE_IDLE؛ نُصفّر مؤشّرات الحالة كي لا
             // تبقى عالقة على «جارٍ التحميل» فتُعطَّل أزرار التشغيل.
             _state.value = _state.value.copy(
@@ -365,6 +368,48 @@ class PlaybackController(context: Context) {
         _state.value = _state.value.copy(error = null)
         player.prepare()
         player.play()
+    }
+
+    /// 💬 إشعار خفيف من المشغّل للواجهة (Snackbar) — مستقلّ عن [PlaybackUiState.error]
+    /// لأنّه خبرُ نجاةٍ لا خطأ: «أُكمل التشغيل من التنزيلات».
+    private val _notice = MutableStateFlow<String?>(null)
+    val notice: StateFlow<String?> = _notice.asStateFlow()
+
+    fun consumeNotice() {
+        _notice.value = null
+    }
+
+    /// آخر محاولة إكمال بلا إنترنت — حارس ضدّ حلقة محاولات متلاحقة.
+    private var offlineFallbackAtMs = 0L
+
+    private fun isNetworkError(error: PlaybackException): Boolean =
+        error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+
+    /**
+     * 📴 **إكمال بلا إنترنت**: فشل التشغيل بسبب الشبكة، فإن كان الدرس نفسه —
+     * أو التالي فالذي يليه في القائمة — منزَّلاً على الجهاز شُغِّل تلقائياً،
+     * مع إخبار المستخدم بسطر واحد. يخصّ الدروس وحدها (تلاوة المصحف لها
+     * ملفاتها المنفصلة و`lastLesson` يكون null فيها أصلاً).
+     */
+    private fun tryOfflineFallback(): Boolean {
+        val player = controller ?: return false
+        if (lastLesson == null || lastQueue.isEmpty()) return false
+        // لا أكثر من محاولة كل عشر ثوانٍ: لو فشل البديل أيضاً لا ندور إلى الأبد.
+        val now = System.currentTimeMillis()
+        if (now - offlineFallbackAtMs < 10_000L) return false
+        val failedId = player.currentMediaItem?.mediaId.orEmpty()
+        if (failedId.isNotBlank() && !PlaybackService.isLesson(failedId)) return false
+        val failedIndex = lastQueue.indexOfFirst { it.id == failedId }
+        // الدرس نفسه أولاً (قد يكون منزَّلاً وفشل رابط شبكيّ عابر)، ثم ما بعده.
+        val candidates = if (failedIndex >= 0) lastQueue.drop(failedIndex) else lastQueue
+        val fallback = candidates.firstOrNull { downloads.isDownloaded(it.id) } ?: return false
+        offlineFallbackAtMs = now
+        _notice.value = "انقطع الإنترنت — أُكمل التشغيل من التنزيلات."
+        // القائمة تُقصَر على المنزَّل كي لا يقفز المشغّل بعده إلى رابط شبكيّ فيفشل ثانية.
+        val offlineQueue = lastQueue.filter { downloads.isDownloaded(it.id) }
+        play(fallback, offlineQueue, restart = true)
+        return true
     }
 
     /// رسالة عربية مناسبة لسبب الفشل — الشبكة أشيع الأسباب.

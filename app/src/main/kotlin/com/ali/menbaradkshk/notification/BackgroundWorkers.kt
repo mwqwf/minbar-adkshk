@@ -209,6 +209,49 @@ class AutoDownloadWorker(
     }
 }
 
+/**
+ * 🧠 «التنزيل الذكي» — جديد الأقسام المتابَعة يُنزَّل من تلقائه.
+ *
+ * مستقلّ عن «التنزيل التلقائي» (ذاك اختياريّ بأهدافه الثلاثة): هذا **مفعَّل
+ * افتراضياً** لأنّه لا يكلّف المستخدم شيئاً — قيوده واي فاي + بطارية غير
+ * منخفضة، وحدُّه عشرة دروس لكل دورة (كل ١٢ ساعة). يمرّ بطابور التحميل
+ * الموجود نفسه فيَرِث الاستئناف وإشعار التقدّم وإعادة المحاولة.
+ */
+class SmartDownloadWorker(
+    context: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result {
+        val store = LocalStore.get(applicationContext)
+        if (!store.smartDownloadEnabled()) return Result.success()
+        val followed = store.followedSubcategories().toSet()
+        // لا متابعات = لا عمل: ينتهي العامل صامتاً بلا طابور ولا إشعار.
+        if (followed.isEmpty()) return Result.success()
+        val content = ContentRepository.get(applicationContext)
+        // فشل المزامنة لا يمنع تحميل ما في الكاش (نمط AutoDownloadWorker نفسه).
+        runCatching { content.refresh(false) }.exceptionOrNull()?.let { failure ->
+            if (failure is kotlinx.coroutines.CancellationException) throw failure
+        }
+        val downloads = DownloadRepository.get(applicationContext)
+        val missing = content.state.value.lessons
+            .filter { it.subcategoryId in followed && it.audioUrl.isNotBlank() }
+            .sortedByDescending { it.createdAtMs }
+            .filterNot { downloads.isDownloaded(it.id) }
+            .take(MAX_PER_RUN)
+            .map { it.id }
+        if (missing.isEmpty()) return Result.success()
+        missing.forEach { downloads.clearCancel(it) }
+        // القيد لكل عنصر: هذه الدفعة واي فاي فقط مهما كانت دفعات المستخدم.
+        store.addToDownloadQueue(missing, "جديد متابعاتك", wifiOnly = true)
+        com.ali.menbaradkshk.data.DownloadScheduler.enqueue(applicationContext)
+        return Result.success()
+    }
+
+    companion object {
+        private const val MAX_PER_RUN = 10
+    }
+}
+
 /// 🔔 فحص التحديث اليوميّ — الطبقة التي كانت ناقصة.
 ///
 /// شاشة التذكير لا تُرى إلا عند **فتح** التطبيق، ومن يفتحه نادراً يبقى على
@@ -251,6 +294,7 @@ object BackgroundScheduler {
     private const val WARD_WORK = "daily_ward"
     private const val QURAN_WARD_WORK = "quran_ward"
     private const val AUTO_DOWNLOAD_WORK = "auto_download"
+    private const val SMART_DOWNLOAD_WORK = "smart_download"
     private const val UPDATE_CHECK_WORK = "update_check"
 
     fun scheduleAll(context: Context) {
@@ -258,8 +302,32 @@ object BackgroundScheduler {
         scheduleWard(context)
         scheduleQuranWard(context)
         scheduleAutoDownload(context)
+        scheduleSmartDownload(context)
         scheduleUpdateCheck(context)
         scheduleAdhkar(context)
+    }
+
+    /// 🧠 «التنزيل الذكي»: كل ١٢ ساعة، واي فاي فقط + بطارية غير منخفضة —
+    /// فلا يمسّ بيانات المستخدم ولا بطاريته (انظر [SmartDownloadWorker]).
+    fun scheduleSmartDownload(context: Context) {
+        val manager = WorkManager.getInstance(context)
+        if (!LocalStore.get(context).smartDownloadEnabled()) {
+            manager.cancelUniqueWork(SMART_DOWNLOAD_WORK)
+            return
+        }
+        val request = PeriodicWorkRequestBuilder<SmartDownloadWorker>(12, TimeUnit.HOURS)
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.UNMETERED)
+                    .setRequiresBatteryNotLow(true)
+                    .build(),
+            )
+            .build()
+        manager.enqueueUniquePeriodicWork(
+            SMART_DOWNLOAD_WORK,
+            ExistingPeriodicWorkPolicy.UPDATE,
+            request,
+        )
     }
 
     /// أربعة تذكيرات مستقلّة، لكلٍّ عملٌ دوريّ يوميّ واحد يُلغى فور إيقافه.

@@ -684,6 +684,51 @@ class LocalStore private constructor(context: Context) {
         return (target - long(KEY_QURAN_WARD_COUNT).toInt()).coerceAtLeast(0)
     }
 
+    // ---- 🧠 «التنزيل الذكي»: جديد المتابعات يُنزَّل تلقائياً عبر الواي فاي ----
+    /// **مفعَّل افتراضياً** عمداً: مقيَّد بواي فاي + بطارية غير منخفضة، فلا
+    /// كلفة بيانات على المستخدم — ومن لا يريده يوقفه من إعدادات التنزيلات.
+    fun smartDownloadEnabled(): Boolean = bool(KEY_SMART_DOWNLOAD, default = true)
+    fun setSmartDownloadEnabled(value: Boolean) = write { putBoolean(KEY_SMART_DOWNLOAD, value) }
+
+    // ---- 📥 عرضا التنزيل المقترَح (مرّة واحدة في العمر لكلٍّ منهما) ----
+
+    /// عدّاد زيارات تبويب المصحف — كتابة صامتة: عدّاد داخليّ لا تُبنى عليه واجهة.
+    fun quranVisitCount(): Int = long(KEY_QURAN_VISITS).toInt()
+    fun incrementQuranVisit() =
+        writeQuiet { putLong(KEY_QURAN_VISITS, (quranVisitCount() + 1).toLong()) }
+
+    /// هل عُرض حوار «نزّل المصحف كاملاً؟» من قبل؟ (لا يعود أبداً بعد أوّل عرض.)
+    fun quranOfflineOffered(): Boolean = bool(KEY_QURAN_OFFLINE_OFFERED)
+    fun markQuranOfflineOffered() = writeQuiet { putBoolean(KEY_QURAN_OFFLINE_OFFERED, true) }
+
+    /// عدّاد جلسات التطبيق (إنشاء الـViewModel) — كتابة صامتة كعدّاد المصحف.
+    fun appSessionCount(): Int = long(KEY_APP_SESSIONS).toInt()
+    fun incrementAppSession() =
+        writeQuiet { putLong(KEY_APP_SESSIONS, (appSessionCount() + 1).toLong()) }
+
+    /// هل عُرض اقتراح «نزّل قسمك المفضّل كاملاً؟» من قبل؟
+    fun sectionDownloadOffered(): Boolean = bool(KEY_SECTION_DL_OFFERED)
+    fun markSectionDownloadOffered() = writeQuiet { putBoolean(KEY_SECTION_DL_OFFERED, true) }
+
+    // ---- 🎉 احتفال إتمام قسم فرعي (مرّة واحدة لكل قسم) ----
+    fun celebratedSubcategories(): List<String> = stringList(KEY_CELEBRATED_SUBS)
+    fun markSubcategoryCelebrated(id: String) {
+        val values = celebratedSubcategories().toMutableList()
+        if (id !in values) {
+            values += id
+            setStringList(KEY_CELEBRATED_SUBS, values)
+        }
+    }
+
+    /// 🚗 فتح وضع القيادة تلقائياً عند اتصال بلوتوث — **معطّل افتراضياً**.
+    fun bluetoothCarModeEnabled(): Boolean = bool(KEY_BT_CAR_MODE)
+    fun setBluetoothCarModeEnabled(value: Boolean) = write { putBoolean(KEY_BT_CAR_MODE, value) }
+
+    /// طيّ/فتح «المزيد» في الرئيسية — كتابة صامتة: الواجهة تمسك الحالة بنفسها.
+    fun homeMoreExpanded(): Boolean = bool(KEY_HOME_MORE_EXPANDED)
+    fun setHomeMoreExpanded(value: Boolean) =
+        writeQuiet { putBoolean(KEY_HOME_MORE_EXPANDED, value) }
+
     fun autoDownloadEnabled(): Boolean = bool(KEY_AUTO_DOWNLOAD)
     fun setAutoDownloadEnabled(value: Boolean) = write { putBoolean(KEY_AUTO_DOWNLOAD, value) }
     fun autoDownloadTarget(): String? = string(KEY_AUTO_TARGET).takeIf { it.isNotBlank() }
@@ -1307,6 +1352,14 @@ class LocalStore private constructor(context: Context) {
         const val QURAN_FONT_DEFAULT = 26f
         const val QURAN_FONT_MAX = 72f
         const val KEY_AUTO_DOWNLOAD = "auto_dl_enabled"
+        const val KEY_SMART_DOWNLOAD = "smart_dl_enabled"
+        const val KEY_QURAN_VISITS = "quran_visit_count"
+        const val KEY_QURAN_OFFLINE_OFFERED = "quran_offline_offered"
+        const val KEY_APP_SESSIONS = "app_session_count"
+        const val KEY_SECTION_DL_OFFERED = "section_dl_offered"
+        const val KEY_CELEBRATED_SUBS = "pers_celebrated_subs"
+        const val KEY_BT_CAR_MODE = "bt_car_mode"
+        const val KEY_HOME_MORE_EXPANDED = "home_more_expanded"
         const val KEY_AUTO_TARGET = "auto_dl_target"
         const val KEY_WIFI_ONLY = "auto_dl_wifi_only"
         const val KEY_CONTINUE_REMINDER = "pref_continue_reminder"

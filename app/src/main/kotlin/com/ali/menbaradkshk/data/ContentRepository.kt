@@ -168,7 +168,18 @@ class ContentRepository private constructor(context: Context) {
             // الجلب الكامل عبر واجهة الكتالوج أولاً: **طلب HTTP واحد** مضغوط
             // (~70 ك.ب) من كاش CDN بدل مئات قراءات الوثائق — وFirestore يبقى
             // احتياطاً حرفياً كاملاً عند أي فشل أو نقص.
-            fetchCatalogSnapshot() ?: fetchFirestoreSnapshot(hasCache)
+            // ⚠️ حارس النسخة الباردة: كاش CDN قد يقدّم كتالوجاً أقدم من حالة
+            // الخادم التي رآها المسبار للتو (stale-while-revalidate) — قبوله
+            // كان **يرتدّ** بالأجهزة إلى بيانات بائدة تدوس الأحدث (وقع فعلياً
+            // في اختبار القبول ليلة الهجرة). اللقطة تُقبل فقط إن كانت بعمر
+            // علامات الخادم أو أحدث وبعدد دروسه نفسه، وإلا فFirestore.
+            fetchCatalogSnapshot()?.takeIf { snapshot ->
+                val server = probedServer
+                server == null || (
+                    snapshot.maxUpdatedMs >= server.maxUpdatedMs &&
+                        snapshot.lessons.size == server.lessons
+                    )
+            } ?: fetchFirestoreSnapshot(hasCache)
         }.onSuccess { snapshot ->
             val categories = snapshot.categories
             val subcategories = snapshot.subcategories
@@ -179,12 +190,14 @@ class ContentRepository private constructor(context: Context) {
             store.setSubcategories(subcategories)
             store.setLessons(lessons)
             store.setLastSyncMs(now)
-            // علامات المسبار تُحفظ بقيم وثيقة البصمة **نفسها** إن قرأناها هذه
-            // الدورة — فهي ما سيُقارَن به المسبار القادم حرفياً. المحسوبة من
-            // استعلاماتنا احتياطٌ لأول تثبيت وحده، وأي انحراف عابر بينهما
-            // تلتقطه الدلتا التالية وتصححه (idempotent).
+            // ⚠️ العلامات تُشتق من **اللقطة المخزَّنة نفسها** لا من وثيقة
+            // البصمة: حفظ علامات الخادم مع بياناتٍ قد تكون دونها (كتالوج من
+            // كاش CDN) سمّم الحالة مرة — علامات حديثة فوق بيانات بائدة فلا
+            // مسبار يختلف ولا دلتا تشفي. المشتقة تصف ما خُزّن فعلاً: إن كانت
+            // اللقطة خلف الخادم اختلف المسبار التالي وجلبت الدلتا الفارق.
+            // (بعد إصلاح بصمة الخادم 2026-08-29 تساويان عند التطابق أصلاً.)
             saveMarks(
-                probedServer ?: ProbeMarks(
+                ProbeMarks(
                     categories = categories.size,
                     subcategories = subcategories.size,
                     lessons = snapshot.lessons.size,

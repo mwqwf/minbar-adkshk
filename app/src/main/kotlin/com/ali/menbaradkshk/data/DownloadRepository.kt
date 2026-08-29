@@ -215,6 +215,12 @@ class DownloadRepository private constructor(context: Context) {
                 throw RetryableDownloadException(java.io.IOException("HTTP $code"))
             }
             require(code in 200..299) { "تعذّر تنزيل الملف ($code)." }
+            // 🛡️ بوّابة أسيرة (واي فاي فندق/مقهى): تعيد 200 وصفحة HTML لتسجيل
+            // الدخول — كانت تُحفظ كملفّ mp3 «مكتمل» فيتقطّع صوته إلى الأبد.
+            // فشل قابل للإعادة: بعد تجاوز البوّابة يُستأنف التحميل الصحيح.
+            if (connection.contentType.orEmpty().startsWith("text/html", ignoreCase = true)) {
+                throw RetryableDownloadException(java.io.IOException("استجابة HTML لا ملفّ صوتي"))
+            }
             if (resuming) {
                 // تحقُّق من إزاحة الاستئناف: خادم يُعيد 206 بمدى لا يبدأ من
                 // موضعنا كان سيُلحق بايتات بإزاحة خاطئة فيتلف الملف بصمت.

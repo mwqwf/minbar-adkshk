@@ -185,6 +185,9 @@ fun QuranIndexScreen(vm: AppViewModel) {
         vm.store.markQuranOfflineOffered()
         offlineOffer = true
     }
+    // 📶 تحذير بيانات الجوّال قبل بدء تنزيل الصور من العرض — لا يظهر إلا
+    // على شبكة محدودة، ويترك القرار لصاحب الرصيد.
+    var meteredOffer by remember { mutableStateOf(false) }
     if (offlineOffer) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { offlineOffer = false },
@@ -199,19 +202,35 @@ fun QuranIndexScreen(vm: AppViewModel) {
             title = { Text("المصحف بلا إنترنت") },
             text = {
                 Text(
-                    "أتريد تنزيل المصحف كاملاً للقراءة بلا إنترنت؟",
+                    // الحجم مذكور صراحةً: من يدفع ثمن الميغابايت يحتاج الرقم
+                    // قبل أن يضغط.
+                    "أتريد تنزيل المصحف كاملاً للقراءة بلا إنترنت؟ (٦٠٤ صفحات، نحو ٥١ م.ب)",
                     textAlign = TextAlign.Center,
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     offlineOffer = false
-                    vm.downloadMushafPages(riwaya)
+                    if (vm.onMeteredNetwork()) meteredOffer = true
+                    else vm.downloadMushafPages(riwaya)
                 }) { Text("نعم، نزّله") }
             },
             dismissButton = {
                 TextButton(onClick = { offlineOffer = false }) { Text("لاحقاً") }
             },
+        )
+    }
+    if (meteredOffer) {
+        MeteredDownloadWarning(
+            onProceed = {
+                meteredOffer = false
+                vm.downloadMushafPages(riwaya)
+            },
+            onWifi = {
+                meteredOffer = false
+                vm.downloadMushafPages(riwaya, wifiOnly = true)
+            },
+            onDismiss = { meteredOffer = false },
         )
     }
 
@@ -544,6 +563,37 @@ private fun QuranOfflineChip(
 }
 
 /**
+ * 📶 «أنت على بيانات الجوّال — يُفضّل الواي فاي» قبل تنزيلٍ ثقيل.
+ *
+ * ثلاثة مخارج لا اثنان: متابعة الآن (هو أدرى برصيده)، أو **انتظار الواي فاي**
+ * (يُجدوَل التنزيل بقيد شبكة غير محدودة فيبدأ وحده)، أو تراجُع.
+ */
+@Composable
+private fun MeteredDownloadWarning(
+    onProceed: () -> Unit,
+    onWifi: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("أنت على بيانات الجوّال") },
+        text = {
+            Text(
+                "التنزيل كبير ويُفضّل إتمامه على الواي فاي. يمكنك المتابعة الآن، " +
+                    "أو تركه يبدأ وحده عند الاتصال بالواي فاي.",
+                textAlign = TextAlign.Center,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onWifi) { Text("انتظار الواي فاي") }
+        },
+        dismissButton = {
+            TextButton(onClick = onProceed) { Text("متابعة الآن") }
+        },
+    )
+}
+
+/**
  * 🎧 صفّ «تلاوة المصحف كاملاً» بصوت القارئ الحالي.
  *
  * يذكر **الحجم المنزَّل فعلاً** لا وعداً مبهماً: من حقّ صاحب الهاتف أن يعرف
@@ -559,6 +609,7 @@ private fun WholeMushafRow(
     progress: com.ali.menbaradkshk.data.QuranDownloadRepository.Progress?,
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
+    var meteredWarning by remember { mutableStateOf(false) }
     val running = progress != null
 
     // ⛔ **النقر لا يعني الحذف أبداً**: كان الصفّ ينقلب إلى «حذف» بمجرّد وجود
@@ -568,7 +619,12 @@ private fun WholeMushafRow(
     ListItem(
         modifier = Modifier.clickable {
             val r = reciter ?: return@clickable
-            if (running) vm.cancelSurahDownload() else vm.downloadWholeMushaf(r)
+            when {
+                running -> vm.cancelSurahDownload()
+                // 📶 تنزيل بمئات الميغابايتات على بيانات الجوّال يستحقّ سؤالاً.
+                vm.onMeteredNetwork() -> meteredWarning = true
+                else -> vm.downloadWholeMushaf(r)
+            }
         },
         colors = androidx.compose.material3.ListItemDefaults.colors(
             containerColor = Color.Transparent,
@@ -617,6 +673,20 @@ private fun WholeMushafRow(
         },
     )
 
+    if (meteredWarning) {
+        MeteredDownloadWarning(
+            onProceed = {
+                meteredWarning = false
+                reciter?.let { vm.downloadWholeMushaf(it) }
+            },
+            onWifi = {
+                meteredWarning = false
+                reciter?.let { vm.downloadWholeMushaf(it, wifiOnly = true) }
+            },
+            onDismiss = { meteredWarning = false },
+        )
+    }
+
     if (confirmDelete) {
         ConfirmDeleteDownload(
             title = "حذف تلاوات ${reciter?.name.orEmpty()}؟",
@@ -657,11 +727,16 @@ private fun MushafPagesRow(vm: AppViewModel, riwayaId: String) {
     }
     val running = progress != null
     var confirmDelete by remember { mutableStateOf(false) }
+    var meteredWarning by remember { mutableStateOf(false) }
     val complete = count >= com.ali.menbaradkshk.data.MushafRepository.PAGE_COUNT
 
     ListItem(
         modifier = Modifier.clickable {
-            if (running) vm.cancelPagesDownload() else vm.downloadMushafPages(riwayaId)
+            when {
+                running -> vm.cancelPagesDownload()
+                vm.onMeteredNetwork() -> meteredWarning = true
+                else -> vm.downloadMushafPages(riwayaId)
+            }
         },
         colors = androidx.compose.material3.ListItemDefaults.colors(
             containerColor = Color.Transparent,
@@ -708,6 +783,20 @@ private fun MushafPagesRow(vm: AppViewModel, riwayaId: String) {
             null
         },
     )
+
+    if (meteredWarning) {
+        MeteredDownloadWarning(
+            onProceed = {
+                meteredWarning = false
+                vm.downloadMushafPages(riwayaId)
+            },
+            onWifi = {
+                meteredWarning = false
+                vm.downloadMushafPages(riwayaId, wifiOnly = true)
+            },
+            onDismiss = { meteredWarning = false },
+        )
+    }
 
     if (confirmDelete) {
         ConfirmDeleteDownload(

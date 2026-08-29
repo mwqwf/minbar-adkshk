@@ -79,6 +79,18 @@ class MinbarApplication : Application(), Configuration.Provider, SingletonImageL
             )
             FirebaseAppCheck.getInstance(app)
                 .installAppCheckProviderFactory(MinbarAppCheckProvider.factory())
+            // 🗃️ تثبيت الكاش الدائم لـFirestore صراحةً (كما تفعل اللوحة):
+            // لا نتّكل على الافتراضي، فالكاش الدائم هو ما يجعل القراءات
+            // المتكرّرة تُخدم محليّاً بلا تكلفة شبكة. يجب أن يسبق أوّل
+            // استعمال لـFirestore في العمليّة.
+            runCatching {
+                com.google.firebase.firestore.FirebaseFirestore.getInstance(app).firestoreSettings =
+                    com.google.firebase.firestore.FirebaseFirestoreSettings.Builder()
+                        .setLocalCacheSettings(
+                            com.google.firebase.firestore.PersistentCacheSettings.newBuilder().build(),
+                        )
+                        .build()
+            }
             if (FirebaseAuth.getInstance(app).currentUser == null) {
                 FirebaseAuth.getInstance(app).signInAnonymously()
             }

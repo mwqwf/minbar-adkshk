@@ -12,9 +12,15 @@ import com.google.firebase.functions.FirebaseFunctions
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.storage.FirebaseStorage
 import com.google.firebase.storage.StorageMetadata
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.tasks.await
 import java.util.UUID
 
@@ -227,7 +233,25 @@ class SubmissionRepository private constructor(context: Context) {
                 .firstOrNull()
         }
 
-    fun mine(): Flow<List<LessonSubmission>> = callbackFlow {
+    /// نطاق مشاركة تدفّق «مساهماتي» — حيّ بعمر العمليّة (المستودع مفرد).
+    private val mineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * 🔁 تدفّق مشترك: «مساهماتي» يُجمَع من أكثر من موضع (شاشة المساهمات +
+     * إشعارات القرارات) فكان مستمع Firestore يتضاعف بعددها. `shareIn`
+     * بـ`WhileSubscribed(5000)` يُبقي **مستمعاً واحداً** مهما تعدّدت الشاشات،
+     * ويُغلقه بعد ٥ ثوانٍ من آخر مُجمِّع. الخطأ يُبتلع إلى قائمة فارغة —
+     * وهو ما كان يفعله كلّ مُجمِّع بنفسه (`catch { emit(emptyList()) }`).
+     */
+    private val mineShared: Flow<List<LessonSubmission>> by lazy {
+        mineUpstream()
+            .catch { emit(emptyList()) }
+            .shareIn(mineScope, SharingStarted.WhileSubscribed(5_000), replay = 1)
+    }
+
+    fun mine(): Flow<List<LessonSubmission>> = mineShared
+
+    private fun mineUpstream(): Flow<List<LessonSubmission>> = callbackFlow {
         // ⚠️ الهوية المجهولة قد لا تكون جاهزة لحظة التجميع: القراءة المفردة
         // كانت تُغلق التدفّق فارغاً للأبد — فنتابع تغيّرات الهوية بمستمعٍ
         // (نمط NotificationsRepository نفسه).

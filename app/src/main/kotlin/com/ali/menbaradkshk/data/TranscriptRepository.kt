@@ -13,10 +13,15 @@ import com.google.firebase.functions.FirebaseFunctions
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.storage.FirebaseStorage
 import com.google.firebase.storage.StorageMetadata
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -419,39 +424,66 @@ class TranscriptRepository private constructor(context: Context) {
                 .firstOrNull()
         }
 
-    fun mine(): Flow<List<TranscriptSubmissionItem>> = callbackFlow {
-        val uid = auth.currentUser?.uid
-        if (uid == null) {
-            trySend(emptyList())
-            close()
-            return@callbackFlow
-        }
-        val registration = db.collection(COLLECTION)
-            .whereEqualTo("uid", uid)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    close(error)
-                    return@addSnapshotListener
-                }
-                val list = snapshot?.documents.orEmpty().map { document ->
-                    TranscriptSubmissionItem(
-                        id = document.id,
-                        lessonId = document.getString("lessonId").orEmpty(),
-                        lessonTitle = document.getString("lessonTitle").orEmpty(),
-                        status = document.getString("status").orEmpty().ifBlank { "pending" },
-                        rejectReason = document.getString("rejectReason").orEmpty(),
-                        hasImages = (document.get("imagePaths") as? List<*>)
-                            .orEmpty().isNotEmpty(),
-                        createdAtMs = document.getLong("createdAtMs")
-                            ?: (document.get("createdAtTs") as? Timestamp)?.toDate()?.time
-                            ?: 0L,
-                        decidedAtMs = (document.get("decidedAtTs") as? Timestamp)?.toDate()?.time
-                            ?: 0L,
-                    )
-                }.sortedByDescending(TranscriptSubmissionItem::createdAtMs)
-                trySend(list)
+    /// نطاق مشاركة تدفّق «اقتراحاتي» — حيّ بعمر العمليّة (المستودع مفرد).
+    private val mineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * 🔁 تدفّق مشترك: «اقتراحاتي» يُجمَع من أكثر من شاشة فكان مستمع Firestore
+     * يتضاعف بعددها. `shareIn` بـ`WhileSubscribed(5000)` يُبقي **مستمعاً
+     * واحداً** مهما تعدّدت الشاشات ويُغلقه بعد ٥ ثوانٍ من آخر مُجمِّع.
+     * الخطأ يُبتلع إلى قائمة فارغة — وهو ما كان يفعله كلّ مُجمِّع بنفسه.
+     */
+    private val mineShared: Flow<List<TranscriptSubmissionItem>> by lazy {
+        mineUpstream()
+            .catch { emit(emptyList()) }
+            .shareIn(mineScope, SharingStarted.WhileSubscribed(5_000), replay = 1)
+    }
+
+    fun mine(): Flow<List<TranscriptSubmissionItem>> = mineShared
+
+    private fun mineUpstream(): Flow<List<TranscriptSubmissionItem>> = callbackFlow {
+        // ⚠️ الهوية المجهولة قد لا تكون جاهزة لحظة التجميع، والتدفّق صار
+        // مشترَكاً فإغلاقه فارغاً يجمّده على الفراغ — نتابع تغيّرات الهوية
+        // بمستمع (نمط SubmissionRepository/NotificationsRepository نفسه).
+        var registration: com.google.firebase.firestore.ListenerRegistration? = null
+        val authListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+            registration?.remove()
+            val uid = firebaseAuth.currentUser?.uid
+            if (uid == null) {
+                trySend(emptyList())
+                return@AuthStateListener
             }
-        awaitClose { registration.remove() }
+            registration = db.collection(COLLECTION)
+                .whereEqualTo("uid", uid)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        close(error)
+                        return@addSnapshotListener
+                    }
+                    val list = snapshot?.documents.orEmpty().map { document ->
+                        TranscriptSubmissionItem(
+                            id = document.id,
+                            lessonId = document.getString("lessonId").orEmpty(),
+                            lessonTitle = document.getString("lessonTitle").orEmpty(),
+                            status = document.getString("status").orEmpty().ifBlank { "pending" },
+                            rejectReason = document.getString("rejectReason").orEmpty(),
+                            hasImages = (document.get("imagePaths") as? List<*>)
+                                .orEmpty().isNotEmpty(),
+                            createdAtMs = document.getLong("createdAtMs")
+                                ?: (document.get("createdAtTs") as? Timestamp)?.toDate()?.time
+                                ?: 0L,
+                            decidedAtMs = (document.get("decidedAtTs") as? Timestamp)?.toDate()?.time
+                                ?: 0L,
+                        )
+                    }.sortedByDescending(TranscriptSubmissionItem::createdAtMs)
+                    trySend(list)
+                }
+        }
+        auth.addAuthStateListener(authListener)
+        awaitClose {
+            auth.removeAuthStateListener(authListener)
+            registration?.remove()
+        }
     }
 
     // ✏️ تعديل اقتراح النصّ يمرّ بعقد الخادم `updateMyTranscriptSubmission`

@@ -316,6 +316,10 @@ object BackgroundScheduler {
             return
         }
         val request = PeriodicWorkRequestBuilder<SmartDownloadWorker>(12, TimeUnit.HOURS)
+            // ⚠️ تأخير أوّلي إلزامي: أول تشغيل للعمل الدوري يقع **فوراً**، فكان
+            // التنزيل يتزاحم مع الإقلاع البارد على المعالج والذاكرة ويخنق
+            // الأجهزة الضعيفة حتى ANR (شوهد فعلياً على محاكي 2GB).
+            .setInitialDelay(1, TimeUnit.HOURS)
             .setConstraints(
                 Constraints.Builder()
                     .setRequiredNetworkType(NetworkType.UNMETERED)

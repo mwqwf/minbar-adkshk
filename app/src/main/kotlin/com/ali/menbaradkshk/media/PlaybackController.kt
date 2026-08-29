@@ -69,6 +69,11 @@ data class PlaybackUiState(
 object AutoplayState {
     @Volatile var enabled: Boolean = true
 
+    /// 👁️ هل واجهة التطبيق ظاهرة الآن؟ تضبطها MainActivity في onStart/onStop.
+    /// العدّ التنازلي المعلَن (٥ ثوانٍ صمت) لا معنى له وأحدٌ لا يراه: في
+    /// الخلفية يُنتقل إلى الدرس التالي مباشرةً بلا وقفة.
+    @Volatile var uiVisible: Boolean = false
+
     /// [title] عنوان الدرس التالي، [endsAtMs] موعد انطلاقه، و[token] يميّز
     /// هذا العدّ بعينه كي لا يُشغّل مؤقّتٌ متأخّرٌ درساً أُلغي عدّه.
     data class Pending(val title: String, val endsAtMs: Long, val token: Long)
@@ -92,6 +97,13 @@ object AutoplayState {
     fun clearCountdown() {
         _pending.value = null
     }
+}
+
+/// 💬 قناة أخبار المشغّل الخفيفة (Snackbar) — كائن مشترك بين الخدمة والواجهة
+/// (العمليّة واحدة، نمط [AutoplayState] نفسه): الخدمة تكتب «أُكمل التشغيل من
+/// التنزيلات» ولو كانت الواجهة ميتة، وتعرضه الواجهة متى حييت.
+object PlaybackNoticeState {
+    val notice = MutableStateFlow<String?>(null)
 }
 
 /// «تخطّي الصمت» — خلافاً لـ[AutoplayState] يبقى بين الجلسات، فله ملفّ تفضيلات
@@ -163,9 +175,9 @@ class PlaybackController(context: Context) {
         override fun onEvents(player: Player, events: Player.Events) = publish(player)
 
         override fun onPlayerError(error: PlaybackException) {
-            // 📴 انقطاع شبكة ودرسٌ منزَّل في المتناول؟ نُكمل من التنزيلات
-            // تلقائياً بدل شاشة خطأ — انظر [tryOfflineFallback].
-            if (isNetworkError(error) && tryOfflineFallback()) return
+            // 📴 «الإكمال بلا إنترنت» صار في [PlaybackService.tryOfflineFallback]
+            // (الخدمة تعيش بالخلفية وتملك القائمة)؛ إن نجح هناك عاد المشغّل
+            // إلى READY فيُمسح هذا الخطأ تلقائياً (انظر onPlaybackStateChanged).
             // بعد أيّ خطأ يعود المشغّل إلى STATE_IDLE؛ نُصفّر مؤشّرات الحالة كي لا
             // تبقى عالقة على «جارٍ التحميل» فتُعطَّل أزرار التشغيل.
             _state.value = _state.value.copy(
@@ -370,46 +382,18 @@ class PlaybackController(context: Context) {
         player.play()
     }
 
-    /// 💬 إشعار خفيف من المشغّل للواجهة (Snackbar) — مستقلّ عن [PlaybackUiState.error]
-    /// لأنّه خبرُ نجاةٍ لا خطأ: «أُكمل التشغيل من التنزيلات».
-    private val _notice = MutableStateFlow<String?>(null)
-    val notice: StateFlow<String?> = _notice.asStateFlow()
+    /// 💬 إشعار خفيف من المشغّل للواجهة (Snackbar) — القناة مشتركة في
+    /// [PlaybackNoticeState] لأنّ **الخدمة** هي من يُكمل بلا إنترنت الآن
+    /// (تعيش في الخلفية بعد موت الواجهة)، والواجهة — إن كانت حيّة — تعرضه.
+    val notice: StateFlow<String?> = PlaybackNoticeState.notice.asStateFlow()
 
     fun consumeNotice() {
-        _notice.value = null
+        PlaybackNoticeState.notice.value = null
     }
 
-    /// آخر محاولة إكمال بلا إنترنت — حارس ضدّ حلقة محاولات متلاحقة.
-    private var offlineFallbackAtMs = 0L
-
-    private fun isNetworkError(error: PlaybackException): Boolean =
-        error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
-            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
-
-    /**
-     * 📴 **إكمال بلا إنترنت**: فشل التشغيل بسبب الشبكة، فإن كان الدرس نفسه —
-     * أو التالي فالذي يليه في القائمة — منزَّلاً على الجهاز شُغِّل تلقائياً،
-     * مع إخبار المستخدم بسطر واحد. يخصّ الدروس وحدها (تلاوة المصحف لها
-     * ملفاتها المنفصلة و`lastLesson` يكون null فيها أصلاً).
-     */
-    private fun tryOfflineFallback(): Boolean {
-        val player = controller ?: return false
-        if (lastLesson == null || lastQueue.isEmpty()) return false
-        // لا أكثر من محاولة كل عشر ثوانٍ: لو فشل البديل أيضاً لا ندور إلى الأبد.
-        val now = System.currentTimeMillis()
-        if (now - offlineFallbackAtMs < 10_000L) return false
-        val failedId = player.currentMediaItem?.mediaId.orEmpty()
-        if (failedId.isNotBlank() && !PlaybackService.isLesson(failedId)) return false
-        val failedIndex = lastQueue.indexOfFirst { it.id == failedId }
-        // الدرس نفسه أولاً (قد يكون منزَّلاً وفشل رابط شبكيّ عابر)، ثم ما بعده.
-        val candidates = if (failedIndex >= 0) lastQueue.drop(failedIndex) else lastQueue
-        val fallback = candidates.firstOrNull { downloads.isDownloaded(it.id) } ?: return false
-        offlineFallbackAtMs = now
-        _notice.value = "انقطع الإنترنت — أُكمل التشغيل من التنزيلات."
-        // القائمة تُقصَر على المنزَّل كي لا يقفز المشغّل بعده إلى رابط شبكيّ فيفشل ثانية.
-        val offlineQueue = lastQueue.filter { downloads.isDownloaded(it.id) }
-        play(fallback, offlineQueue, restart = true)
-        return true
+    /// 👁️ تضبطها MainActivity في onStart/onStop — انظر [AutoplayState.uiVisible].
+    fun setUiVisible(visible: Boolean) {
+        AutoplayState.uiVisible = visible
     }
 
     /// رسالة عربية مناسبة لسبب الفشل — الشبكة أشيع الأسباب.

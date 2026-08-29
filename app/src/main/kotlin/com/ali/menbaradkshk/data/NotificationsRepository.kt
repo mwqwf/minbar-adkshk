@@ -25,12 +25,26 @@ import kotlinx.coroutines.launch
 class NotificationsRepository(
     private val submissions: SubmissionRepository,
     private val hasContributedBefore: () -> Boolean = { true },
+    /// طابع أوّل تثبيت — يدخل في حدّ القصّ الخادمي أدناه. الافتراضي صفر
+    /// يُبقي السلوك القديم (نافذة الثلاثين يوماً وحدها) لمن لا يمرّره.
+    private val installedAtMs: () -> Long = { 0L },
 ) {
     private val db = FirebaseFirestore.getInstance()
 
     private companion object {
         const val TAG = "NotificationsRepo"
+
+        /// نفس نافذة العرض في الواجهة (MoreScreens): آخر ٣٠ يوماً فقط.
+        const val WINDOW_MS = 30L * 24 * 60 * 60 * 1_000
     }
+
+    /// حدّ القصّ الزمني — كان يقع محليّاً فقط (الواجهة تُسقط الأقدم بعد
+    /// جلبه)، فصار يقع في الاستعلام نفسه فلا تُقرأ وثائق لن تُعرض أبداً.
+    /// الفلتر المحلي في الواجهة باقٍ كما هو احتياطاً، والنتيجة المعروضة
+    /// مطابقة: الشرط على حقل الترتيب نفسه `createdAtMs` فلا فهرس جديد،
+    /// والوثائق الخالية من الحقل كانت خارج `orderBy` أصلاً.
+    private fun cutoffMs(): Long =
+        maxOf(System.currentTimeMillis() - WINDOW_MS, installedAtMs())
 
     fun stream(limit: Long = 30): Flow<List<NotificationItem>> = callbackFlow {
         var publicItems = listOf<NotificationItem>()
@@ -48,6 +62,7 @@ class NotificationsRepository(
         }
 
         val publicRegistration = db.collection("notifications")
+            .whereGreaterThanOrEqualTo("createdAtMs", cutoffMs())
             .orderBy("createdAtMs", Query.Direction.DESCENDING)
             .limit(limit)
             .addSnapshotListener { snapshot, error ->
@@ -72,6 +87,7 @@ class NotificationsRepository(
             privateRegistration = db.collection("user_notifications")
                 .document(user.uid)
                 .collection("items")
+                .whereGreaterThanOrEqualTo("createdAtMs", cutoffMs())
                 .orderBy("createdAtMs", Query.Direction.DESCENDING)
                 .limit(limit)
                 .addSnapshotListener { snapshot, error ->

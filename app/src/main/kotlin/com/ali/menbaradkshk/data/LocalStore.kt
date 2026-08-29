@@ -694,8 +694,18 @@ class LocalStore private constructor(context: Context) {
 
     /// عدّاد زيارات تبويب المصحف — كتابة صامتة: عدّاد داخليّ لا تُبنى عليه واجهة.
     fun quranVisitCount(): Int = long(KEY_QURAN_VISITS).toInt()
-    fun incrementQuranVisit() =
-        writeQuiet { putLong(KEY_QURAN_VISITS, (quranVisitCount() + 1).toLong()) }
+
+    /// زيارة واحدة لكلّ **جلسة تطبيق** لا لكلّ دخول للشاشة: كان العدّاد يقفز
+    /// مع كل عودة إلى شاشة المصحف في الجلسة نفسها فيُستوفى شرط «الزيارة
+    /// الثانية» في دقيقة واحدة. يُربط بعدّاد الجلسات ([appSessionCount]).
+    fun incrementQuranVisit() {
+        val session = appSessionCount().toLong()
+        if (long(KEY_QURAN_VISIT_SESSION, -1L) == session) return
+        writeQuiet {
+            putLong(KEY_QURAN_VISIT_SESSION, session)
+            putLong(KEY_QURAN_VISITS, (quranVisitCount() + 1).toLong())
+        }
+    }
 
     /// هل عُرض حوار «نزّل المصحف كاملاً؟» من قبل؟ (لا يعود أبداً بعد أوّل عرض.)
     fun quranOfflineOffered(): Boolean = bool(KEY_QURAN_OFFLINE_OFFERED)
@@ -940,18 +950,24 @@ class LocalStore private constructor(context: Context) {
     fun addToDownloadQueue(ids: List<String>, label: String, wifiOnly: Boolean = false) {
         synchronized(queueLock) {
             val current = downloadQueue().toMutableList()
+            val wasEmpty = current.isEmpty()
             val added = ids.filter { it !in current }
-            if (added.isEmpty()) return
             // يُقرأ قبل كتابة الطابور الجديد كي يبقى ترحيل العلم القديم صحيحاً.
             val restricted = downloadQueueWifiOnlyIds().toMutableSet()
-            if (wifiOnly) restricted += added
+            // ⚠️ طلب يدويّ (wifiOnly=false) لمعرّفٍ موجود أصلاً بقيد واي فاي
+            // **يرفع القيد عنه** ولو لم يُضَف: كان الزرّ يبدو معطّلاً — رسالة
+            // «أُضيف إلى التحميل» ثم لا شيء لأنّ العنصر مؤجَّل ينتظر الواي فاي.
+            if (wifiOnly) restricted += added else restricted -= ids.toSet()
+            if (added.isEmpty() && restricted == downloadQueueWifiOnlyIds()) return
             current += added
             // إعادة إضافة يدويّة = عدّ محاولات جديد للدرس.
             val attempts = jsonObject(KEY_QUEUE_ATTEMPTS)
             added.forEach { attempts.remove(it) }
             write {
                 putString("download_queue", JSONArray(current).toString())
-                putString("download_queue_label", label)
+                // التسمية لا تدهس دفعةً جارية: دفعة «التنزيل الذكي» كانت
+                // تُبدّل اسم دفعة المستخدم في منتصفها فيتغيّر العنوان فجأة.
+                if (wasEmpty) putString("download_queue_label", label)
                 putLong("download_queue_total", (downloadQueueTotal() + added.size).toLong())
                 putString(KEY_QUEUE_ATTEMPTS, attempts.toString())
                 putString(KEY_QUEUE_WIFI_IDS, JSONArray(restricted.toList()).toString())
@@ -973,6 +989,14 @@ class LocalStore private constructor(context: Context) {
                 if (current.isEmpty()) putLong("download_queue_total", 0L)
             }
         }
+    }
+
+    /// يُنقص إجمالي الدفعة عند **إسقاط** عنصر بلا تحميل (درس حُذف من الخادم
+    /// أو بلا ملفّ صوتي): إبقاؤه في الإجمالي كان يعدّه «مكتملاً» فيتضخّم
+    /// التقدّم المعروض على غير الحقيقة.
+    fun decrementDownloadQueueTotal() = synchronized(queueLock) {
+        val current = downloadQueueTotal()
+        if (current > 0) writeQuiet { putLong("download_queue_total", (current - 1).toLong()) }
     }
 
     fun clearDownloadQueue() = synchronized(queueLock) { clearQueueLocked() }
@@ -1354,6 +1378,7 @@ class LocalStore private constructor(context: Context) {
         const val KEY_AUTO_DOWNLOAD = "auto_dl_enabled"
         const val KEY_SMART_DOWNLOAD = "smart_dl_enabled"
         const val KEY_QURAN_VISITS = "quran_visit_count"
+        const val KEY_QURAN_VISIT_SESSION = "quran_visit_session"
         const val KEY_QURAN_OFFLINE_OFFERED = "quran_offline_offered"
         const val KEY_APP_SESSIONS = "app_session_count"
         const val KEY_SECTION_DL_OFFERED = "section_dl_offered"

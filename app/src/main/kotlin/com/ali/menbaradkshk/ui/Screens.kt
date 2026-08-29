@@ -616,6 +616,10 @@ private fun SectionDownloadSuggestion(vm: AppViewModel, state: ContentState) {
         suggestion = found
     }
     suggestion?.let { (sub, lessons) ->
+        // العدد المذكور هو **المتبقّي فعلاً** لا كل دروس القسم.
+        val remaining = remember(sub.id) {
+            lessons.count { it.id !in vm.downloads.all() }
+        }
         AlertDialog(
             onDismissRequest = { suggestion = null },
             icon = {
@@ -629,15 +633,20 @@ private fun SectionDownloadSuggestion(vm: AppViewModel, state: ContentState) {
             title = { Text("للاستماع بلا إنترنت") },
             text = {
                 Text(
-                    "تستمع كثيراً إلى «${sub.name}». " +
-                        "أتريد تنزيله كاملاً للاستماع بلا إنترنت؟",
+                    "تستمع كثيراً إلى «${sub.name}» وفيه " +
+                        "${com.ali.menbaradkshk.util.lessonsCountLabel(remaining)} غير منزَّل. " +
+                        "أتريد تنزيله كاملاً للاستماع بلا إنترنت؟ " +
+                        "(يبدأ على الواي فاي فقط — لا يستهلك بيانات الجوّال.)",
                     textAlign = TextAlign.Center,
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     suggestion = null
-                    vm.downloadLessons(sub.name, lessons)
+                    // wifiOnly إلزاماً: اقتراح تلقائي لم يطلبه المستخدم لا
+                    // يستهلك بيانات جوّاله — المسار الموحّد نفسه (downloadLessons
+                    // ← الطابور الخلفي) مع قيد شبكة غير محدودة لكل عناصره.
+                    vm.downloadLessons(sub.name, lessons, wifiOnly = true)
                 }) { Text("نعم، نزّله") }
             },
             dismissButton = {

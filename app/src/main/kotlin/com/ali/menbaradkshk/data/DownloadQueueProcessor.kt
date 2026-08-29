@@ -99,7 +99,14 @@ class DownloadQueueProcessor(private val context: Context) {
             queue = store.downloadQueue()
             val id = queue.firstOrNull { it !in deferred } ?: break
             val lesson = content.state.value.lessonById[id]
-            if (lesson == null || lesson.audioUrl.isBlank() || downloads.isDownloaded(id)) {
+            if (lesson == null || lesson.audioUrl.isBlank()) {
+                // عنصر ساقط بلا تحميل ⇒ يخرج من الإجمالي أيضاً كي لا يُحسب
+                // «مكتملاً» فيتضخّم التقدّم المعروض.
+                store.removeFromDownloadQueue(id)
+                store.decrementDownloadQueueTotal()
+                continue
+            }
+            if (downloads.isDownloaded(id)) {
                 store.removeFromDownloadQueue(id)
                 continue
             }
@@ -201,7 +208,9 @@ class DownloadQueueProcessor(private val context: Context) {
                 // إشعار «اكتمل التحميل». الطابور محفوظ كما يَعِد onStopJob.
                 downloads.queueState.value = null
                 throw cancelled
-            } catch (permanent: Throwable) {
+            } catch (permanent: Exception) {
+                // ⚠️ Exception لا Throwable: أخطاء الـJVM (OutOfMemoryError…)
+                // لا تُبتلع كفشل درس — تُترك ترتفع كما ينبغي لها.
                 failures++
                 store.removeFromDownloadQueue(id)
                 store.clearDownloadAttempts(id)

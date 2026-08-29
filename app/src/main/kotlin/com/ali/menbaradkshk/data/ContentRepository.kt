@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -89,7 +90,18 @@ class ContentRepository private constructor(context: Context) {
      *
      * [deep] يتخطّى المسبار ويجلب كل شيء (سحب-للتحديث اليدوي).
      */
-    suspend fun refresh(force: Boolean = false, deep: Boolean = false) = withContext(Dispatchers.IO) {
+    /// 🔒 قفل المزامنة: عودةٌ للتطبيق وسحبٌ للتحديث قد يتزامنان فيجريان
+    /// جلبين كاملين متوازيين — يكتب المتأخّرُ الأقدمَ فوق الأحدث ويُضاعف
+    /// استهلاك البيانات. المتأخّر ينتظر انتهاء الأوّل ثم يقرّر بنفسه (وغالباً
+    /// يخرج فوراً: المسبار/الخانق يريانه غير لازم).
+    private val refreshMutex = kotlinx.coroutines.sync.Mutex()
+
+    suspend fun refresh(
+        force: Boolean = false,
+        deep: Boolean = false,
+    ) = refreshMutex.withLock { refreshLocked(force, deep) }
+
+    private suspend fun refreshLocked(force: Boolean, deep: Boolean) = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val hasCache = _state.value.lessons.isNotEmpty()
         if (!force && now - store.lastSyncMs() < SYNC_INTERVAL_MS && hasCache) {
@@ -298,7 +310,42 @@ class ContentRepository private constructor(context: Context) {
         return all
     }
 
-    private suspend fun probe(): ProbeMarks? = runCatching {
+    /**
+     * المسبار: **قراءة واحدة** لوثيقة البصمة `content_meta/state` التي تحدّثها
+     * الدوال الخادمية (الأعداد الثلاثة + أحدث طابع تعديل في كل مجموعة).
+     * إن وُجدت مكتملة الحقول اشتُقّت منها العلامات نفسها التي كان يشتقّها
+     * المسار القديم؛ وإن غابت أو نقصت حقولها سقطنا إلى المسار القديم
+     * (تسعة استعلامات) كما هو حرفياً — فمتى تُطلق المزامنة لا يتغيّر.
+     */
+    private suspend fun probe(): ProbeMarks? = metaProbe() ?: legacyProbe()
+
+    /// يقرأ وثيقة البصمة ويشتقّ منها العلامات؛ `null` عند غيابها أو نقص أي
+    /// حقل من الستة (فالسقوط للمسار القديم هو الأمان).
+    private suspend fun metaProbe(): ProbeMarks? = runCatching {
+        val document = db.collection("content_meta").document("state").get().await()
+        if (!document.exists()) return@runCatching null
+        val lessons = (document.get("lessonsCount") as? Number)?.toInt()
+        val categories = (document.get("categoriesCount") as? Number)?.toInt()
+        val subcategories = (document.get("subcategoriesCount") as? Number)?.toInt()
+        val lessonsUpdated = document.get("lessonsUpdatedAtMs")
+        val categoriesUpdated = document.get("categoriesUpdatedAtMs")
+        val subcategoriesUpdated = document.get("subcategoriesUpdatedAtMs")
+        if (lessons == null || categories == null || subcategories == null ||
+            lessonsUpdated == null || categoriesUpdated == null || subcategoriesUpdated == null
+        ) {
+            return@runCatching null
+        }
+        ProbeMarks(
+            categories = categories,
+            subcategories = subcategories,
+            lessons = lessons,
+            maxUpdatedMs = lessonsUpdated.timeMillis(),
+            categoriesUpdatedMs = categoriesUpdated.timeMillis(),
+            subcategoriesUpdatedMs = subcategoriesUpdated.timeMillis(),
+        )
+    }.getOrNull()
+
+    private suspend fun legacyProbe(): ProbeMarks? = runCatching {
         coroutineScope {
             val categories = async { countOf("categories") }
             val subcategories = async { countOf("subcategories") }

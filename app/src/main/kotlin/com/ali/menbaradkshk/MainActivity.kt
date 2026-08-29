@@ -119,6 +119,19 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        // 🚗 الإذن سُحب من إعدادات النظام والإعداد ما زال مفعّلاً؟ يُطفأ
+        // بصمت: ميزة ميتة تبدو مفعّلة أسوأ من ميزة مطفأة — ومن أرادها ثانيةً
+        // يفعّلها من مكانها فيُطلب الإذن من جديد.
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            viewModel.store.bluetoothCarModeEnabled() &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            viewModel.store.setBluetoothCarModeEnabled(false)
+        }
+        // 📚 عدّ «التالي» التنازلي يخصّ واجهةً تُرى — انظر PlaybackService.
+        viewModel.playback.setUiVisible(true)
         // التسجيل غير المشروط بالإعداد رخيص (لا شيء يُنفَّذ والإعداد مطفأ)،
         // وبه يسري تفعيل الإعداد فوراً بلا إعادة تشغيل. أخطاء المنصّات
         // الغريبة لا تُسقط التطبيق.
@@ -138,6 +151,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        viewModel.playback.setUiVisible(false)
         if (bluetoothReceiverRegistered) {
             runCatching { unregisterReceiver(bluetoothReceiver) }
             bluetoothReceiverRegistered = false

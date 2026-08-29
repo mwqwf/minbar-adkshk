@@ -125,9 +125,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val playback = PlaybackController(application)
     /// مستمع «قرارات مساهماتي» لا يُفتح أصلاً لمن لم يساهم قطّ — وهم أغلبية
     /// المستخدمين. يوفّر ذلك قراءة أوّليّة كاملة عند كل عودة إلى التطبيق.
-    private val notificationsRepository = NotificationsRepository(submissions) {
-        hasContributedBefore()
-    }
+    private val notificationsRepository = NotificationsRepository(
+        submissions,
+        hasContributedBefore = { hasContributedBefore() },
+        installedAtMs = { installedAtMs },
+    )
 
     /// «هل ساهم هذا المستخدم من قبل؟» — مؤشّر محلّي رخيص يحكم كل ما يخصّ
     /// المساهمات (مستمع القرارات وزرّ «مساهماتي»)، فيسقط عن أغلبية
@@ -226,7 +228,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /// يضيف الدروس إلى طابور التحميل الخلفي: يستمر مع التنقل داخل التطبيق،
     /// وإغلاق الشاشة، والخروج من التطبيق، ويستأنف تلقائياً عند عودة الاتصال.
-    fun downloadLessons(label: String, lessons: List<com.ali.menbaradkshk.data.Lesson>) {
+    /// [wifiOnly] للدفعات المقترَحة تلقائياً: اقتراحٌ لم يطلبه المستخدم لا
+    /// يستهلك بيانات جوّاله — تنتظر عناصره شبكة غير محدودة.
+    fun downloadLessons(
+        label: String,
+        lessons: List<com.ali.menbaradkshk.data.Lesson>,
+        wifiOnly: Boolean = false,
+    ) {
         val pending = lessons.filter { it.audioUrl.isNotBlank() && !downloads.isDownloaded(it.id) }
         if (pending.isEmpty()) {
             showMessage("كل دروس هذا القسم محمّلة بالفعل.")
@@ -236,7 +244,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // يُدرج الدرس في طابور لا يعمل، فيبدو الزرّ معطّلاً بلا سبب ظاهر.
         pending.forEach { downloads.clearCancel(it.id) }
         downloads.setPaused(false)
-        store.addToDownloadQueue(pending.map { it.id }, label)
+        store.addToDownloadQueue(pending.map { it.id }, label, wifiOnly)
         // حالة ظاهرة **فوراً**: العامل قد يتأخّر ثوانيَ قبل أن يبدأ، وكانت
         // الرسالة وحدها تَعِد بتحميل لا يُرى له أثر — فيظنّ المستخدم أنّ
         // شيئاً لم يحدث. تُستبدل بحالة العامل الحقيقيّة فور انطلاقه.
@@ -639,29 +647,40 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (enabled) loadMushaf()
     }
 
-    private var pagesDownloadJob: kotlinx.coroutines.Job? = null
+    /// هل هناك تنزيل مصحف (صور أو تلاوة) جارٍ الآن؟ يُقرأ من تدفّقات
+    /// المستودع لا من مهمّة محليّة: المنفّذ صار عامل WorkManager.
+    private fun quranDownloadRunning(): Boolean =
+        quranDownloads.progress.value != null || quranDownloads.pageProgress.value != null
 
-    fun downloadMushafPages(riwayaId: String = _riwaya.value) {
-        if (pagesDownloadJob?.isActive == true) {
+    /// 📶 هل الشبكة الحاليّة محدودة (بيانات جوّال)؟ لتحذير لطيف قبل تنزيل ثقيل.
+    fun onMeteredNetwork(): Boolean {
+        val manager = getApplication<Application>()
+            .getSystemService(android.net.ConnectivityManager::class.java) ?: return false
+        val capabilities = manager.getNetworkCapabilities(manager.activeNetwork) ?: return false
+        return !capabilities.hasCapability(
+            android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED,
+        )
+    }
+
+    /// ⬇️ على WorkManager لا viewModelScope: كان التنزيل يموت بإغلاق التطبيق —
+    /// ومئات الميغابايتات على إنترنت ضعيف لا تكتمل في جلسة واحدة أبداً.
+    fun downloadMushafPages(riwayaId: String = _riwaya.value, wifiOnly: Boolean = false) {
+        if (quranDownloadRunning()) {
             _message.value = "هناك تنزيل جارٍ — انتظر انتهاءه أو ألغِه."
             return
         }
-        pagesDownloadJob = viewModelScope.launch {
-            runCatching { quranDownloads.downloadMushafPages(riwayaId) }
-                .onSuccess { _message.value = "اكتمل تنزيل صور المصحف — يعمل بلا إنترنت." }
-                .onFailure {
-                    if (it is kotlinx.coroutines.CancellationException) {
-                        _message.value = "أُوقف التنزيل — ما نُزّل محفوظ."
-                    } else {
-                        _message.value = "انقطع التنزيل — اضغط مجدداً ليُكمل من حيث توقّف."
-                    }
-                }
+        com.ali.menbaradkshk.data.QuranDownloadScheduler
+            .enqueuePages(getApplication(), riwayaId, wifiOnly)
+        _message.value = if (wifiOnly) {
+            "سيبدأ تنزيل صور المصحف عند الاتصال بالواي فاي."
+        } else {
+            "بدأ تنزيل صور المصحف — يستمر في الخلفية حتى مع إغلاق التطبيق."
         }
     }
 
     fun cancelPagesDownload() {
-        pagesDownloadJob?.cancel()
-        pagesDownloadJob = null
+        com.ali.menbaradkshk.data.QuranDownloadScheduler.cancel(getApplication())
+        _message.value = "أُوقف التنزيل — ما نُزّل محفوظ."
     }
 
     fun deleteMushafPages() {
@@ -752,7 +771,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         surah: com.ali.menbaradkshk.data.Surah,
         reciter: com.ali.menbaradkshk.data.Reciter,
     ) {
-        if (quranDownloadJob?.isActive == true) {
+        if (quranDownloadJob?.isActive == true || quranDownloadRunning()) {
             _message.value = "هناك تنزيل جارٍ — انتظر انتهاءه."
             return
         }
@@ -770,6 +789,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun cancelSurahDownload() {
         quranDownloadJob?.cancel()
         quranDownloadJob = null
+        // «التلاوة الكاملة» صارت على WorkManager — الزرّ نفسه يلغيها.
+        com.ali.menbaradkshk.data.QuranDownloadScheduler.cancel(getApplication())
     }
 
     /**
@@ -780,33 +801,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      *  - قابلة للإلغاء في أي لحظة بالزرّ نفسه؛
      *  - وتُبقي ما نُزّل — لا تُلغى بالجملة عند التوقّف.
      */
-    fun downloadWholeMushaf(reciter: com.ali.menbaradkshk.data.Reciter) {
-        if (quranDownloadJob?.isActive == true) {
+    fun downloadWholeMushaf(reciter: com.ali.menbaradkshk.data.Reciter, wifiOnly: Boolean = false) {
+        if (quranDownloadJob?.isActive == true || quranDownloadRunning()) {
             _message.value = "هناك تنزيل جارٍ — انتظر انتهاءه أو ألغِه."
             return
         }
-        val index = _quranIndex.value ?: return
-        quranDownloadJob = viewModelScope.launch {
-            runCatching {
-                // فحص «هل نُزّلت؟» يلمس القرص لكل آية، فهو مع التنزيل نفسه على
-                // خيط الإدخال/الإخراج لا على خيط الواجهة.
-                withContext(Dispatchers.IO) {
-                    for (surah in index.surahs) {
-                        val done = quranDownloads
-                            .isSurahDownloaded(reciter, surah.number, surah.ayahs)
-                        if (done) continue
-                        quranDownloads.downloadSurah(reciter, surah.number, surah.ayahs)
-                    }
-                }
-            }
-                .onSuccess { _message.value = "اكتمل تنزيل المصحف بصوت ${reciter.name}." }
-                .onFailure {
-                    if (it is kotlinx.coroutines.CancellationException) {
-                        _message.value = "أُوقف التنزيل — ما نُزّل محفوظ."
-                    } else {
-                        _message.value = "انقطع التنزيل — اضغط مجدداً ليُكمل من حيث توقّف."
-                    }
-                }
+        // التنفيذ في عامل WorkManager (يصمد لإغلاق التطبيق ويستأنف السور):
+        // المنطق نفسه انتقل إلى [QuranDownloadWorker.downloadWholeAudio].
+        com.ali.menbaradkshk.data.QuranDownloadScheduler
+            .enqueueAudio(getApplication(), _riwaya.value, reciter.id, wifiOnly)
+        _message.value = if (wifiOnly) {
+            "سيبدأ تنزيل التلاوة عند الاتصال بالواي فاي."
+        } else {
+            "بدأ تنزيل التلاوة بصوت ${reciter.name} — يستمر في الخلفية حتى مع إغلاق التطبيق."
         }
     }
 
@@ -1155,8 +1162,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _celebration = MutableStateFlow<com.ali.menbaradkshk.data.Subcategory?>(null)
     val celebration: StateFlow<com.ali.menbaradkshk.data.Subcategory?> = _celebration.asStateFlow()
 
+    /// 🎉 طابور بسيط لأقسامٍ اكتملت معاً: كان يُعرض أوّلها ويُستهلك الباقي
+    /// بلا عرض (علامة «احتُفل به» تُكتب فور الرصد) فلا يراه صاحبه أبداً.
+    /// الآن تُعرض تباعاً: إغلاق حوارٍ يُظهر الذي بعده.
+    private val celebrationQueue = ArrayDeque<com.ali.menbaradkshk.data.Subcategory>()
+
     fun dismissCelebration() {
-        _celebration.value = null
+        _celebration.value = synchronized(celebrationQueue) { celebrationQueue.removeFirstOrNull() }
     }
 
     /// يراقب علامات «مكتمل»: درسٌ اكتمل للتوّ **وأتمّ قسمه الفرعيّ كلَّه**
@@ -1180,8 +1192,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     if (total > 0 && done >= total) {
                         val sub = state.subcategoryById[subId] ?: continue
                         store.markSubcategoryCelebrated(subId)
-                        _celebration.value = sub
-                        break
+                        // قسمان معاً؟ الأوّل يُعرض والباقي في الطابور — لا break
+                        // يستهلك معرّفاتٍ لم يُعرض احتفالها.
+                        synchronized(celebrationQueue) {
+                            if (_celebration.value == null && celebrationQueue.isEmpty()) {
+                                _celebration.value = sub
+                            } else {
+                                celebrationQueue.addLast(sub)
+                            }
+                        }
                     }
                 }
             }

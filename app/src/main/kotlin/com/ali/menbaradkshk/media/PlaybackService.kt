@@ -180,6 +180,14 @@ class PlaybackService : MediaSessionService() {
                         }
                     }
 
+                    override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                        // 📴 فشلُ إدخال/إخراج (انقطاع شبكة، خادم يرفض، بوّابة
+                        // أسيرة…) ودروسٌ منزَّلة في القائمة؟ نُكمل منها. المنطق
+                        // هنا لا في المتحكّم: الخدمة تعيش بالخلفية بعد موت
+                        // الواجهة وتملك قائمة التشغيل نفسها.
+                        if (isRecoverableIoError(error)) tryOfflineFallback()
+                    }
+
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         // القراءة من المشغّل على الرئيسي (شرط ExoPlayer)
                         // والكتابة على خيط المخزن الواحد — انظر تعليق
@@ -305,7 +313,68 @@ class PlaybackService : MediaSessionService() {
      * ولا مسار تشغيل ثانٍ هنا: القائمة والمشغّل كما هما، وكلّ ما نفعله
      * `pause()` ثم `play()` على العنصر الذي انتقل إليه المشغّل بنفسه.
      */
+    /// آخر محاولة إكمال بلا إنترنت — حارس ضدّ حلقة محاولات متلاحقة.
+    private var offlineFallbackAtMs = 0L
+
+    /// أخطاء الإدخال/الإخراج التي يجدي معها البديل المحلّي: الشبكة صراحةً،
+    /// وأخطاء IO غير المصنّفة، وحالات HTTP السيّئة — كلّها «المصدر البعيد
+    /// تعذّر» والملفّ المنزَّل يشفيها. أمّا أخطاء فكّ الترميز ونحوها فلا.
+    private fun isRecoverableIoError(error: androidx.media3.common.PlaybackException): Boolean =
+        error.errorCode in intArrayOf(
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE,
+        )
+
+    /**
+     * 📴 **إكمال بلا إنترنت**: العنصر الفاشل نفسه أولاً (قد يكون منزَّلاً وفشل
+     * رابطٌ شبكيّ عابر) ثم ما بعده في القائمة. القائمة تُقصَر على المنزَّل كي
+     * لا يقفز المشغّل بعده إلى رابط شبكيّ فيفشل ثانية، وتُعاد روابط عناصرها
+     * إلى الملفّات المحلّية. يخصّ الدروس وحدها (تلاوة المصحف ملفّاتها منفصلة).
+     */
+    private fun tryOfflineFallback(): Boolean {
+        // لا أكثر من محاولة كل عشر ثوانٍ: لو فشل البديل أيضاً لا ندور إلى الأبد.
+        val now = System.currentTimeMillis()
+        if (now - offlineFallbackAtMs < 10_000L) return false
+        val count = player.mediaItemCount
+        if (count == 0) return false
+        val failedId = player.currentMediaItem?.mediaId.orEmpty()
+        if (failedId.isNotBlank() && !isLesson(failedId)) return false
+        val downloads = com.ali.menbaradkshk.data.DownloadRepository.get(this)
+        val items = (0 until count).map { player.getMediaItemAt(it) }
+        val offline = items.filter { downloads.isDownloaded(it.mediaId) }
+        if (offline.isEmpty()) return false
+        val failedIndex = player.currentMediaItemIndex.coerceIn(0, count - 1)
+        val fallbackId = items.drop(failedIndex)
+            .firstOrNull { downloads.isDownloaded(it.mediaId) }?.mediaId
+            ?: offline.first().mediaId
+        val rebuilt = offline.map { item ->
+            store.localAudioPath(item.mediaId)
+                ?.let { path ->
+                    item.buildUpon()
+                        .setUri(android.net.Uri.fromFile(java.io.File(path)))
+                        .build()
+                }
+                ?: item
+        }
+        val startIndex = rebuilt.indexOfFirst { it.mediaId == fallbackId }.coerceAtLeast(0)
+        offlineFallbackAtMs = now
+        // خبرُ نجاةٍ للواجهة إن كانت حيّة — القناة مشتركة فلا تضيع لو ماتت.
+        PlaybackNoticeState.notice.value = "انقطع الإنترنت — أُكمل التشغيل من التنزيلات."
+        val position = store.position(fallbackId).takeIf { it > 3_000L } ?: 0L
+        player.setMediaItems(rebuilt, startIndex, position)
+        player.prepare()
+        player.play()
+        return true
+    }
+
     private fun beginAutoplayCountdown() {
+        // 👁️ لا أحد يرى العدّ التنازلي والواجهة مخفيّة: خمس ثوانٍ صمت في
+        // السيارة أو الجيب تُفهَم عطلاً — ننتقل مباشرةً (المشغّل انتقل بنفسه
+        // أصلاً، فيكفي ألّا نوقفه).
+        if (!AutoplayState.uiVisible) return
         val title = player.currentMediaItem?.mediaMetadata?.title?.toString().orEmpty()
         player.pause()
         val token = System.currentTimeMillis()

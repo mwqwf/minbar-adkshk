@@ -240,8 +240,7 @@ class QuranDownloadRepository private constructor(context: Context) {
         // ⚠️ كان `finally { temp.delete() }` غير مشروط: كلّ انقطاعٍ يمحو ما
         // نُزّل فيُعاد من الصفر — وسورةٌ بملفّ واحد قد تبلغ عشرات
         // الميغابايتات، فعلى إنترنتٍ ضعيف لا تكتمل أبداً مهما أعاد المستخدم.
-        // والحذف يبقى في حالتين فقط: الإلغاء الصريح (المستخدم أوقف)، والنجاح
-        // (فقد صار الملفّ باسمه النهائي).
+        // والحذف عند النجاح وحده (فقد صار الملفّ باسمه النهائي).
         var keepPartial = false
         try {
             val existing = if (temp.isFile) temp.length() else 0L
@@ -272,6 +271,12 @@ class QuranDownloadRepository private constructor(context: Context) {
                 throw java.io.IOException("HTTP 416")
             }
             if (code !in 200..299) throw java.io.IOException("HTTP $code")
+            // 🛡️ بوّابة أسيرة: 200 مع صفحة HTML لتسجيل الدخول — لولا الفحص
+            // لحُفظت الصفحة باسم webp/mp3 «مكتمل». فشل عاديّ فتعيده
+            // fetchWithRetry، وبعد تجاوز البوّابة يكتمل التنزيل الصحيح.
+            if (connection.contentType.orEmpty().startsWith("text/html", ignoreCase = true)) {
+                throw java.io.IOException("استجابة HTML لا ملفّاً")
+            }
             // 206 وحده يعني أن الخادم قبل الاستئناف؛ و200 مع طلب Range يعني
             // أنّه تجاهله وأرسل الملفّ كاملاً، فنكتب من الصفر لا فوق الجزئي.
             val append = code == 206 && existing > 0L
@@ -301,8 +306,12 @@ class QuranDownloadRepository private constructor(context: Context) {
             }
             if (!temp.renameTo(target)) throw java.io.IOException("تعذّر حفظ الملف")
         } catch (cancelled: CancellationException) {
-            // إلغاء صريح: لا نُبقي أثراً — المستخدم طلب التوقّف لا التأجيل.
-            runCatching { temp.delete() }
+            // ⚠️ الجزئي يبقى حتى عند الإلغاء: التنزيل صار على WorkManager،
+            // والإلغاء قد يكون **النظامَ** يوقف العامل (انقطعت الشبكة، قيود
+            // البطارية) لا المستخدمَ — ومحوُ عشرات الميغابايتات عندها يعيد
+            // صاحب الإنترنت الضعيف إلى الصفر. بايتات زائدة بعد إلغاءٍ صريح
+            // تُستهلك في الاستئناف التالي أو يشفيها 416.
+            keepPartial = true
             throw cancelled
         } catch (failure: Throwable) {
             keepPartial = true

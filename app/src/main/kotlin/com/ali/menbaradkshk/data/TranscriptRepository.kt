@@ -460,23 +460,30 @@ class TranscriptRepository private constructor(context: Context) {
                         close(error)
                         return@addSnapshotListener
                     }
-                    val list = snapshot?.documents.orEmpty().map { document ->
-                        TranscriptSubmissionItem(
-                            id = document.id,
-                            lessonId = document.getString("lessonId").orEmpty(),
-                            lessonTitle = document.getString("lessonTitle").orEmpty(),
-                            status = document.getString("status").orEmpty().ifBlank { "pending" },
-                            rejectReason = document.getString("rejectReason").orEmpty(),
-                            hasImages = (document.get("imagePaths") as? List<*>)
-                                .orEmpty().isNotEmpty(),
-                            createdAtMs = document.getLong("createdAtMs")
-                                ?: (document.get("createdAtTs") as? Timestamp)?.toDate()?.time
-                                ?: 0L,
-                            decidedAtMs = (document.get("decidedAtTs") as? Timestamp)?.toDate()?.time
-                                ?: 0L,
-                        )
-                    }.sortedByDescending(TranscriptSubmissionItem::createdAtMs)
-                    trySend(list)
+                    // ⚠️ أي استثناء يفلت من ردّ مستمع Firestore يُسقط التطبيق
+                    // كاملاً — قراءة آمنة نوعياً + عزل الردّ وكل وثيقة معطوبة.
+                    runCatching {
+                        val list = snapshot?.documents.orEmpty().mapNotNull { document ->
+                            runCatching {
+                                TranscriptSubmissionItem(
+                                    id = document.id,
+                                    lessonId = (document.get("lessonId") as? String).orEmpty(),
+                                    lessonTitle = (document.get("lessonTitle") as? String).orEmpty(),
+                                    status = (document.get("status") as? String).orEmpty()
+                                        .ifBlank { "pending" },
+                                    rejectReason = (document.get("rejectReason") as? String).orEmpty(),
+                                    hasImages = (document.get("imagePaths") as? List<*>)
+                                        .orEmpty().isNotEmpty(),
+                                    createdAtMs = (document.get("createdAtMs") as? Number)?.toLong()
+                                        ?: (document.get("createdAtTs") as? Timestamp)?.toDate()?.time
+                                        ?: 0L,
+                                    decidedAtMs = (document.get("decidedAtTs") as? Timestamp)
+                                        ?.toDate()?.time ?: 0L,
+                                )
+                            }.getOrNull()
+                        }.sortedByDescending(TranscriptSubmissionItem::createdAtMs)
+                        trySend(list)
+                    }.onFailure { trySend(emptyList()) }
                 }
         }
         auth.addAuthStateListener(authListener)

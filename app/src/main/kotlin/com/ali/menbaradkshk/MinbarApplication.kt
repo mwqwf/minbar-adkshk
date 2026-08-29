@@ -65,6 +65,25 @@ class MinbarApplication : Application(), Configuration.Provider, SingletonImageL
         }
     }
 
+    /**
+     * 🍃 امتثال متطلب Play (ذاكرة الصور النقطية بالخلفية): عند اختفاء الواجهة
+     * أو أشدّ نُفرغ كاش ذاكرة Coil (~50MB سقفاً، وفيه صفحات مصحف كبيرة) ونصوص
+     * وتخطيطات المصحف المفكوكة — كلّها تُعاد من كاش القرص/الأصول عند العودة
+     * فلا أثر وظيفي. وعند ضغط أخفّ والواجهة ظاهرة يُقلَّص كاش الصور للنصف
+     * فقط كي لا يتقطّع ما يُعرض الآن.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        val imageCache = runCatching { SingletonImageLoader.get(this).memoryCache }.getOrNull()
+        if (level >= TRIM_MEMORY_UI_HIDDEN) {
+            runCatching { imageCache?.clear() }
+            com.ali.menbaradkshk.data.QuranRepository.trimMemory()
+            com.ali.menbaradkshk.data.MushafRepository.trimMemory()
+        } else if (level >= TRIM_MEMORY_RUNNING_LOW) {
+            runCatching { imageCache?.let { it.trimToSize(it.size / 2) } }
+        }
+    }
+
     private fun initializeFirebase() {
         runCatching {
             val app = FirebaseApp.getApps(this).firstOrNull() ?: FirebaseApp.initializeApp(

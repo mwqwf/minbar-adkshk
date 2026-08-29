@@ -104,24 +104,40 @@ class SupportRepository private constructor(context: Context) {
                         trySend(emptyList())
                         return@addSnapshotListener
                     }
+                    // ⚠️ أي استثناء يفلت من ردّ مستمع Firestore يُسقط التطبيق
+                    // كاملاً (شوهد في إنتاج نسخة ٢٦) — فالردّ كلّه معزول.
+                    runCatching {
+                    // ⚠️ انهيار إنتاج (نسخة ٢٦): `getLong/getString` يرميان
+                    // RuntimeException إذا خالف نوعُ الحقل المتوقَّع (Timestamp
+                    // بدل رقم مثلاً)، والرمي داخل ردّ المستمع يُسقط التطبيق
+                    // كاملاً. القراءة الآمنة نوعياً + عزل كلّ وثيقة معطوبة.
+                    fun ms(document: com.google.firebase.firestore.DocumentSnapshot, field: String): Long =
+                        when (val value = document.get(field)) {
+                            is Number -> value.toLong()
+                            is com.google.firebase.Timestamp -> value.toDate().time
+                            else -> 0L
+                        }
                     trySend(
-                        snapshot?.documents.orEmpty().map { document ->
-                            SupportThread(
-                                id = document.id,
-                                kind = document.getString("kind").orEmpty(),
-                                status = document.getString("status").orEmpty(),
-                                lastMessageAtMs = document.getLong("lastMessageAtMs")
-                                    ?: document.getLong("createdAtMs") ?: 0L,
-                                createdAtMs = document.getLong("createdAtMs") ?: 0L,
-                                lastMessagePreview = document.getString("lastMessagePreview").orEmpty(),
-                                userUnread = document.getBoolean("userUnread") ?: false,
-                                ownerReplied = document.getBoolean("ownerReplied") ?: false,
-                                closed = document.getBoolean("closed") ?: false,
-                                blocked = document.getBoolean("blocked") ?: false,
-                                messageCount = (document.getLong("messageCount") ?: 0L).toInt(),
-                            )
+                        snapshot?.documents.orEmpty().mapNotNull { document ->
+                            runCatching {
+                                SupportThread(
+                                    id = document.id,
+                                    kind = (document.get("kind") as? String).orEmpty(),
+                                    status = (document.get("status") as? String).orEmpty(),
+                                    lastMessageAtMs = ms(document, "lastMessageAtMs")
+                                        .takeIf { it != 0L } ?: ms(document, "createdAtMs"),
+                                    createdAtMs = ms(document, "createdAtMs"),
+                                    lastMessagePreview = (document.get("lastMessagePreview") as? String).orEmpty(),
+                                    userUnread = document.get("userUnread") as? Boolean ?: false,
+                                    ownerReplied = document.get("ownerReplied") as? Boolean ?: false,
+                                    closed = document.get("closed") as? Boolean ?: false,
+                                    blocked = document.get("blocked") as? Boolean ?: false,
+                                    messageCount = (document.get("messageCount") as? Number)?.toInt() ?: 0,
+                                )
+                            }.getOrNull()
                         }.sortedByDescending(SupportThread::lastMessageAtMs),
                     )
+                    }.onFailure { trySend(emptyList()) }
                 }
         }
         auth.addAuthStateListener(authListener)
@@ -162,17 +178,24 @@ class SupportRepository private constructor(context: Context) {
                         trySend(emptyList())
                         return@addSnapshotListener
                     }
-                    trySend(
-                        snapshot?.documents.orEmpty().map { document ->
-                            SupportMessage(
-                                id = document.id,
-                                fromOwner = document.getBoolean("fromOwner") ?: false,
-                                text = document.getString("text").orEmpty(),
-                                audioPath = document.getString("audioPath").orEmpty(),
-                                createdAtMs = document.getLong("createdAtMs") ?: 0L,
-                            )
-                        },
-                    )
+                    // ⚠️ نفس درس انهيار الإنتاج في myThreads: getX يرمي إذا خالف
+                    // نوعُ الحقل المتوقَّع، والرمي داخل الردّ يُسقط التطبيق —
+                    // قراءة آمنة نوعياً + عزل الردّ كلّه.
+                    runCatching {
+                        trySend(
+                            snapshot?.documents.orEmpty().mapNotNull { document ->
+                                runCatching {
+                                    SupportMessage(
+                                        id = document.id,
+                                        fromOwner = document.get("fromOwner") as? Boolean ?: false,
+                                        text = (document.get("text") as? String).orEmpty(),
+                                        audioPath = (document.get("audioPath") as? String).orEmpty(),
+                                        createdAtMs = (document.get("createdAtMs") as? Number)?.toLong() ?: 0L,
+                                    )
+                                }.getOrNull()
+                            },
+                        )
+                    }.onFailure { trySend(emptyList()) }
                 }
             awaitClose { registration.remove() }
         }

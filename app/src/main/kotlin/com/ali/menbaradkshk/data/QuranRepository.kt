@@ -153,6 +153,13 @@ class QuranRepository private constructor(context: Context) {
             instance ?: synchronized(this) {
                 instance ?: QuranRepository(context).also { instance = it }
             }
+
+        /// 🍃 تفريغ نصوص الروايات المفكوكة عند ضغط الذاكرة والتطبيق بالخلفية:
+        /// تُعاد قراءتها من أصول الحزمة كسلاً عند أول طلب، فلا أثر وظيفي.
+        /// لا يُنشأ المستودع إن لم يكن قد أُنشئ أصلاً.
+        fun trimMemory() {
+            instance?.texts?.clear()
+        }
     }
 }
 

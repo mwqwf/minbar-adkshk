@@ -139,6 +139,12 @@ class MushafRepository private constructor(context: Context) {
             instance ?: synchronized(this) {
                 instance ?: MushafRepository(context).also { instance = it }
             }
+
+        /// 🍃 تفريغ تخطيطات الروايات المفكوكة عند ضغط الذاكرة والتطبيق
+        /// بالخلفية: تُعاد قراءتها من أصول الحزمة كسلاً عند أول طلب.
+        fun trimMemory() {
+            instance?.cache?.clear()
+        }
     }
 }
 

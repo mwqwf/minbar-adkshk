@@ -270,28 +270,34 @@ class SubmissionRepository private constructor(context: Context) {
                     close(error)
                     return@addSnapshotListener
                 }
-                val list = snapshot?.documents.orEmpty().map { document ->
-                    LessonSubmission(
-                        id = document.id,
-                        title = document.getString("title").orEmpty(),
-                        categoryName = document.getString("categoryName").orEmpty(),
-                        subcategoryName = document.getString("subcategoryName").orEmpty(),
-                        status = document.getString("status").orEmpty().ifBlank { "pending" },
-                        rejectReason = document.getString("rejectReason").orEmpty(),
-                        storagePath = document.getString("storagePath").orEmpty(),
-                        // الخادم يكتب createdAt نصاً ISO مع createdAtTs/createdAtMs — نقرأ المتاح.
-                        createdAtMs = document.getLong("createdAtMs")
-                            ?: (document.get("createdAtTs") as? Timestamp)?.toDate()?.time
-                            ?: document.getString("createdAt")
-                                ?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
-                            ?: 0L,
-                        decidedAtMs = (document.get("decidedAtTs") as? Timestamp)?.toDate()?.time
-                            ?: document.getString("decidedAt")
-                                ?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
-                            ?: 0L,
-                    )
-                }.sortedByDescending(LessonSubmission::createdAtMs)
-                trySend(list)
+                // ⚠️ أي استثناء يفلت من ردّ مستمع Firestore يُسقط التطبيق كاملاً
+                // — قراءة آمنة نوعياً + عزل الردّ وكل وثيقة معطوبة.
+                runCatching {
+                    val list = snapshot?.documents.orEmpty().mapNotNull { document ->
+                        runCatching {
+                            LessonSubmission(
+                                id = document.id,
+                                title = (document.get("title") as? String).orEmpty(),
+                                categoryName = (document.get("categoryName") as? String).orEmpty(),
+                                subcategoryName = (document.get("subcategoryName") as? String).orEmpty(),
+                                status = (document.get("status") as? String).orEmpty().ifBlank { "pending" },
+                                rejectReason = (document.get("rejectReason") as? String).orEmpty(),
+                                storagePath = (document.get("storagePath") as? String).orEmpty(),
+                                // الخادم يكتب createdAt نصاً ISO مع createdAtTs/createdAtMs — نقرأ المتاح.
+                                createdAtMs = (document.get("createdAtMs") as? Number)?.toLong()
+                                    ?: (document.get("createdAtTs") as? Timestamp)?.toDate()?.time
+                                    ?: (document.get("createdAt") as? String)
+                                        ?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
+                                    ?: 0L,
+                                decidedAtMs = (document.get("decidedAtTs") as? Timestamp)?.toDate()?.time
+                                    ?: (document.get("decidedAt") as? String)
+                                        ?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
+                                    ?: 0L,
+                            )
+                        }.getOrNull()
+                    }.sortedByDescending(LessonSubmission::createdAtMs)
+                    trySend(list)
+                }.onFailure { trySend(emptyList()) }
             }
         }
         auth.addAuthStateListener(authListener)

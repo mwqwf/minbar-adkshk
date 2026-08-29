@@ -69,8 +69,15 @@ class NotificationsRepository(
                 // خطأ دائم (مثل رفض القواعد) يُنهي المستمع بصمت، فتبقى الشاشة
                 // فارغة بلا سبب ظاهر. تسجيله يجعل التشخيص ممكناً من logcat.
                 if (error != null) Log.w(TAG, "تعذّرت قراءة الإشعارات العامة", error)
-                publicItems = snapshot?.documents.orEmpty().map { fromDocument("public:${it.id}", it) }
-                emit()
+                // ⚠️ أي استثناء يفلت من ردّ مستمع Firestore يُسقط التطبيق كاملاً
+                // (وثيقة بحقل مخالف النوع مثلاً) — فالردّ معزول وسقوطه آمن.
+                runCatching {
+                    publicItems = snapshot?.documents.orEmpty()
+                        .mapNotNull { document ->
+                            runCatching { fromDocument("public:${document.id}", document) }.getOrNull()
+                        }
+                    emit()
+                }.onFailure { Log.w(TAG, "وثيقة إشعار عام معطوبة", it) }
             }
 
         val auth = FirebaseAuth.getInstance()
@@ -93,9 +100,14 @@ class NotificationsRepository(
                 .addSnapshotListener { snapshot, error ->
                     // كما في المستمع العام: الخطأ الدائم يُسجَّل لا يُبتلع.
                     if (error != null) Log.w(TAG, "تعذّرت قراءة إشعارات المستخدم", error)
-                    privateItems = snapshot?.documents.orEmpty()
-                        .map { fromDocument("private:${it.id}", it) }
-                    emit()
+                    // نفس العزل: استثناء يفلت من الردّ يُسقط التطبيق كاملاً.
+                    runCatching {
+                        privateItems = snapshot?.documents.orEmpty()
+                            .mapNotNull { document ->
+                                runCatching { fromDocument("private:${document.id}", document) }.getOrNull()
+                            }
+                        emit()
+                    }.onFailure { Log.w(TAG, "وثيقة إشعار مستخدم معطوبة", it) }
                 }
             // من لم يرسل مساهمة قطّ لا قرارات له أصلاً ⇒ لا مستمع ولا قراءة.
             if (!hasContributedBefore()) {

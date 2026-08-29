@@ -24,8 +24,10 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeoutOrNull
 
-/// نتيجة معالجة طابور التحميل.
-enum class DownloadRunResult { FINISHED, NEEDS_RETRY }
+/// نتيجة معالجة طابور التحميل. `ROUND_EXPIRED`: انقضى سقف الجولة الزمني
+/// (مسار WorkManager على أندرويد ≤13) وبقي في الطابور شيء — يُعاد الجدولة
+/// فوراً لجولة جديدة، لا `retry` (ذاك يخضع لمهلة تراجعية متراكمة).
+enum class DownloadRunResult { FINISHED, NEEDS_RETRY, ROUND_EXPIRED }
 
 /// منطق تحميل طابور الدروس، مشترك بين مسارَي التشغيل:
 /// وظيفة «نقل بيانات بمبادرة المستخدم» (أندرويد 14+) وعمل الخلفية العادي.
@@ -44,7 +46,13 @@ class DownloadQueueProcessor(private val context: Context) {
     /// نفسه (المعرّف لا يُحذف إلا بعد الاكتمال) فيكتبان الملف الجزئي نفسه
     /// بإزاحتين مستقلّتين فيتلف. المتأخّر ينتظر القفل قليلاً، فإن لم يتحرّر
     /// انسحب ويُعاد جدولته.
-    suspend fun run(onProgressNotification: (Notification) -> Unit = {}): DownloadRunResult {
+    suspend fun run(
+        /// سقف الجولة بساعة `SystemClock.elapsedRealtime` — يمرّره عامل
+        /// WorkManager وحده؛ وظيفة UIDT بلا سقف (Long.MAX_VALUE).
+        /// (أوّلَ المعاملات كي تبقى لامدا الإشعار أخيرةً خارج الأقواس.)
+        roundDeadlineElapsedMs: Long = Long.MAX_VALUE,
+        onProgressNotification: (Notification) -> Unit = {},
+    ): DownloadRunResult {
         // ⚠️ الانسحاب الفوري كان يُفشل مساراً شرعيّاً: إلغاء الوظيفة الجارية
         // غير متزامن، فالسابق يبقى محجوزاً في `read()` لحظاتٍ بينما ينطلق
         // اللاحق فينسحب ويُعاد جدولته بمهلة تراجعيّة. ننتظر تحرّر القفل قليلاً.
@@ -65,7 +73,7 @@ class DownloadQueueProcessor(private val context: Context) {
         }
         if (!acquired) return DownloadRunResult.NEEDS_RETRY
         try {
-            return runExclusively(onProgressNotification)
+            return runExclusively(onProgressNotification, roundDeadlineElapsedMs)
         } finally {
             runLock.unlock()
         }
@@ -73,6 +81,7 @@ class DownloadQueueProcessor(private val context: Context) {
 
     private suspend fun runExclusively(
         onProgressNotification: (Notification) -> Unit,
+        roundDeadlineElapsedMs: Long,
     ): DownloadRunResult {
         var queue = store.downloadQueue()
         if (queue.isEmpty()) {
@@ -98,6 +107,11 @@ class DownloadQueueProcessor(private val context: Context) {
             }
             queue = store.downloadQueue()
             val id = queue.firstOrNull { it !in deferred } ?: break
+            // سقف الجولة: العامل الخلفي على ≤13 مهلته ~10 دقائق، فنسلّم
+            // قبلها ونطلب جولة جديدة نظيفة بدل أن يقتلنا النظام في المنتصف.
+            if (android.os.SystemClock.elapsedRealtime() > roundDeadlineElapsedMs) {
+                return DownloadRunResult.ROUND_EXPIRED
+            }
             val lesson = content.state.value.lessonById[id]
             if (lesson == null || lesson.audioUrl.isBlank()) {
                 // عنصر ساقط بلا تحميل ⇒ يخرج من الإجمالي أيضاً كي لا يُحسب

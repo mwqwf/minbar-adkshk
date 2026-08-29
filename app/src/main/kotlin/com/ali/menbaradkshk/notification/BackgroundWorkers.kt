@@ -151,6 +151,24 @@ class QuranWardWorker(
     }
 }
 
+/// ⛔ قاعدة المعمارية: **صفر تنزيل صوتي تلقائي على الشبكات المحدودة مهما
+/// كانت الإعدادات** — عدا سماح المستخدم الصريح في «التنزيل التلقائي»
+/// الاختياري، وحتى هو مسقوف بميزانية دورةٍ صغيرة، وData Saver يعطّل الكلّ.
+private object AutoDownloadPolicy {
+    /// Data Saver مفعَّل؟ لا تنزيل تلقائياً البتة — احترامٌ صريح لاختيار
+    /// النظام قبل قيود WorkManager (القيود لا تعرف Data Saver).
+    fun dataSaverOn(context: Context): Boolean {
+        val manager = context.getSystemService(android.net.ConnectivityManager::class.java)
+            ?: return false
+        return manager.restrictBackgroundStatus ==
+            android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED
+    }
+
+    fun onMeteredNetwork(context: Context): Boolean =
+        context.getSystemService(android.net.ConnectivityManager::class.java)
+            ?.isActiveNetworkMetered == true
+}
+
 class AutoDownloadWorker(
     context: Context,
     params: WorkerParameters,
@@ -158,6 +176,11 @@ class AutoDownloadWorker(
     override suspend fun doWork(): Result {
         val store = LocalStore.get(applicationContext)
         if (!store.autoDownloadEnabled()) return Result.success()
+        if (AutoDownloadPolicy.dataSaverOn(applicationContext)) return Result.success()
+        val metered = AutoDownloadPolicy.onMeteredNetwork(applicationContext)
+        // شبكة محدودة والمستخدم لم يسمح بها = لا شيء (القيد يضمنها أصلاً،
+        // وهذا حارس داخلي لتبدّل الشبكة بين الجدولة والتشغيل).
+        if (metered && store.autoDownloadWifiOnly()) return Result.success()
         val content = ContentRepository.get(applicationContext)
         // فشل المزامنة لا يمنع تحميل ما في الكاش، أمّا إيقاف العمل من
         // WorkManager فيجب أن يُنهيه فوراً لا أن يمضي في جدولة تنزيلات.
@@ -165,42 +188,22 @@ class AutoDownloadWorker(
             if (failure is kotlinx.coroutines.CancellationException) throw failure
         }
         val downloads = DownloadRepository.get(applicationContext)
-        // الأهداف: 'recent' أحدث الدروس، 'main' الخلاصة المقترحة،
-        // و'followed' جديد الأقسام التي يتابعها — بنفس الطابور وشرط الشبكة
-        // والحدّ الأقصى، فلا آليّة ثانية لهدفٍ ثالث.
-        val target = store.autoDownloadTarget() ?: "recent"
-        val lessons = when (target) {
-            "main" -> content.recommended(MAX_PER_RUN)
-            "followed" -> {
-                val followed = store.followedSubcategories().toSet()
-                // لا متابعات = لا عمل: ينتهي العامل صامتاً بلا طابور ولا إشعار.
-                if (followed.isEmpty()) return Result.success()
-                content.state.value.lessons
-                    .filter { it.subcategoryId in followed }
-                    .sortedByDescending { it.createdAtMs }
-                    .take(MAX_PER_RUN)
-            }
-            else -> content.newest(MAX_PER_RUN)
-        }
-        val missing = lessons
-            .filter { it.audioUrl.isNotBlank() && !downloads.isDownloaded(it.id) }
-            .map { it.id }
-        if (missing.isEmpty()) return Result.success()
+        // محرك الأولوية بدل الأهداف الثلاثة: طبقة السياق ثم النية ثم الباقي.
+        // على شبكة محدودة سمح بها صراحةً: ميزانية 20م.ب كحدّ أقصى للدورة.
+        val budget = if (metered) 20L * 1024 * 1024 else Long.MAX_VALUE
+        val planned = com.ali.menbaradkshk.data.PriorityEngine
+            .plan(applicationContext, budgetBytes = budget, maxItems = MAX_PER_RUN)
+        val ids = planned.map { it.id }
+        if (ids.isEmpty()) return Result.success()
+        // ما نزّله المحرك يُعلَّم «تلقائياً» فيُخلى عند ضيق المساحة أولاً.
+        store.markAutoQueued(ids)
         // علم إلغاء قديم لدرس ألغاه المستخدم يدويّاً كان يُسقط إدراجه هنا
         // بصمت — والتحميل التلقائي لا واجهة له تُظهر ما سقط.
-        missing.forEach { downloads.clearCancel(it) }
+        ids.forEach { downloads.clearCancel(it) }
         // يمرّ عبر طابور التحميل الخلفي نفسه ليستفيد من الاستئناف عند
         // انقطاع الشبكة وإعادة المحاولة التلقائية وإشعار التقدّم.
-        store.addToDownloadQueue(
-            missing,
-            when (target) {
-                "main" -> "خلاصتك المقترحة"
-                "followed" -> "جديد أقسامك"
-                else -> "أحدث الدروس"
-            },
-            wifiOnly = store.autoDownloadWifiOnly(),
-        )
-        com.ali.menbaradkshk.data.DownloadScheduler.enqueue(applicationContext)
+        store.addToDownloadQueue(ids, "اختيارات لك", wifiOnly = store.autoDownloadWifiOnly())
+        com.ali.menbaradkshk.data.DownloadScheduler.enqueue(applicationContext, userInitiated = false)
         return Result.success()
     }
 
@@ -224,31 +227,101 @@ class SmartDownloadWorker(
     override suspend fun doWork(): Result {
         val store = LocalStore.get(applicationContext)
         if (!store.smartDownloadEnabled()) return Result.success()
-        val followed = store.followedSubcategories().toSet()
-        // لا متابعات = لا عمل: ينتهي العامل صامتاً بلا طابور ولا إشعار.
-        if (followed.isEmpty()) return Result.success()
+        // ⛔ صفر تنزيل تلقائي على الشبكات المحدودة مهما كانت الإعدادات:
+        // القيد UNMETERED يضمنها عند الجدولة، وهذا حارس لتبدّل الشبكة
+        // بين الجدولة والتشغيل، وData Saver لا تعرفه القيود أصلاً.
+        if (
+            AutoDownloadPolicy.dataSaverOn(applicationContext) ||
+            AutoDownloadPolicy.onMeteredNetwork(applicationContext)
+        ) {
+            return Result.success()
+        }
         val content = ContentRepository.get(applicationContext)
         // فشل المزامنة لا يمنع تحميل ما في الكاش (نمط AutoDownloadWorker نفسه).
         runCatching { content.refresh(false) }.exceptionOrNull()?.let { failure ->
             if (failure is kotlinx.coroutines.CancellationException) throw failure
         }
         val downloads = DownloadRepository.get(applicationContext)
-        val missing = content.state.value.lessons
-            .filter { it.subcategoryId in followed && it.audioUrl.isNotBlank() }
-            .sortedByDescending { it.createdAtMs }
-            .filterNot { downloads.isDownloaded(it.id) }
-            .take(MAX_PER_RUN)
-            .map { it.id }
-        if (missing.isEmpty()) return Result.success()
-        missing.forEach { downloads.clearCancel(it) }
-        // القيد لكل عنصر: هذه الدفعة واي فاي فقط مهما كانت دفعات المستخدم.
-        store.addToDownloadQueue(missing, "جديد متابعاتك", wifiOnly = true)
-        com.ali.menbaradkshk.data.DownloadScheduler.enqueue(applicationContext)
+
+        // كشف stale أولاً: صوتٌ استُبدل لدى مَن نزّله يُصلَح في أول الطابور.
+        val lessons = content.state.value.lessons
+        val stale = downloads.staleDownloadIds(lessons)
+        if (stale.isNotEmpty()) {
+            val (manual, auto) = stale.partition {
+                store.downloadMeta(it)?.optString("src") == "manual"
+            }
+            if (auto.isNotEmpty()) {
+                store.markAutoQueued(auto)
+                auto.forEach { downloads.clearCancel(it) }
+                store.addToDownloadQueue(auto, "تحديث مكتبتك", wifiOnly = true)
+            }
+            // اليدويّ يُصلَح بأولوية المستخدم نفسه: الصغير (≤10م.ب) على أي
+            // شبكة كي لا يبقى ملفه معطوباً، والكبير ينتظر الواي فاي.
+            val byId = content.state.value.lessonById
+            val (big, small) = manual.partition {
+                (byId[it]?.sizeBytes ?: 0L) > 10L * 1024 * 1024
+            }
+            small.forEach { downloads.clearCancel(it) }
+            big.forEach { downloads.clearCancel(it) }
+            if (small.isNotEmpty()) store.addToDownloadQueue(small, "تحديث مكتبتك", wifiOnly = false)
+            if (big.isNotEmpty()) store.addToDownloadQueue(big, "تحديث مكتبتك", wifiOnly = true)
+        }
+
+        // محرك الأولوية: يختار للجميع (متابعات، مفضّلة، سياق، أرشيف…).
+        val planned = com.ali.menbaradkshk.data.PriorityEngine
+            .plan(applicationContext, budgetBytes = Long.MAX_VALUE, maxItems = MAX_PER_RUN)
+        val staleSet = stale.toSet()
+        val ids = planned.map { it.id }.filter { it !in staleSet }
+        if (ids.isEmpty() && stale.isEmpty()) return Result.success()
+        if (ids.isNotEmpty()) {
+            store.markAutoQueued(ids)
+            ids.forEach { downloads.clearCancel(it) }
+            // القيد لكل عنصر: هذه الدفعة واي فاي فقط مهما كانت دفعات المستخدم.
+            store.addToDownloadQueue(ids, "اختيارات لك", wifiOnly = true)
+        }
+        com.ali.menbaradkshk.data.DownloadScheduler.enqueue(applicationContext, userInitiated = false)
         return Result.success()
     }
 
     companion object {
-        private const val MAX_PER_RUN = 10
+        private const val MAX_PER_RUN = 40
+    }
+}
+
+/// 🛡️ حارس الطابور — يسدّ ضياع وظيفة UIDT بعد إعادة تشغيل الجهاز:
+/// JobScheduler لا يعيد وظائف نقل البيانات بمبادرة المستخدم بعد reboot،
+/// فيبقى الطابور مملوءاً بلا أي عملٍ يعالجه. كل 6 ساعات: طابورٌ غير فارغ
+/// بلا عمل نشط ولا وظيفة معلّقة ⇒ إيقاظ المعالجة.
+class DownloadQueueGuardianWorker(
+    context: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result {
+        val store = LocalStore.get(applicationContext)
+        if (store.downloadQueue().isEmpty()) return Result.success()
+        val manager = WorkManager.getInstance(applicationContext)
+        val workIdle = runCatching {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                manager.getWorkInfosForUniqueWork(
+                    com.ali.menbaradkshk.data.DownloadScheduler.WORK_NAME,
+                ).get() + manager.getWorkInfosForUniqueWork(
+                    com.ali.menbaradkshk.data.DownloadScheduler.WIFI_WORK_NAME,
+                ).get()
+            }.all { it.state.isFinished }
+        }.getOrDefault(true)
+        val jobIdle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            runCatching {
+                applicationContext.getSystemService(android.app.job.JobScheduler::class.java)
+                    ?.getPendingJob(com.ali.menbaradkshk.data.DownloadScheduler.JOB_ID) == null
+            }.getOrDefault(true)
+        } else {
+            true
+        }
+        if (workIdle && jobIdle) {
+            com.ali.menbaradkshk.data.DownloadScheduler
+                .enqueue(applicationContext, userInitiated = false)
+        }
+        return Result.success()
     }
 }
 
@@ -296,6 +369,7 @@ object BackgroundScheduler {
     private const val AUTO_DOWNLOAD_WORK = "auto_download"
     private const val SMART_DOWNLOAD_WORK = "smart_download"
     private const val UPDATE_CHECK_WORK = "update_check"
+    private const val QUEUE_GUARDIAN_WORK = "download_queue_guardian"
 
     fun scheduleAll(context: Context) {
         scheduleContinue(context)
@@ -303,8 +377,26 @@ object BackgroundScheduler {
         scheduleQuranWard(context)
         scheduleAutoDownload(context)
         scheduleSmartDownload(context)
+        scheduleQueueGuardian(context)
         scheduleUpdateCheck(context)
         scheduleAdhkar(context)
+    }
+
+    /// 🛡️ حارس الطابور: كل 6 ساعات بقيد اتصال (انظر [DownloadQueueGuardianWorker]).
+    fun scheduleQueueGuardian(context: Context) {
+        val request = PeriodicWorkRequestBuilder<DownloadQueueGuardianWorker>(6, TimeUnit.HOURS)
+            // ⛔ قاعدة ثابتة: أي عمل دوري جديد يلزمه setInitialDelay — أول
+            // تشغيل يقع فوراً فيتزاحم مع الإقلاع البارد على الأجهزة الضعيفة.
+            .setInitialDelay(30, TimeUnit.MINUTES)
+            .setConstraints(
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
+            )
+            .build()
+        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+            QUEUE_GUARDIAN_WORK,
+            ExistingPeriodicWorkPolicy.UPDATE,
+            request,
+        )
     }
 
     /// 🧠 «التنزيل الذكي»: كل ١٢ ساعة، واي فاي فقط + بطارية غير منخفضة —

@@ -109,6 +109,15 @@ data class Lesson(
     val featured: Boolean = false,
     /** نهاية مدّة التمييز (0 = دائم) — بانقضائها يسقط من «مختارات المنبر». */
     val featuredUntilMs: Long = 0L,
+    /**
+     * بصمة SHA-256 لبايتات الملف المُقدَّم حرفياً — هوية المحتوى الوحيدة
+     * (معمارية «المكتبة الكاملة»): بها يُكشف استبدال الصوت لدى من نزّله،
+     * وبها مفتاح كاش البث (فتبديل المضيف لا يُهدر بايتاً)، وبها التحقق
+     * بعد التنزيل. فارغة = درس لم يمرّ بخطّ التطبيع بعد.
+     */
+    val sha256: String = "",
+    /** حجم الملف المُقدَّم بالبايت — لتقدّم صادق وميزانيات مساحة دقيقة. */
+    val sizeBytes: Long = 0L,
 ) {
     /// العنوان كما يُعرض: أي عنوان غير فارغ يُحترم مهما قصر («صوم»، «حج»)،
     /// ولا يُستبدل باسم المتحدّث إلا حين لا عنوان أصلاً.
@@ -134,6 +143,8 @@ data class Lesson(
         .put("durationMs", durationMs)
         .put("featured", featured)
         .put("featuredUntilMs", featuredUntilMs)
+        .put("sha256", sha256)
+        .put("sizeBytes", sizeBytes)
 
     companion object {
         private fun subcategoryId(data: Map<String, Any?>): String {
@@ -154,9 +165,15 @@ data class Lesson(
                 views = data["views"].longValue(),
                 speaker = (data["speaker"] ?: data["sheikh"] ?: data["reader"]).text(),
                 description = data["description"].text(),
-                durationMs = (data["durationMs"] ?: data["duration"]).longValue(),
+                // المدّة قد تصل ثوانيَ من خطّ التطبيع (`durationSeconds`) أو
+                // ميلي ثانية من المسارات الأقدم — توحَّد هنا ميلي ثانية.
+                durationMs = (data["durationMs"] ?: data["duration"]).longValue()
+                    .takeIf { it > 0L }
+                    ?: (data["durationSeconds"].longValue() * 1000L),
                 featured = data["featured"] == true,
                 featuredUntilMs = data["featuredUntil"].timeMillis(),
+                sha256 = data["sha256"].text(),
+                sizeBytes = data["sizeBytes"].longValue(),
             )
         }
 
@@ -178,6 +195,8 @@ data class Lesson(
                 ?: json.opt("duration").longValue(),
             featured = json.optBoolean("featured", false),
             featuredUntilMs = json.optLong("featuredUntilMs", 0L),
+            sha256 = json.optString("sha256"),
+            sizeBytes = json.optLong("sizeBytes", 0L),
         )
     }
 }

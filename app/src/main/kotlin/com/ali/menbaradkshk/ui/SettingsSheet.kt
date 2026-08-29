@@ -146,6 +146,7 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     var quranWardSheet by remember { mutableStateOf(false) }
     var quranWardTimeDialog by remember { mutableStateOf(false) }
     var autoTargetSheet by remember { mutableStateOf(false) }
+    var autoModeSheet by remember { mutableStateOf(false) }
     var goalSheet by remember { mutableStateOf(false) }
     var deleteDialog by remember { mutableStateOf(false) }
     var sectionSheet by remember { mutableStateOf(false) }
@@ -310,21 +311,21 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
             ) {
                 item(key = "title") { GroupTitle("التنزيلات") }
                 item(key = "autodl") {
+                    // توحيدٌ عرضيّ لمفتاحَي «التفعيل» و«واي فاي فقط» في حالةٍ
+                    // واحدة من ثلاث — مفاتيح التخزين نفسها لم تتغيّر.
+                    val modeLabel = when {
+                        !autoDownload -> "إيقاف"
+                        wifiOnly -> "واي فاي فقط (مستحسن)"
+                        else -> "أي شبكة"
+                    }
                     SettingsTile(
                         icon = Icons.Filled.DownloadForOffline,
                         title = "التنزيل التلقائي",
-                        // محايدٌ عن الهدف: صارت الأهداف ثلاثة، والسطر التالي
-                        // هو الذي يقول أيَّها اختار.
                         subtitle = "يحفظ الدروس تلقائياً للاستماع دون إنترنت",
                         trailing = {
-                            Switch(
-                                checked = autoDownload,
-                                onCheckedChange = { enabled ->
-                                    vm.setAutoDownloadEnabled(enabled)
-                                    if (enabled) vm.setAutoDownloadTarget("recent")
-                                },
-                            )
+                            Text(modeLabel, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         },
+                        onClick = { autoModeSheet = true },
                     )
                 }
                 if (autoDownload) {
@@ -341,15 +342,6 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                             // ⚠️ ورقةٌ لا تبديلٌ بالنقر: صارت الأهداف ثلاثة،
                             // والتدوير بينها يُخفي الخيارَين اللذين لا يظهران.
                             onClick = { autoTargetSheet = true },
-                        )
-                    }
-                    item(key = "autodl-wifi") {
-                        SettingsTile(
-                            icon = Icons.Filled.Wifi,
-                            title = "عبر Wi‑Fi فقط",
-                            trailing = {
-                                Switch(checked = wifiOnly, onCheckedChange = vm::setAutoDownloadWifiOnly)
-                            },
                         )
                     }
                 }
@@ -813,6 +805,52 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     }
 
     // ---- هدف التنزيل التلقائي ----
+    // ورقة حالة «التنزيل التلقائي» الثلاثية — تُترجَم إلى المفتاحين القائمين.
+    if (autoModeSheet) {
+        ModalBottomSheet(onDismissRequest = { autoModeSheet = false }) {
+            Text(
+                "التنزيل التلقائي",
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            val current = when {
+                !autoDownload -> "off"
+                wifiOnly -> "wifi"
+                else -> "any"
+            }
+            listOf(
+                Triple("wifi", "واي فاي فقط (مستحسن)", "لا يمسّ بيانات الجوّال أبداً"),
+                Triple("any", "أي شبكة", "قد يستهلك بيانات الجوّال"),
+                Triple("off", "إيقاف", "لا يُنزَّل شيء تلقائياً"),
+            ).forEach { (value, label, hint) ->
+                ListItem(
+                    modifier = Modifier.clickable {
+                        when (value) {
+                            "off" -> vm.setAutoDownloadEnabled(false)
+                            else -> {
+                                if (!autoDownload) {
+                                    vm.setAutoDownloadEnabled(true)
+                                    vm.setAutoDownloadTarget(autoTarget)
+                                }
+                                vm.setAutoDownloadWifiOnly(value == "wifi")
+                            }
+                        }
+                        autoModeSheet = false
+                    },
+                    headlineContent = { Text(label) },
+                    supportingContent = { Text(hint) },
+                    trailingContent = if (current == value) {
+                        { Icon(Icons.Filled.Check, null, tint = Teal) }
+                    } else {
+                        null
+                    },
+                )
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+
     if (autoTargetSheet) {
         ModalBottomSheet(onDismissRequest = { autoTargetSheet = false }) {
             Text(

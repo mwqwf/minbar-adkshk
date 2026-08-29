@@ -254,7 +254,87 @@ class LocalStore private constructor(context: Context) {
         val json = jsonObject(KEY_DOWNLOADS)
         json.remove(lessonId)
         putJson(KEY_DOWNLOADS, json)
+        removeDownloadMeta(lessonId)
     }
+
+    // ---- بيانات التنزيل الغنيّة (معمارية «المكتبة الكاملة») ----
+    // فهرس جانبي `id → {sha, src, at, size}` يُكتب مرّة واحدة عند اكتمال كل
+    // تنزيل: البصمة لكشف استبدال الصوت لاحقاً (stale)، والمصدر (يدوي/تلقائي/
+    // مُرقّى من كاش البث) لسلّم الإخلاء — اليدوي محصَّن، والتلقائي وحده يُخلى.
+
+    fun downloadMeta(lessonId: String): JSONObject? =
+        jsonObject(KEY_DOWNLOADS_META).optJSONObject(lessonId)
+
+    fun downloadSha(lessonId: String): String =
+        downloadMeta(lessonId)?.optString("sha").orEmpty()
+
+    fun setDownloadMeta(lessonId: String, sha: String, source: String, sizeBytes: Long) {
+        val json = jsonObject(KEY_DOWNLOADS_META).put(
+            lessonId,
+            JSONObject()
+                .put("sha", sha)
+                .put("src", source)
+                .put("size", sizeBytes)
+                .put("at", System.currentTimeMillis()),
+        )
+        writeQuiet { putString(KEY_DOWNLOADS_META, json.toString()) }
+    }
+
+    private fun removeDownloadMeta(lessonId: String) {
+        val json = jsonObject(KEY_DOWNLOADS_META)
+        if (json.has(lessonId)) {
+            json.remove(lessonId)
+            writeQuiet { putString(KEY_DOWNLOADS_META, json.toString()) }
+        }
+    }
+
+    /// معرّفات التنزيلات **التلقائية** (المرشَّحة للإخلاء عند ضيق المساحة)،
+    /// مرتَّبة بالأقدم إخلاءً أولاً وفق طابع اكتمالها.
+    fun autoDownloadedIdsOldestFirst(): List<String> {
+        val meta = jsonObject(KEY_DOWNLOADS_META)
+        return meta.keys().asSequence()
+            .mapNotNull { id -> meta.optJSONObject(id)?.let { id to it } }
+            .filter { (_, m) -> m.optString("src") == "auto" }
+            .sortedBy { (_, m) -> m.optLong("at") }
+            .map { it.first }
+            .toList()
+    }
+
+    /// وسمُ دروسٍ ستدخل الطابور **تلقائياً** (لا بيد المستخدم) — يُقرأ عند
+    /// الاكتمال ليُسجَّل المصدر في الفهرس الجانبي ثم يُمحى.
+    fun markAutoQueued(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        val json = jsonObject(KEY_AUTO_QUEUED)
+        ids.forEach { json.put(it, 1) }
+        writeQuiet { putString(KEY_AUTO_QUEUED, json.toString()) }
+    }
+
+    fun consumeAutoQueued(lessonId: String): Boolean {
+        val json = jsonObject(KEY_AUTO_QUEUED)
+        if (!json.has(lessonId)) return false
+        json.remove(lessonId)
+        writeQuiet { putString(KEY_AUTO_QUEUED, json.toString()) }
+        return true
+    }
+
+    /// إشارة سلبية صريحة: ما حذفه المستخدم بيده لا يُعاد تنزيله تلقائياً أبداً
+    /// (يبقى التنزيل اليدوي متاحاً دائماً ويمسح الإشارة).
+    fun markUserDeletedDownload(lessonId: String) {
+        val json = jsonObject(KEY_USER_DELETED_DL)
+        json.put(lessonId, System.currentTimeMillis())
+        writeQuiet { putString(KEY_USER_DELETED_DL, json.toString()) }
+    }
+
+    fun clearUserDeletedDownload(lessonId: String) {
+        val json = jsonObject(KEY_USER_DELETED_DL)
+        if (json.has(lessonId)) {
+            json.remove(lessonId)
+            writeQuiet { putString(KEY_USER_DELETED_DL, json.toString()) }
+        }
+    }
+
+    fun userDeletedDownloadIds(): Set<String> =
+        jsonObject(KEY_USER_DELETED_DL).keys().asSequence().toSet()
 
     private fun repairDownloadIndex() {
         val current = downloads()
@@ -1303,6 +1383,9 @@ class LocalStore private constructor(context: Context) {
         const val KEY_CACHE_LESSONS = "cache_lessons"
         const val KEY_LAST_SYNC = "cache_last_sync_ms"
         const val KEY_DOWNLOADS = "downloads_audio"
+        const val KEY_DOWNLOADS_META = "downloads_meta_v1"
+        const val KEY_AUTO_QUEUED = "downloads_auto_queued_v1"
+        const val KEY_USER_DELETED_DL = "downloads_user_deleted_v1"
         const val KEY_PLAY_COUNTS = "pers_play_counts"
         const val KEY_RECENT = "pers_recent_played"
         const val KEY_CATEGORY_VISITS = "pers_cat_visits"

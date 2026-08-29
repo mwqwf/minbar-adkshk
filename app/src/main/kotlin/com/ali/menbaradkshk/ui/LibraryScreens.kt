@@ -758,7 +758,37 @@ fun DownloadsScreen(vm: AppViewModel) {
                                 }
                             },
                             headlineContent = { Text(lesson.displayTitle, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-                            supportingContent = duration.takeIf { it > 0L }?.let { { Text(formatDuration(it)) } },
+                            supportingContent = {
+                                Column {
+                                    if (duration > 0L) Text(formatDuration(duration))
+                                    // شارة المنزَّل تلقائياً: سطر واحد يشرح أنه
+                                    // قد يُخلى عند ضيق المساحة، و«تثبيت» بنقرة
+                                    // يحوّله يدويّاً فلا يُمَسّ — بلا حوارات.
+                                    val isAuto = remember(revision) {
+                                        vm.store.downloadMeta(lesson.id)?.optString("src") == "auto"
+                                    }
+                                    if (isAuto) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                "تلقائي · يُخلى عند الحاجة",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                            TextButton(
+                                                onClick = {
+                                                    val path = downloadsMap[lesson.id]
+                                                    vm.store.setDownloadMeta(
+                                                        lesson.id,
+                                                        vm.store.downloadSha(lesson.id),
+                                                        "manual",
+                                                        path?.let { java.io.File(it).length() } ?: 0L,
+                                                    )
+                                                },
+                                            ) { Text("تثبيت", style = MaterialTheme.typography.labelSmall) }
+                                        }
+                                    }
+                                }
+                            },
                             trailingContent = {
                                 IconButton(onClick = { deleteTarget = lesson }) {
                                     Icon(Icons.Filled.Delete, contentDescription = "حذف", tint = MaterialTheme.colorScheme.error)

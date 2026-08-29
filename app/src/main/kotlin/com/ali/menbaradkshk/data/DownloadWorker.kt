@@ -24,19 +24,35 @@ class LessonDownloadWorker(
     params: WorkerParameters,
 ) : CoroutineWorker(context, params) {
 
-    override suspend fun doWork(): Result =
-        when (DownloadQueueProcessor(applicationContext).run()) {
+    override suspend fun doWork(): Result {
+        // جولات مجزّأة: مهلة العمال الخلفيين ~10 دقائق، فنقف عند ~8 ثم
+        // نعيد الجدولة فوراً (APPEND_OR_REPLACE يبدأ جولة جديدة نظيفة).
+        // لا `Result.retry()` هنا: تلك تخضع لمهلة تراجعية متراكمة بلا داعٍ.
+        val deadline = android.os.SystemClock.elapsedRealtime() + ROUND_LIMIT_MS
+        val result = DownloadQueueProcessor(applicationContext)
+            .run(roundDeadlineElapsedMs = deadline)
+        return when (result) {
             DownloadRunResult.FINISHED -> Result.success()
             DownloadRunResult.NEEDS_RETRY -> Result.retry()
+            DownloadRunResult.ROUND_EXPIRED -> {
+                DownloadScheduler.enqueue(applicationContext, userInitiated = false)
+                Result.success()
+            }
         }
+    }
+
+    private companion object {
+        const val ROUND_LIMIT_MS = 8L * 60 * 1_000
+    }
 }
 
 object DownloadScheduler {
-    private const val WORK_NAME = "lesson_downloads"
+    /// عامّان لا خاصّان: حارس الطابور الدوري يفحص بهما حال العمل والوظيفة.
+    const val WORK_NAME = "lesson_downloads"
     /// اسم فريد مستقلّ للعناصر المؤجَّلة بقيد «واي فاي فقط»: لو استُعمل الاسم
     /// نفسه لأسقطته سياسة KEEP ما دام عمل التحميل العادي جارياً.
-    private const val WIFI_WORK_NAME = "lesson_downloads_wifi"
-    private const val JOB_ID = 4210
+    const val WIFI_WORK_NAME = "lesson_downloads_wifi"
+    const val JOB_ID = 4210
 
     /// ⛔ **لا تُعِد `ExistingWorkPolicy.KEEP`.** كان طلب تحميل جديد يُسقَط
     /// بصمت متى كان للاسم الفريد عملٌ قائم — وهو قائم في حالتين شائعتين:
@@ -50,7 +66,11 @@ object DownloadScheduler {
     /// أندرويد 14+ → وظيفة نقل بيانات بمبادرة المستخدم (بلا خدمة أمامية)،
     /// وما دونه → عمل خلفية عادي. يسقط تلقائياً إلى WorkManager إن تعذّرت
     /// جدولة وظيفة UIDT (مثلاً حين يُستدعى والتطبيق في الخلفية).
-    fun enqueue(context: Context) {
+    /// [userInitiated]: مسار UIDT (أندرويد 14+) **لليدويّ وحده** — متطلب
+    /// أندرويد الرسمي: وظائف نقل البيانات بمبادرة المستخدم لعملياتٍ بدأها
+    /// وهو يرى التطبيق. العمال التلقائيون يمرّرون false فيسلكون WorkManager
+    /// دائماً حتى على 14+.
+    fun enqueue(context: Context, userInitiated: Boolean = true) {
         val store = LocalStore.get(context)
         val queue = store.downloadQueue()
         val restricted = store.downloadQueueWifiOnlyIds()
@@ -58,7 +78,7 @@ object DownloadScheduler {
         // الطابور مقيَّداً، وإلا نعمل على أي شبكة ويتخطّى المعالج المقيَّد
         // ويجدول له عملاً بقيد «غير محدودة» في نهاية الجولة.
         val wifiOnly = queue.isNotEmpty() && queue.all { it in restricted }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        if (userInitiated && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             if (scheduleUserInitiated(context, wifiOnly)) return
         }
         enqueueBackgroundWork(context, wifiOnly)

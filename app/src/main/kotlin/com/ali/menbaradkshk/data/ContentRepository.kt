@@ -46,6 +46,7 @@ data class ContentState(
 }
 
 class ContentRepository private constructor(context: Context) {
+    private val appContext = context.applicationContext
     private val store = LocalStore.get(context)
     /// تفضيلات خاصّة بالمستودع وحده (علامات المسبار، إخفاء عناصر السجل،
     /// ترتيب قوائم التشغيل) — لا تُخلط بمخزن التطبيق العام.
@@ -58,12 +59,27 @@ class ContentRepository private constructor(context: Context) {
         run {
             val cachedCategories = store.categories()
             val cachedLessons = store.lessons()
-            ContentState(
-                categories = cachedCategories,
-                subcategories = store.subcategories(),
-                lessons = mergeDurations(cachedLessons),
-                loading = cachedCategories.isEmpty() && cachedLessons.isEmpty(),
-            )
+            if (cachedCategories.isEmpty() && cachedLessons.isEmpty()) {
+                // 🎁 أول تشغيل بلا أي كاش: لقطة الكتالوج المضمّنة وقت البناء
+                // تجعل المكتبة كلّها قابلة للتصفّح فوراً وبلا إنترنت إطلاقاً
+                // (عناوين/أقسام/شيوخ/مدد) — والدروس تنتظر أول اتصال. تُقرأ
+                // مرة واحدة في العمر هنا؛ وأي فشل يُعيد الشاشة الفارغة القديمة.
+                val seeded = readBundledSnapshot(appContext)
+                ContentState(
+                    categories = seeded?.categories.orEmpty(),
+                    subcategories = seeded?.subcategories.orEmpty(),
+                    lessons = mergeDurations(seeded?.lessons.orEmpty()),
+                    loading = seeded == null,
+                    offline = seeded != null,
+                )
+            } else {
+                ContentState(
+                    categories = cachedCategories,
+                    subcategories = store.subcategories(),
+                    lessons = mergeDurations(cachedLessons),
+                    loading = false,
+                )
+            }
         },
     )
     val state: StateFlow<ContentState> = _state.asStateFlow()
@@ -96,6 +112,9 @@ class ContentRepository private constructor(context: Context) {
     /// يخرج فوراً: المسبار/الخانق يريانه غير لازم).
     private val refreshMutex = kotlinx.coroutines.sync.Mutex()
 
+    /// أقدم لحظة يضمن الخادم أن سجلّ الحذف يغطّيها (تصل مع وثيقة البصمة).
+    @Volatile private var serverDeltaFloorMs: Long = 0L
+
     suspend fun refresh(
         force: Boolean = false,
         deep: Boolean = false,
@@ -107,6 +126,10 @@ class ContentRepository private constructor(context: Context) {
         if (!force && now - store.lastSyncMs() < SYNC_INTERVAL_MS && hasCache) {
             return@withContext
         }
+        // علامات الخادم كما رآها المسبار: تُحفظ حرفياً بعد أي جلب كامل بدل
+        // علاماتٍ محسوبة من استعلاماتنا — كانت المحسوبة تخالف بصمة الخادم
+        // حتماً فتفتح حلقة جلب كامل دائمة (لغم 2026-08-29).
+        var probedServer: ProbeMarks? = null
         // المسبار لا يُستعمل إلا مع كاش موجود وعلامات محفوظة من مزامنة سابقة؛
         // وأوّل تشغيل يجلب كل شيء كالمعتاد.
         if (!deep && hasCache) {
@@ -115,6 +138,7 @@ class ContentRepository private constructor(context: Context) {
                 // حدّ أدنى بين مسبارين: عودات متلاحقة لا تُكلّف شيئاً.
                 if (now - lastProbeMs() < PROBE_INTERVAL_MS) return@withContext
                 val server = probe()
+                probedServer = server
                 setLastProbeMs(now)
                 // فشل المسبار (انقطاع/رفض) يسقط إلى الجلب الكامل كما كان.
                 if (server != null && server == stored) {
@@ -141,56 +165,10 @@ class ContentRepository private constructor(context: Context) {
         }
         _state.value = _state.value.copy(syncing = true, error = null)
         runCatching {
-            coroutineScope {
-                val categoriesJob = async {
-                    db.collection("categories").get().await().documents.map { document ->
-                        Category.fromMap(document.id, document.data.orEmpty())
-                    }
-                }
-                val subcategoriesJob = async {
-                    db.collection("subcategories").get().await().documents.map { document ->
-                        Subcategory.fromMap(document.id, document.data.orEmpty())
-                    }
-                }
-                val newest = async { newestUpdatedMs() }
-                val newestCategories = async { newestUpdatedMs("categories") }
-                val newestSubcategories = async { newestUpdatedMs("subcategories") }
-
-                val categories = categoriesJob.await()
-                val subcategories = subcategoriesJob.await()
-                // 🚀 أوّل تثبيت: الأقسام وثائق قليلة تصل في جزء من الثانية،
-                // بينما الدروس مئات الوثائق قد تستغرق عشرات الثواني على شبكة
-                // ضعيفة. كنّا ننتظرها كلّها قبل رسم أي شيء فتبقى الشاشة
-                // فارغة. الآن تُرسم المكتبة فور وصول الأقسام، وتُملأ الدروس
-                // تباعاً — المستخدم يرى تقدّماً مستمرّاً لا انتظاراً صامتاً.
-                if (!hasCache) {
-                    _state.value = _state.value.copy(
-                        categories = categories,
-                        subcategories = subcategories,
-                        loading = false,
-                        syncing = true,
-                    )
-                }
-
-                // الدروس على صفحات: كل صفحة تُرسم فور وصولها بدل دفعة واحدة.
-                val lessons = fetchLessonsPaged { page ->
-                    if (!hasCache) {
-                        _state.value = _state.value.copy(
-                            lessons = mergeDurations(page),
-                            loading = false,
-                            syncing = true,
-                        )
-                    }
-                }
-                Snapshot(
-                    categories = categories,
-                    subcategories = subcategories,
-                    lessons = lessons,
-                    maxUpdatedMs = newest.await(),
-                    categoriesUpdatedMs = newestCategories.await(),
-                    subcategoriesUpdatedMs = newestSubcategories.await(),
-                )
-            }
+            // الجلب الكامل عبر واجهة الكتالوج أولاً: **طلب HTTP واحد** مضغوط
+            // (~70 ك.ب) من كاش CDN بدل مئات قراءات الوثائق — وFirestore يبقى
+            // احتياطاً حرفياً كاملاً عند أي فشل أو نقص.
+            fetchCatalogSnapshot() ?: fetchFirestoreSnapshot(hasCache)
         }.onSuccess { snapshot ->
             val categories = snapshot.categories
             val subcategories = snapshot.subcategories
@@ -201,9 +179,12 @@ class ContentRepository private constructor(context: Context) {
             store.setSubcategories(subcategories)
             store.setLessons(lessons)
             store.setLastSyncMs(now)
-            // علامات المسبار تُحفظ بحالة **الخادم** نفسها كي تُقارن بها لاحقاً.
+            // علامات المسبار تُحفظ بقيم وثيقة البصمة **نفسها** إن قرأناها هذه
+            // الدورة — فهي ما سيُقارَن به المسبار القادم حرفياً. المحسوبة من
+            // استعلاماتنا احتياطٌ لأول تثبيت وحده، وأي انحراف عابر بينهما
+            // تلتقطه الدلتا التالية وتصححه (idempotent).
             saveMarks(
-                ProbeMarks(
+                probedServer ?: ProbeMarks(
                     categories = categories.size,
                     subcategories = subcategories.size,
                     lessons = snapshot.lessons.size,
@@ -249,6 +230,156 @@ class ContentRepository private constructor(context: Context) {
             )
         }
     }
+
+    /// الجلب الكامل من Firestore — المسار الاحتياطي الحرفي القديم (صفحات
+    /// تُرسم تباعاً في أول تثبيت) عندما تتعذر واجهة الكتالوج لأي سبب.
+    private suspend fun fetchFirestoreSnapshot(hasCache: Boolean): Snapshot = coroutineScope {
+        val categoriesJob = async {
+            db.collection("categories").get().await().documents.map { document ->
+                Category.fromMap(document.id, document.data.orEmpty())
+            }
+        }
+        val subcategoriesJob = async {
+            db.collection("subcategories").get().await().documents.map { document ->
+                Subcategory.fromMap(document.id, document.data.orEmpty())
+            }
+        }
+        val newest = async { newestUpdatedMs() }
+        val newestCategories = async { newestUpdatedMs("categories") }
+        val newestSubcategories = async { newestUpdatedMs("subcategories") }
+
+        val categories = categoriesJob.await()
+        val subcategories = subcategoriesJob.await()
+        // 🚀 أوّل تثبيت: تُرسم المكتبة فور وصول الأقسام وتُملأ الدروس تباعاً.
+        if (!hasCache) {
+            _state.value = _state.value.copy(
+                categories = categories,
+                subcategories = subcategories,
+                loading = false,
+                syncing = true,
+            )
+        }
+        val lessons = fetchLessonsPaged { page ->
+            if (!hasCache) {
+                _state.value = _state.value.copy(
+                    lessons = mergeDurations(page),
+                    loading = false,
+                    syncing = true,
+                )
+            }
+        }
+        Snapshot(
+            categories = categories,
+            subcategories = subcategories,
+            lessons = lessons,
+            maxUpdatedMs = newest.await(),
+            categoriesUpdatedMs = newestCategories.await(),
+            subcategoriesUpdatedMs = newestSubcategories.await(),
+        )
+    }
+
+    /**
+     * الجلب الكامل عبر `/api/catalog`: طلب gzip واحد من كاش CDN يعيد المكتبة
+     * كلّها، فيوفّر مئات قراءات الوثائق. `null` عند أي فشل أو شكّ في السلامة
+     * (عدّ لا يطابق، JSON ناقص) — فيتولّى Firestore الأمر حرفياً كما كان.
+     */
+    private suspend fun fetchCatalogSnapshot(): Snapshot? = runCatching {
+        val connection = java.net.URL(CATALOG_URL).openConnection() as java.net.HttpURLConnection
+        connection.connectTimeout = 15_000
+        connection.readTimeout = 30_000
+        connection.setRequestProperty("Accept-Encoding", "gzip")
+        val body = try {
+            if (connection.responseCode != 200) return@runCatching null
+            val raw = connection.inputStream
+            val stream = if (connection.contentEncoding == "gzip") {
+                java.util.zip.GZIPInputStream(raw)
+            } else {
+                raw
+            }
+            stream.bufferedReader().use { it.readText() }
+        } finally {
+            connection.disconnect()
+        }
+        parseCatalog(JSONObject(body))
+    }.getOrNull()
+
+    /// يحوّل JSON الكتالوج (واجهة الموقع أو اللقطة المضمّنة) إلى Snapshot،
+    /// مع تحقّق صارم: الأعداد المعلنة تطابق المصفوفات فعلاً وإلا رُفض كله.
+    private fun parseCatalog(json: JSONObject): Snapshot? {
+            val counts = json.optJSONObject("counts") ?: return null
+            val categoriesJson = json.optJSONArray("categories") ?: return null
+            val subcategoriesJson = json.optJSONArray("subcategories") ?: return null
+            val lessonsJson = json.optJSONArray("lessons") ?: return null
+            if (counts.optInt("categories", -1) != categoriesJson.length() ||
+                counts.optInt("subcategories", -1) != subcategoriesJson.length() ||
+                counts.optInt("lessons", -1) != lessonsJson.length() ||
+                lessonsJson.length() == 0
+            ) {
+                return null
+            }
+            fun JSONObject.toDataMap(): Map<String, Any?> {
+                val map = mutableMapOf<String, Any?>()
+                keys().forEach { key -> map[key] = opt(key) }
+                return map
+            }
+            val categories = (0 until categoriesJson.length()).mapNotNull { index ->
+                val item = categoriesJson.optJSONObject(index) ?: return@mapNotNull null
+                Category.fromMap(item.optString("id"), item.toDataMap())
+            }
+            val subcategories = (0 until subcategoriesJson.length()).mapNotNull { index ->
+                val item = subcategoriesJson.optJSONObject(index) ?: return@mapNotNull null
+                Subcategory.fromMap(item.optString("id"), item.toDataMap())
+            }
+            var maxLessons = 0L
+            var maxCategories = 0L
+            var maxSubcategories = 0L
+            (0 until categoriesJson.length()).forEach { index ->
+                maxCategories = max(
+                    maxCategories,
+                    categoriesJson.optJSONObject(index)?.optLong("updatedAtMs") ?: 0L,
+                )
+            }
+            (0 until subcategoriesJson.length()).forEach { index ->
+                maxSubcategories = max(
+                    maxSubcategories,
+                    subcategoriesJson.optJSONObject(index)?.optLong("updatedAtMs") ?: 0L,
+                )
+            }
+            val lessons = (0 until lessonsJson.length()).mapNotNull { index ->
+                val item = lessonsJson.optJSONObject(index) ?: return@mapNotNull null
+                maxLessons = max(maxLessons, item.optLong("updatedAtMs"))
+                val id = item.optString("id")
+                if (id.isBlank()) return@mapNotNull null
+                Lesson.fromMap(id, item.toDataMap()).let { lesson ->
+                    // واجهة الكتالوج تعيد `createdAtMs` رقمياً بهذا الاسم.
+                    if (lesson.createdAtMs == 0L) {
+                        lesson.copy(createdAtMs = item.optLong("createdAtMs"))
+                    } else {
+                        lesson
+                    }
+                }
+            }
+            if (lessons.size != lessonsJson.length()) return null
+            return Snapshot(
+                categories = categories,
+                subcategories = subcategories,
+                lessons = lessons,
+                maxUpdatedMs = maxLessons,
+                categoriesUpdatedMs = maxCategories,
+                subcategoriesUpdatedMs = maxSubcategories,
+            )
+        }
+
+    /// لقطة الكتالوج المضمّنة وقت البناء (assets/catalog/snapshot.jz —
+    /// ‏JSON مضغوط gzip بامتداد محايد كي لا يفكّه AGP). فشلها ليس خطأً:
+    /// نسخ قديمة من الحزمة قد لا تحملها.
+    private fun readBundledSnapshot(context: Context): Snapshot? = runCatching {
+        context.assets.open("catalog/snapshot.jz").use { stream ->
+            val text = java.util.zip.GZIPInputStream(stream)
+                .bufferedReader().use { it.readText() }
+            parseCatalog(JSONObject(text))
+        }
+    }.getOrNull()
 
     fun refreshPersonalization() {
         _state.value = _state.value.copy(lessons = mergeDurations(_state.value.lessons))
@@ -324,6 +455,9 @@ class ContentRepository private constructor(context: Context) {
     private suspend fun metaProbe(): ProbeMarks? = runCatching {
         val document = db.collection("content_meta").document("state").get().await()
         if (!document.exists()) return@runCatching null
+        // أرضية الدلتا تُقرأ هنا مجاناً (نفس الوثيقة) وتُحفظ جانباً — ليست
+        // جزءاً من مساواة العلامات (تتقدم يومياً مع كنس سجل الحذف).
+        (document.get("deltaFloorMs") as? Number)?.toLong()?.let { serverDeltaFloorMs = it }
         val lessons = (document.get("lessonsCount") as? Number)?.toInt()
         val categories = (document.get("categoriesCount") as? Number)?.toInt()
         val subcategories = (document.get("subcategoriesCount") as? Number)?.toInt()
@@ -431,6 +565,11 @@ class ContentRepository private constructor(context: Context) {
         // تُرسي النقطة، وما بعدها تفاضليّ.
         val sinceDeleted = deleteMark()
         if (sinceDeleted <= 0L) return@runCatching false
+        // 🧭 أرضية الدلتا الحتمية (لا احتمال حكم الأعداد وحده): جهاز غاب أطول
+        // من عمر سجلّ الحذف قد فاتته شواهد ممسوحة — الخادم يعلن أقدم لحظة
+        // مضمونة في `deltaFloorMs`، وما دونها جلبٌ كامل واجب.
+        val floor = serverDeltaFloorMs
+        if (floor > 0L && sinceDeleted <= floor) return@runCatching false
 
         coroutineScope {
             val deletedJob = async { deletedSince(sinceDeleted) }
@@ -463,7 +602,23 @@ class ContentRepository private constructor(context: Context) {
             // تغييرٌ ضخم: التفاضليّ حينها أغلى من صفحات الجلب الكامل.
             val touched = changedCategories.size + changedSubcategories.size +
                 changedLessons.size + deleted.values.sumOf { it.size }
-            if (touched == 0 || touched > MAX_DELTA_DOCS) return@coroutineScope false
+            if (touched > MAX_DELTA_DOCS) return@coroutineScope false
+            // «تغيّرت البصمة ولم نجد وثيقة» — كان هذا يُشعل جلباً كاملاً مع أن
+            // معناه الوحيد المشروع (متى تطابقت الأعداد) انحرافُ طابعٍ لا
+            // محتوى: تُحفظ علامات الخادم ويُكتفى. اختلاف الأعداد يبقي الجلب
+            // الكامل حَكَماً كما كان.
+            if (touched == 0) {
+                if (baseCategories.size != server.categories ||
+                    baseSubcategories.size != server.subcategories ||
+                    baseLessons.size != server.lessons
+                ) {
+                    return@coroutineScope false
+                }
+                store.setLastSyncMs(now)
+                saveMarks(server)
+                _state.value = _state.value.copy(syncing = false, offline = false, error = null)
+                return@coroutineScope true
+            }
 
             val categories = mergeById(
                 baseCategories,
@@ -967,6 +1122,8 @@ class ContentRepository private constructor(context: Context) {
     }
 
     companion object {
+        /// واجهة الكتالوج العامة (كاش CDN، ‏gzip): الجلب الكامل بطلب واحد.
+        private const val CATALOG_URL = "https://minbar-adkassahk.vercel.app/api/catalog"
         private const val SYNC_INTERVAL_MS = 2 * 60 * 1_000L
         /// حدّ أدنى بين مسبارين — يبتلع عودات ON_RESUME المتلاحقة.
         private const val PROBE_INTERVAL_MS = 60 * 1_000L

@@ -1,4 +1,6 @@
+import java.net.URL
 import java.util.Properties
+import java.util.zip.GZIPOutputStream
 
 plugins {
     id("com.android.application")
@@ -328,6 +330,40 @@ androidComponents {
 // يملكه أحد أصلاً لهذه المكتبات — فنضمّنه بأنفسنا بصيغة <lib>.so.sym التي
 // تلتقطها حزمة AAB في BUNDLE-METADATA/com.android.tools.build.debugsymbols
 // فيزول التحذير وتتحسّن قراءة أعطالها في Play بلا أي أثر على التطبيق.
+// ─── لقطة الكتالوج المضمّنة (معمارية «المكتبة الكاملة») ─────────────────
+// تُجلب من واجهة الكتالوج وقت البناء وتُدقَّق (أعدادها تطابق مصفوفاتها) ثم
+// تُضغط إلى assets/catalog/snapshot.jz — فأول تشغيل بلا إنترنت يتصفح المكتبة
+// كلها. أي فشل جلبٍ أو تدقيق **يُفشل بناء الإصدار** عمداً: لقطة فاسدة أسوأ
+// من لا لقطة. للبناء بلا شبكة: ‎-PskipCatalogSnapshot (تبقى لقطة المستودع).
+val refreshCatalogSnapshot = tasks.register("refreshCatalogSnapshot") {
+    outputs.upToDateWhen { false }
+    doLast {
+        if (project.hasProperty("skipCatalogSnapshot")) return@doLast
+        val text = URL("https://minbar-adkassahk.vercel.app/api/catalog")
+            .openConnection().apply { connectTimeout = 20000; readTimeout = 60000 }
+            .getInputStream().bufferedReader().readText()
+        @Suppress("UNCHECKED_CAST")
+        val parsed = groovy.json.JsonSlurper().parseText(text) as Map<String, Any?>
+        val counts = parsed["counts"] as Map<*, *>
+        val lessons = parsed["lessons"] as List<*>
+        val categories = parsed["categories"] as List<*>
+        val subcategories = parsed["subcategories"] as List<*>
+        require(
+            lessons.isNotEmpty() &&
+                lessons.size == (counts["lessons"] as Number).toInt() &&
+                categories.size == (counts["categories"] as Number).toInt() &&
+                subcategories.size == (counts["subcategories"] as Number).toInt(),
+        ) { "لقطة الكتالوج فاسدة أو ناقصة — أُفشل البناء حمايةً لأول تشغيل بلا إنترنت." }
+        val out = layout.projectDirectory.file("src/main/assets/catalog/snapshot.jz").asFile
+        out.parentFile.mkdirs()
+        GZIPOutputStream(out.outputStream()).use { it.write(text.toByteArray()) }
+        println("لقطة الكتالوج: ${lessons.size} درساً، ${out.length()} بايت")
+    }
+}
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    dependsOn(refreshCatalogSnapshot)
+}
+
 tasks.matching { it.name == "extractReleaseNativeSymbolTables" }.configureEach {
     doLast {
         val mergedLibs = layout.buildDirectory

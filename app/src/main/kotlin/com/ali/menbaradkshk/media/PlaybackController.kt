@@ -579,6 +579,11 @@ class PlaybackController(context: Context) {
             return MediaItem.Builder()
                 .setMediaId(lesson.id)
                 .setUri(uri)
+                // 🔑 مفتاح كاش البثّ = بصمة المحتوى (حين تصل من الفهرس): البايتات
+                // المتطابقة تتشارك الكاش مهما تبدّل المضيف أو تكرر الدرس، وتغيّر
+                // الصوت (بصمة جديدة) يعزل كاشه تلقائياً. بلا بصمة يبقى الافتراضي
+                // (الرابط نصاً) — سلوك النسخ السابقة حرفياً.
+                .setCustomCacheKey(lesson.sha256.takeIf { it.isNotBlank() && localPath == null })
                 .setMediaMetadata(
                     MediaMetadata.Builder()
                         .setTitle(lesson.displayTitle)

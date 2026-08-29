@@ -15,6 +15,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 data class DownloadProgress(
     val lessonId: String,
@@ -183,6 +184,27 @@ class DownloadRepository private constructor(context: Context) {
         }
         runCatching { sourceMark.writeText(lesson.audioUrl) }
 
+        // 💾 «البايت يُملَك»: قبل فتح أي اتصال، تُبذر في الجزئي **البادئة
+        // المتصلة من البايت 0** المتجمّعة في كاش البثّ (استماعٌ سابق لنفس
+        // المحتوى) — عبر واجهة الكاش العامة وحدها (تقفل الـspans ضد الإخلاء
+        // أثناء النسخ)، وبلا أي دمج لمقاطع القفز المتفرقة (ملف تالف حتماً).
+        // أفضل جهد: أي شكّ أو فشل يُبقي المسار الشبكي الحالي حرفياً.
+        val seededTotal = seedPartialFromStreamCache(lesson, partial)
+        if (seededTotal > 0L && partial.length() == seededTotal) {
+            // الدرس كله كان في كاش البث — تنزيل مكتمل بصفر شبكة.
+            return@withContext completePartial(lesson, partial, target, sourceMark)
+        }
+
+        // ميزانية مساحة استباقية: الحجم معلوم من الفهرس (sizeBytes) فلا نبدأ
+        // نقلاً محكوماً بالفشل — يُخلى تلقائيُّ الطبقة الدنيا أولاً إن أمكن.
+        if (lesson.sizeBytes > 0L) {
+            val needed = (lesson.sizeBytes - partial.length()).coerceAtLeast(0L) + SPACE_MARGIN_BYTES
+            val available = runCatching {
+                android.os.StatFs(appContext.filesDir.absolutePath).availableBytes
+            }.getOrDefault(Long.MAX_VALUE)
+            if (available < needed) evictAutoDownloads(needed - available, lesson.id)
+        }
+
         var connection: HttpURLConnection? = null
         try {
             // استئناف التنزيل من حيث توقف: نطلب المدى المتبقي إن وُجد ملف جزئي.
@@ -295,18 +317,7 @@ class DownloadRepository private constructor(context: Context) {
                     }
                 }
             }
-            check(partial.length() > 0L) { "ملف الصوت فارغ." }
-            if (target.exists()) target.delete()
-            if (!partial.renameTo(target)) {
-                // بعض الأنظمة ترفض rename رغم أنّ الوجهة في المجلد نفسه —
-                // النسخ ثم الحذف خطة بديلة تُنقذ تنزيلاً اكتمل فعلاً.
-                partial.copyTo(target, overwrite = true)
-                partial.delete()
-            }
-            store.setDownload(lesson.id, target.absolutePath)
-            // البصمة أدّت غرضها — الملف صار باسمه النهائي في الفهرس.
-            sourceMark.delete()
-            target.absolutePath
+            completePartial(lesson, partial, target, sourceMark)
         } catch (cancelled: CancellationException) {
             // إلغاء (onStopJob/إغلاق العملية) ليس فشلاً: الملف الجزئي يبقى
             // للاستئناف، والإلغاء يُعاد رميه كما هو كي لا يُحذف الدرس من الطابور.
@@ -331,7 +342,18 @@ class DownloadRepository private constructor(context: Context) {
             // فيوقظ الوظيفة بلا نهاية ويعرض «بانتظار عودة الاتصال…» وهي رسالة
             // كاذبة. لا يجوز أن يعود: خطأ دائم يُخرج الدرس من الطابور.
             val reason = "${failure.message} ${failure.cause?.message}"
+            com.ali.menbaradkshk.util.DiagLog.log(
+                appContext, "dl", "${lesson.id} io: ${failure.message}",
+            )
             if (reason.contains("ENOSPC") || reason.contains("No space left")) {
+                // امتلاء فعليّ: قبل الاستسلام يُخلى من التنزيلات **التلقائية**
+                // (اليدوية محصَّنة دائماً) بقدر الحاجة، فإن أُخلي شيء فالفشل
+                // قابل للإعادة والجزئي يبقى يُستأنف من بايته؛ وإلا فدائم كما كان.
+                val freed = evictAutoDownloads(
+                    (lesson.sizeBytes - partial.length()).coerceAtLeast(SPACE_MARGIN_BYTES),
+                    lesson.id,
+                )
+                if (freed > 0L) throw RetryableDownloadException(failure)
                 partial.delete()
                 sourceMark.delete()
                 throw IllegalStateException("لا تكفي المساحة على الجهاز لإكمال التنزيل.")
@@ -349,6 +371,152 @@ class DownloadRepository private constructor(context: Context) {
             // بقاؤه يجعل أيّ محاولة تحميل تالية لهذا الدرس تُلغى بصمت.
             cancelRequests -= lesson.id
         }
+    }
+
+    /**
+     * إتمام تنزيل: تحقّق البصمة (إن كانت هوية المحتوى معلومة من الفهرس)،
+     * ثم النقل الذرّي للاسم النهائي وتسجيل الفهرسين (المسار + البيانات الغنية).
+     *
+     * فشل البصمة = بايتات لا تطابق ما تصفه الوثيقة (وسيطٌ عابث، ملف استُبدل
+     * تحت نفس الرابط رغم ختم المسارات) — يُحذف كل شيء ويُعاد قابلاً للإعادة،
+     * فلا يدخل المكتبة ملف لا تشهد له بصمته أبداً.
+     */
+    private fun completePartial(
+        lesson: Lesson,
+        partial: File,
+        target: File,
+        sourceMark: File,
+    ): String {
+        check(partial.length() > 0L) { "ملف الصوت فارغ." }
+        val computedSha = if (lesson.sha256.isNotBlank()) sha256Of(partial) else ""
+        if (lesson.sha256.isNotBlank() && computedSha != lesson.sha256) {
+            partial.delete()
+            sourceMark.delete()
+            com.ali.menbaradkshk.util.DiagLog.log(
+                appContext, "dl", "${lesson.id} sha-mismatch ${computedSha.take(12)}",
+            )
+            throw RetryableDownloadException(
+                java.io.IOException("بصمة الملف لا تطابق هوية المحتوى المعلنة."),
+            )
+        }
+        if (target.exists()) target.delete()
+        if (!partial.renameTo(target)) {
+            // بعض الأنظمة ترفض rename رغم أنّ الوجهة في المجلد نفسه —
+            // النسخ ثم الحذف خطة بديلة تُنقذ تنزيلاً اكتمل فعلاً.
+            partial.copyTo(target, overwrite = true)
+            partial.delete()
+        }
+        store.setDownload(lesson.id, target.absolutePath)
+        store.setDownloadMeta(
+            lesson.id,
+            sha = computedSha.ifBlank { lesson.sha256 },
+            source = if (store.consumeAutoQueued(lesson.id)) "auto" else "manual",
+            sizeBytes = target.length(),
+        )
+        // تنزيلٌ وصل بأي طريق يمسح إشارة «حذفه المستخدم» السلبية.
+        store.clearUserDeletedDownload(lesson.id)
+        // البصمة أدّت غرضها — الملف صار باسمه النهائي في الفهرس.
+        sourceMark.delete()
+        return target.absolutePath
+    }
+
+    private fun sha256Of(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(1 shl 16)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * بذر الجزئي من كاش البثّ: يعيد الطول الكلي المعروف للمحتوى (أو 0) بعد
+     * محاولة إلحاق ما ينقص الجزئيَّ من بادئة الكاش المتصلة من الصفر.
+     *
+     * شروط الرفض (أيّها تحقق ⇒ لا بذر وإبقاء كل شيء كما هو): لا بادئة أطول
+     * من الجزئي؛ بادئة أطول من الطول الكلي المعلوم (فساد)؛ فشل/نقص القراءة
+     * (يُحذف الجزئي كله — أسلم من خليط). مفتاح الكاش = بصمة المحتوى إن
+     * وُجدت (فيبقى الكاش صالحاً عبر تبديل المضيف) وإلا الرابط (السلوك القديم).
+     */
+    private fun seedPartialFromStreamCache(lesson: Lesson, partial: File): Long = runCatching {
+        val cache = com.ali.menbaradkshk.MinbarApplication.mediaCache(appContext)
+        val key = lesson.sha256.ifBlank { lesson.audioUrl }
+        val metaLen = androidx.media3.datasource.cache.ContentMetadata.getContentLength(
+            cache.getContentMetadata(key),
+        ).takeIf { it > 0L } ?: 0L
+        val prefix = cache.getCachedLength(key, 0L, Long.MAX_VALUE).takeIf { it > 0L } ?: 0L
+        val have = partial.length()
+        if (prefix <= have) return@runCatching metaLen
+        if (metaLen > 0L && prefix > metaLen) return@runCatching 0L
+        val source = androidx.media3.datasource.cache.CacheDataSource(cache, null)
+        try {
+            val spec = androidx.media3.datasource.DataSpec.Builder()
+                .setUri(Uri.parse(lesson.audioUrl))
+                .setKey(key)
+                .setPosition(have)
+                .setLength(prefix - have)
+                .build()
+            source.open(spec)
+            FileOutputStream(partial, true).use { output ->
+                val buffer = ByteArray(1 shl 16)
+                var copied = 0L
+                while (copied < prefix - have) {
+                    val count = source.read(
+                        buffer, 0,
+                        minOf(buffer.size.toLong(), prefix - have - copied).toInt(),
+                    )
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                    copied += count
+                }
+                output.fd.sync()
+                if (copied != prefix - have) {
+                    // نسخ ناقص = لا نثق بالخليط: يُحذف الجزئي كله ويُعاد شبكياً.
+                    partial.delete()
+                    return@runCatching 0L
+                }
+            }
+        } finally {
+            runCatching { source.close() }
+        }
+        metaLen
+    }.getOrDefault(0L)
+
+    /**
+     * إخلاء تنزيلات **تلقائية** (الأقدم أولاً، واليدوي والمثبَّت لا يُمسّان
+     * أبداً) حتى تحرير [neededBytes] تقريباً. يعيد ما حُرّر فعلاً.
+     */
+    private fun evictAutoDownloads(neededBytes: Long, sparedLessonId: String): Long {
+        if (neededBytes <= 0L) return 0L
+        var freed = 0L
+        for (id in store.autoDownloadedIdsOldestFirst()) {
+            if (freed >= neededBytes) break
+            if (id == sparedLessonId) continue
+            val path = store.localAudioPath(id) ?: continue
+            val size = File(path).length()
+            if (runCatching { File(path).delete() }.getOrDefault(false)) {
+                store.removeDownload(id)
+                freed += size
+            }
+        }
+        return freed
+    }
+
+    /**
+     * دروس منزَّلة صار صوتها **قديماً**: هوية المحتوى في الفهرس تخالف بصمة
+     * التنزيل المسجَّلة. لا يُحكم على تنزيل بلا بصمة مسجّلة (سبق المعمارية)
+     * إلا إن حمل الدرس بصمة الآن — فتنزيله القديم مجهول الهوية ويُجدَّد.
+     */
+    fun staleDownloadIds(lessons: List<Lesson>): List<String> = lessons.mapNotNull { lesson ->
+        if (lesson.sha256.isBlank()) return@mapNotNull null
+        val path = store.localAudioPath(lesson.id) ?: return@mapNotNull null
+        if (!File(path).isFile) return@mapNotNull null
+        val recorded = store.downloadSha(lesson.id)
+        if (recorded != lesson.sha256) lesson.id else null
     }
 
     /**
@@ -377,6 +545,8 @@ class DownloadRepository private constructor(context: Context) {
     suspend fun delete(lessonId: String) = withContext(Dispatchers.IO) {
         store.localAudioPath(lessonId)?.let { File(it).delete() }
         store.removeDownload(lessonId)
+        // حذفٌ بيد المستخدم إشارة سلبية دائمة للتنزيل التلقائي وحده.
+        store.markUserDeletedDownload(lessonId)
     }
 
     suspend fun deleteAll() {
@@ -391,6 +561,9 @@ class DownloadRepository private constructor(context: Context) {
         /// أدنى قدر من البايتات بين إصدارَي تقدّم حين لا تتغيّر النسبة
         /// (ملفّ بلا حجم معلن، أو ملفّ ضخم تبقى نسبته ثابتة طويلاً).
         private const val PROGRESS_EMIT_BYTES = 256L * 1024L
+
+        /// هامش أمان فوق حجم الملف قبل بدء النقل (يغطي `.part` مؤقتاً + النظام).
+        private const val SPACE_MARGIN_BYTES = 32L * 1024L * 1024L
 
         @Volatile private var instance: DownloadRepository? = null
         fun get(context: Context): DownloadRepository = instance ?: synchronized(this) {

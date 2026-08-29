@@ -185,6 +185,10 @@ class PlaybackService : MediaSessionService() {
                         // أسيرة…) ودروسٌ منزَّلة في القائمة؟ نُكمل منها. المنطق
                         // هنا لا في المتحكّم: الخدمة تعيش بالخلفية بعد موت
                         // الواجهة وتملك قائمة التشغيل نفسها.
+                        com.ali.menbaradkshk.util.DiagLog.log(
+                            this@PlaybackService, "play",
+                            "$trackedLessonId ${error.errorCodeName}",
+                        )
                         if (isRecoverableIoError(error)) tryOfflineFallback()
                     }
 

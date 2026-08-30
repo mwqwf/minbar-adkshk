@@ -3,14 +3,11 @@ package com.ali.menbaradkshk.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -19,11 +16,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -32,109 +24,31 @@ import androidx.compose.ui.unit.dp
 import com.ali.menbaradkshk.data.ContentState
 
 /**
- * 👋 أوّل تشغيل — سؤالان اثنان، ثم لا شيء بعدهما أبداً.
+ * 👋 أوّل تشغيل — سؤال **واحد**، ثم لا شيء بعده أبداً.
  *
  * **لماذا وُجدت هذه الشاشة؟** أقوى ما في التطبيق (حفظ الدروس تلقائياً على
  * الواي فاي لتُسمَع بلا إنترنت) كان مدفوناً في الإعدادات، وأغلب الجمهور لا
- * يفتح الإعدادات قطّ. فالميزة التي تحلّ مشكلة الإنترنت المتقطّع لا تصل إلى
- * من صُنعت لأجله.
+ * يفتح الإعدادات قطّ.
  *
- * **ولماذا سؤالان فقط؟** لأنّ كل سؤال ثالث يعني من يغلق التطبيق قبل أن يبدأ.
- * سؤالٌ واحد كبير في كل شاشة، بخطّ كبير وأزرار عريضة، و«تخطَّ» ظاهرٌ في
- * كلتيهما — لا حبس بأيّ حال.
+ * **ولماذا سؤال واحد فقط؟** سؤالُ «أي قسم تتابع؟» أُزيل عمداً (2026-08-30):
+ * كان يوجّه هدف التنزيل القديم، أمّا محرّك الأولوية (معمارية «المكتبة
+ * الكاملة») فيخدم المكتبة كلّها ويتعلّم اهتمام المستخدم من استماعه الفعلي —
+ * والتنزيل صار شبه بلا كلفة بعد ضغط الأرشيف، فبقي القرار الوحيد الذي يملكه
+ * المستخدم حقاً: أنُنزّل تلقائياً على الواي فاي أم لا. و«تخطَّ» ظاهرٌ دائماً.
  *
- * وتُعرض **بعد** وصول المحتوى الأوّل: بلا محتوى تكون قائمة الأقسام فارغة
- * فيبدو التطبيق معطوباً في أوّل لحظة يُرى فيها. وإن لم يكن هناك اتصال
- * تُؤجَّل إلى أوّل مرّة يتوفّر فيها المحتوى.
+ * وتُعرض **بعد** وصول المحتوى الأوّل كي لا يبدو التطبيق معطوباً في أول لحظة.
  */
 @Composable
 fun OnboardingScreen(vm: AppViewModel, content: ContentState, onDone: () -> Unit) {
-    var step by rememberSaveable { mutableIntStateOf(0) }
-    // اسم القسم المختار — يُذكر في السؤال الثاني كي يبقى مرتبطاً بجواب الأوّل.
-    var chosenName by rememberSaveable { mutableStateOf("") }
-
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
-        if (step == 0) {
-            SectionQuestion(
-                vm = vm,
-                content = content,
-                onChosen = { name ->
-                    chosenName = name
-                    step = 1
-                },
-                onSkip = { step = 1 },
-            )
-        } else {
-            AutoDownloadQuestion(
-                vm = vm,
-                sectionName = chosenName,
-                onDone = onDone,
-            )
-        }
+        AutoDownloadQuestion(vm = vm, onDone = onDone)
     }
 }
 
-/// السؤال الأوّل: أيّ قسم تتابع؟ اختيار القسم = متابعته (نفس جرس المتابعة
-/// الموجود في شاشة الأقسام) — فلا آليّة ثانية ولا معنى جديد يتعلّمه المستخدم.
-@Composable
-private fun SectionQuestion(
-    vm: AppViewModel,
-    content: ContentState,
-    onChosen: (String) -> Unit,
-    onSkip: () -> Unit,
-) {
-    val categoryNames = content.categories.associate { it.id to it.name }
-    Column(Modifier.fillMaxSize()) {
-        QuestionTitle("ما القسم الذي تتابعه؟")
-        Text(
-            "اختر واحداً، ويصلك كل درس جديد فيه.",
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp),
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(12.dp))
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            items(content.subcategories, key = { it.id }) { sub ->
-                SectionCard(
-                    categoryId = sub.categoryId,
-                    name = sub.name,
-                    subtitle = categoryNames[sub.categoryId],
-                    onClick = {
-                        // ⚠️ متابعة **محلّية فوريّة** لا `toggleFollow`: تلك تعكس
-                        // المتابعة صامتةً إن فشل اشتراك FCM (شائع مع إنترنت
-                        // ضعيف عند أوّل تشغيل)، ورسالتها تُعرض تحت طبقة
-                        // الترحيب المعتمة فلا يراها أحد — فتبقى قائمة
-                        // المتابعات فارغة ويموت وعدا الشاشة (الإشعارات
-                        // والتنزيل التلقائي) معاً بصمت. هنا تُسجَّل المتابعة
-                        // أوّلاً، ثم يُحاوَل الاشتراك بلا عكسٍ عند الفشل —
-                        // ويُعاد تلقائياً عند أوّل عودة للتطبيق (MainActivity).
-                        if (!vm.store.isFollowingSubcategory(sub.id)) {
-                            vm.store.toggleFollowSubcategory(sub.id)
-                            vm.resubscribeFollowedTopics()
-                        }
-                        // التحميل التلقائي — إن فُعِّل في السؤال التالي —
-                        // يتبع «الأقسام التي أتابعها»، وهو الهدف الموجود أصلاً
-                        // في الإعدادات بلا صيغة جديدة.
-                        vm.setAutoDownloadTarget("followed")
-                        onChosen(sub.name)
-                    },
-                )
-            }
-        }
-        SkipButton(onSkip)
-    }
-}
-
-/// السؤال الثاني: أنُنزّل تلقائياً على الواي فاي؟ — الجواب زرّان لا أكثر.
+/// السؤال الوحيد: أنُنزّل تلقائياً على الواي فاي؟ — الجواب زرّان لا أكثر.
 @Composable
 private fun AutoDownloadQuestion(
     vm: AppViewModel,
-    sectionName: String,
     onDone: () -> Unit,
 ) {
     Column(
@@ -143,11 +57,7 @@ private fun AutoDownloadQuestion(
     ) {
         Spacer(Modifier.height(24.dp))
         QuestionTitle(
-            if (sectionName.isBlank()) {
-                "هل ننزّل أحدث الدروس تلقائياً حين تتصل بواي فاي، لتسمعها بلا إنترنت؟"
-            } else {
-                "هل ننزّل دروس «$sectionName» تلقائياً حين تتصل بواي فاي، لتسمعها بلا إنترنت؟"
-            },
+            "هل نحفظ لك الدروس تلقائياً حين تتصل بواي فاي، لتسمعها بلا إنترنت؟",
         )
         Text(
             "لن نستعمل بيانات هاتفك، ويمكنك تغيير هذا من الإعدادات متى شئت.",
@@ -164,8 +74,9 @@ private fun AutoDownloadQuestion(
             Button(
                 onClick = {
                     // الواي فاي وحده: هذا نصّ السؤال حرفياً، فلا يجوز أن
-                    // ينتهي الجواب بتحميلٍ على بيانات الهاتف.
-                    if (sectionName.isBlank()) vm.setAutoDownloadTarget("recent")
+                    // ينتهي الجواب بتحميلٍ على بيانات الهاتف. ومحرّك الأولوية
+                    // يتولّى «ماذا يُنزَّل أولاً» بلا أي سؤال إضافي.
+                    vm.setAutoDownloadTarget("recent")
                     vm.setAutoDownloadWifiOnly(true)
                     vm.setAutoDownloadEnabled(true)
                     onDone()
@@ -206,7 +117,7 @@ private fun QuestionTitle(text: String) {
     }
 }
 
-/// «تخطَّ» ظاهرٌ في كل شاشة — لا حبس ولا سؤال إجباريّ.
+/// «تخطَّ» ظاهرٌ دائماً — لا حبس ولا سؤال إجباريّ.
 @Composable
 private fun SkipButton(onSkip: () -> Unit) {
     TextButton(

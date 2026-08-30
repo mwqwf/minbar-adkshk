@@ -497,10 +497,16 @@ class DownloadRepository private constructor(context: Context) {
             if (freed >= neededBytes) break
             if (id == sparedLessonId) continue
             val path = store.localAudioPath(id) ?: continue
-            val size = File(path).length()
-            if (runCatching { File(path).delete() }.getOrDefault(false)) {
-                store.removeDownload(id)
-                freed += size
+            val file = File(path)
+            val size = file.length()
+            when {
+                // ملفٌ مفقود أصلاً (مُسح خارجياً): يُنظَّف قيده كي لا يبقى
+                // مرشَّحاً ميتاً يُفحص في كل دورة إخلاء بلا تحرير بايت.
+                !file.exists() -> store.removeDownload(id)
+                runCatching { file.delete() }.getOrDefault(false) -> {
+                    store.removeDownload(id)
+                    freed += size
+                }
             }
         }
         return freed

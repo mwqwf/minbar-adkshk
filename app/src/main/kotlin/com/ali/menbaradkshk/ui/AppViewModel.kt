@@ -244,6 +244,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // يُدرج الدرس في طابور لا يعمل، فيبدو الزرّ معطّلاً بلا سبب ظاهر.
         pending.forEach { downloads.clearCancel(it.id) }
         downloads.setPaused(false)
+        // طلبٌ يدويّ يمحو وسم «تلقائي» إن سبق للمحرّك وسم الدرس: نيّة
+        // المستخدم الصريحة تجعله محصَّناً من الإخلاء لا مرشَّحاً له.
+        store.clearAutoQueued(pending.map { it.id })
         store.addToDownloadQueue(pending.map { it.id }, label, wifiOnly)
         // حالة ظاهرة **فوراً**: العامل قد يتأخّر ثوانيَ قبل أن يبدأ، وكانت
         // الرسالة وحدها تَعِد بتحميل لا يُرى له أثر — فيظنّ المستخدم أنّ

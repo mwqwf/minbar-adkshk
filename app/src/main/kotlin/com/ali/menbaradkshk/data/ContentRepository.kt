@@ -264,7 +264,11 @@ class ContentRepository private constructor(context: Context) {
         val categories = categoriesJob.await()
         val subcategories = subcategoriesJob.await()
         // 🚀 أوّل تثبيت: تُرسم المكتبة فور وصول الأقسام وتُملأ الدروس تباعاً.
-        if (!hasCache) {
+        // ⚠️ إلا إذا كانت اللقطة المضمّنة معروضة الآن: استبدال مكتبتها الكاملة
+        // بصفحةٍ أولى جزئية كان **يقلّص** ما يراه المستخدم في منتصف المزامنة —
+        // عندها تُترك الشاشة كما هي وتُستبدل دفعة واحدة عند الاكتمال.
+        val progressive = !hasCache && _state.value.lessons.isEmpty()
+        if (progressive) {
             _state.value = _state.value.copy(
                 categories = categories,
                 subcategories = subcategories,
@@ -273,7 +277,7 @@ class ContentRepository private constructor(context: Context) {
             )
         }
         val lessons = fetchLessonsPaged { page ->
-            if (!hasCache) {
+            if (progressive) {
                 _state.value = _state.value.copy(
                     lessons = mergeDurations(page),
                     loading = false,

@@ -193,7 +193,10 @@ class AutoDownloadWorker(
         val budget = if (metered) 20L * 1024 * 1024 else Long.MAX_VALUE
         val planned = com.ali.menbaradkshk.data.PriorityEngine
             .plan(applicationContext, budgetBytes = budget, maxItems = MAX_PER_RUN)
-        val ids = planned.map { it.id }
+        // ⚠️ ما هو في الطابور الآن دخله بنيّةٍ سُجّلت وقتها (يدويّة غالباً) —
+        // وسمه «تلقائياً» هنا كان يقلب تنزيلاً يدويّاً منتظراً إلى مرشَّح إخلاء.
+        val queuedNow = store.downloadQueue().toSet()
+        val ids = planned.map { it.id }.filter { it !in queuedNow }
         if (ids.isEmpty()) return Result.success()
         // ما نزّله المحرك يُعلَّم «تلقائياً» فيُخلى عند ضيق المساحة أولاً.
         store.markAutoQueued(ids)
@@ -245,7 +248,10 @@ class SmartDownloadWorker(
 
         // كشف stale أولاً: صوتٌ استُبدل لدى مَن نزّله يُصلَح في أول الطابور.
         val lessons = content.state.value.lessons
-        val stale = downloads.staleDownloadIds(lessons)
+        // ⚠️ ما هو في الطابور الآن دخله بنيّةٍ سُجّلت وقتها (يدويّة غالباً) —
+        // وسمه «تلقائياً» هنا كان يقلب تنزيلاً يدويّاً منتظراً إلى مرشَّح إخلاء.
+        val queuedNow = store.downloadQueue().toSet()
+        val stale = downloads.staleDownloadIds(lessons).filter { it !in queuedNow }
         if (stale.isNotEmpty()) {
             val (manual, auto) = stale.partition {
                 store.downloadMeta(it)?.optString("src") == "manual"
@@ -271,7 +277,7 @@ class SmartDownloadWorker(
         val planned = com.ali.menbaradkshk.data.PriorityEngine
             .plan(applicationContext, budgetBytes = Long.MAX_VALUE, maxItems = MAX_PER_RUN)
         val staleSet = stale.toSet()
-        val ids = planned.map { it.id }.filter { it !in staleSet }
+        val ids = planned.map { it.id }.filter { it !in staleSet && it !in queuedNow }
         if (ids.isEmpty() && stale.isEmpty()) return Result.success()
         if (ids.isNotEmpty()) {
             store.markAutoQueued(ids)

@@ -764,8 +764,13 @@ fun DownloadsScreen(vm: AppViewModel) {
                                     // شارة المنزَّل تلقائياً: سطر واحد يشرح أنه
                                     // قد يُخلى عند ضيق المساحة، و«تثبيت» بنقرة
                                     // يحوّله يدويّاً فلا يُمَسّ — بلا حوارات.
-                                    val isAuto = remember(revision) {
-                                        vm.store.downloadMeta(lesson.id)?.optString("src") == "auto"
+                                    // حالة قابلة للتغيير: كتابة الفهرس الجانبي
+                                    // «هادئة» لا ترفع revision، فبِلاها كانت
+                                    // الشارة تبقى بعد «تثبيت» وكأنّ الزرّ معطّل.
+                                    var isAuto by remember(revision, lesson.id) {
+                                        mutableStateOf(
+                                            vm.store.downloadMeta(lesson.id)?.optString("src") == "auto",
+                                        )
                                     }
                                     if (isAuto) {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -783,6 +788,7 @@ fun DownloadsScreen(vm: AppViewModel) {
                                                         "manual",
                                                         path?.let { java.io.File(it).length() } ?: 0L,
                                                     )
+                                                    isAuto = false
                                                 },
                                             ) { Text("تثبيت", style = MaterialTheme.typography.labelSmall) }
                                         }

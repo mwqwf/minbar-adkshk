@@ -309,6 +309,16 @@ class LocalStore private constructor(context: Context) {
         writeQuiet { putString(KEY_AUTO_QUEUED, json.toString()) }
     }
 
+    /// محو وسم «تلقائي» عن دفعة: طلبُ المستخدم اليدويّ لدرسٍ سبق وسمه
+    /// تلقائياً يجعل نيّته هي الحاكمة — فلا يُصنَّف تنزيله «قابلاً للإخلاء».
+    fun clearAutoQueued(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        val json = jsonObject(KEY_AUTO_QUEUED)
+        var changed = false
+        ids.forEach { if (json.has(it)) { json.remove(it); changed = true } }
+        if (changed) writeQuiet { putString(KEY_AUTO_QUEUED, json.toString()) }
+    }
+
     fun consumeAutoQueued(lessonId: String): Boolean {
         val json = jsonObject(KEY_AUTO_QUEUED)
         if (!json.has(lessonId)) return false

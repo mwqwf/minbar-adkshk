@@ -19,8 +19,6 @@ import com.ali.menbaradkshk.notification.NotificationChannels
 import com.ali.menbaradkshk.notification.BackgroundScheduler
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
-import com.google.firebase.appcheck.FirebaseAppCheck
-import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.messaging.FirebaseMessaging
 import androidx.work.Configuration
 import java.io.File
@@ -97,23 +95,6 @@ class MinbarApplication : Application(), Configuration.Provider, SingletonImageL
                     .setStorageBucket("mxqp-8d1e8.firebasestorage.app")
                     .build(),
             )
-            FirebaseAppCheck.getInstance(app)
-                .installAppCheckProviderFactory(MinbarAppCheckProvider.factory())
-            // 🗃️ تثبيت الكاش الدائم لـFirestore صراحةً (كما تفعل اللوحة):
-            // لا نتّكل على الافتراضي، فالكاش الدائم هو ما يجعل القراءات
-            // المتكرّرة تُخدم محليّاً بلا تكلفة شبكة. يجب أن يسبق أوّل
-            // استعمال لـFirestore في العمليّة.
-            runCatching {
-                com.google.firebase.firestore.FirebaseFirestore.getInstance(app).firestoreSettings =
-                    com.google.firebase.firestore.FirebaseFirestoreSettings.Builder()
-                        .setLocalCacheSettings(
-                            com.google.firebase.firestore.PersistentCacheSettings.newBuilder().build(),
-                        )
-                        .build()
-            }
-            if (FirebaseAuth.getInstance(app).currentUser == null) {
-                FirebaseAuth.getInstance(app).signInAnonymously()
-            }
             val store = LocalStore.get(this)
             if (store.notificationsEnabled()) {
                 FirebaseMessaging.getInstance().subscribeToTopic("content")

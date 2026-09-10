@@ -1077,7 +1077,7 @@ fun MySubmissionsScreen(vm: AppViewModel) {
                                     // رسالة الخادم الفعليّة إن وُجدت — لا افتراض
                                     // مشكلة اتصال قد لا تكون هي السبب.
                                     val serverMessage = generateSequence(error) { it.cause }
-                                        .filterIsInstance<com.google.firebase.functions.FirebaseFunctionsException>()
+                                        .filterIsInstance<com.ali.menbaradkshk.data.MinbarApi.ApiException>()
                                         .firstOrNull()?.message?.takeIf { it.isNotBlank() }
                                     vm.showMessage(
                                         if (serverMessage != null) {

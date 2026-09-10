@@ -1546,23 +1546,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      * وانقطاع الشبكة يُسمّى باسمه مع طمأنة أنّ الملف ما زال على الجهاز.
      */
     private fun submissionFailureMessage(failure: Throwable): String? {
-        val functionsFailure =
-            failure as? com.google.firebase.functions.FirebaseFunctionsException
-                ?: failure.cause as? com.google.firebase.functions.FirebaseFunctionsException
-        if (functionsFailure != null) {
-            val transient = when (functionsFailure.code) {
-                com.google.firebase.functions.FirebaseFunctionsException.Code.UNAVAILABLE,
-                com.google.firebase.functions.FirebaseFunctionsException.Code.DEADLINE_EXCEEDED,
-                com.google.firebase.functions.FirebaseFunctionsException.Code.INTERNAL,
-                -> true
-                else -> false
-            }
-            if (!transient) return functionsFailure.message?.takeIf(String::isNotBlank)
+        // رفضٌ قاطع من الخادم (4xx) يحمل نصّه العربي فيُعرض كما هو؛
+        // وما كان عابراً (5xx/انقطاع) يُترك لرسالة الشبكة أدناه.
+        val api = failure as? com.ali.menbaradkshk.data.MinbarApi.ApiException
+            ?: failure.cause as? com.ali.menbaradkshk.data.MinbarApi.ApiException
+        if (api != null && api.code in 400..499) {
+            return api.message?.takeIf(String::isNotBlank)
         }
         val network = generateSequence(failure) { it.cause }.take(5).any {
-            it is java.io.IOException || it is com.google.firebase.FirebaseNetworkException
+            it is java.io.IOException
         }
-        if (network || functionsFailure != null) {
+        if (network || api != null) {
             return "انقطع الاتصال أثناء الإرسال — ملفك ما زال على جهازك، أعد المحاولة عند عودة الشبكة."
         }
         return null

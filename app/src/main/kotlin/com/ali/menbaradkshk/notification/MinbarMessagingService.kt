@@ -14,8 +14,6 @@ import com.ali.menbaradkshk.R
 import com.ali.menbaradkshk.data.LocalStore
 import com.ali.menbaradkshk.data.TranscriptRepository
 import com.ali.menbaradkshk.util.StoreRedirectActivity
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
@@ -103,10 +101,8 @@ class MinbarMessagingService : FirebaseMessagingService() {
         /**
          * يكتب الرمز المُعطى في كل مساهمة معلّقة للمستخدم (صوتية ونصّاً).
          *
-         * ⚠️ `fcmToken` وحده لا غير: قواعد Firestore تشترط
-         * `affectedKeys().hasOnly(['fcmToken'])` وحالة `pending`، فأي مفتاح
-         * إضافي يُسقط الكتابة كلّها. والفشل غير حرج — أسوأ أثره بقاء الرمز
-         * القديم كما كان، فيُبتلع بلا إزعاج المستخدم.
+         * الفشل غير حرج — أسوأ أثره بقاء الرمز القديم كما كان، فيُبتلع بلا
+         * إزعاج المستخدم.
          *
          * تمرير رمز فارغ = إسكات: من أوقف الإشعارات لا تلاحقه بشرى القرار.
          */
@@ -129,9 +125,6 @@ class MinbarMessagingService : FirebaseMessagingService() {
                 .addOnSuccessListener { refreshPendingToken(it) }
         }
 
-        /// مجموعتا المساهمات: دورتهما واحدة والقواعد عليهما واحدة.
-        private val PENDING_COLLECTIONS =
-            listOf("lesson_submissions", "transcript_submissions")
 
         /**
          * هل هذه حمولة «صدر إصدار جديد»؟ وجهتها المتجر لا التطبيق.

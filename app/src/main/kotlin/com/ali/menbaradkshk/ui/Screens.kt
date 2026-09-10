@@ -97,7 +97,6 @@ import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.normalizeArabic
 import com.ali.menbaradkshk.util.progress
 import com.ali.menbaradkshk.util.arabicCountLabel
-import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.delay
@@ -834,17 +833,7 @@ private fun NotificationsCard(vm: AppViewModel, modifier: Modifier = Modifier) {
 /// نقطة إذا حُسمت مساهمة بعد آخر زيارة.
 @Composable
 private fun MySubmissionsCard(vm: AppViewModel, modifier: Modifier = Modifier) {
-    var user by remember { mutableStateOf(FirebaseAuth.getInstance().currentUser) }
-    DisposableEffect(Unit) {
-        val auth = FirebaseAuth.getInstance()
-        val listener = FirebaseAuth.AuthStateListener { user = it.currentUser }
-        auth.addAuthStateListener(listener)
-        onDispose { auth.removeAuthStateListener(listener) }
-    }
-    if (user == null) return
-    // الدخول المجهول يقع لكل مستخدم عند أوّل إقلاع، فوجود الهوية وحده لا
-    // يعني مساهماً. من لم يساهم قطّ: لا بطاقة تزحم الصفّ، ولا مستمعا
-    // Firestore يعملان طوال بقاء الرئيسية على مجموعتين فارغتين عنده.
+    // لا هويّة سحابيّة بعد اليوم: «ساهم من قبل» مؤشّرٌ محلّي وحده.
     val revision by vm.store.revision.collectAsState()
     val contributed = remember(revision) { vm.hasContributedBefore() }
     if (!contributed) return

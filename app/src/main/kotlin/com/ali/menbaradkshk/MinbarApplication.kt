@@ -55,6 +55,7 @@ class MinbarApplication : Application(), Configuration.Provider, SingletonImageL
 
     override fun onCreate() {
         super.onCreate()
+        instanceOrNull = this
         LocalStore.get(this)
         createNotificationChannels()
         initializeFirebase()
@@ -151,6 +152,8 @@ class MinbarApplication : Application(), Configuration.Provider, SingletonImageL
     }
 
     companion object {
+        @Volatile var instanceOrNull: MinbarApplication? = null
+            private set
         private const val MEDIA_CACHE_BYTES = 256L * 1_024 * 1_024
         /// 🖼️ سقفٌ صريح ٥٠ م.ب لكاش الصور — أقلّ من السابق (٦٤) عمداً:
         /// المساحة على أجهزة جمهورنا شحيحة، والصورة المطرودة تُعاد بضغطة

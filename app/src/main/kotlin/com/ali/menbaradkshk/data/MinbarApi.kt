@@ -42,7 +42,7 @@ object MinbarApi {
 
     class ApiException(val code: Int, message: String) : IOException(message)
 
-    private fun open(base: String, path: String, method: String, body: String?): HttpURLConnection {
+    private fun open(base: String, path: String, method: String, body: String?, headers: Map<String, String> = emptyMap()): HttpURLConnection {
         val connection = (URL(base + path).openConnection() as HttpURLConnection).apply {
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS
@@ -51,6 +51,7 @@ object MinbarApi {
             setRequestProperty("User-Agent", UA)
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Accept-Encoding", "gzip")
+            headers.forEach { (k, v) -> setRequestProperty(k, v) }
             if (body != null) {
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
@@ -71,14 +72,14 @@ object MinbarApi {
      * ينفّذ الطلب على النطاق المفضَّل ثم البديل. الأخطاء ذات المعنى (404، 4xx)
      * لا تُعاد على النطاق الآخر — الخادم أجاب فعلاً؛ الانقطاع وحده يُبدِّل النطاق.
      */
-    private fun request(path: String, method: String = "GET", body: String? = null): String {
+    private fun request(path: String, method: String = "GET", body: String? = null, headers: Map<String, String> = emptyMap()): String {
         var last: IOException? = null
         val order = if (preferred == 0) listOf(0, 1) else listOf(1, 0)
         for (index in order) {
             val base = BASES[index]
             var connection: HttpURLConnection? = null
             try {
-                connection = open(base, path, method, body)
+                connection = open(base, path, method, body, headers)
                 val code = connection.responseCode
                 val text = readBody(connection)
                 if (code in 200..299) {
@@ -127,6 +128,10 @@ object MinbarApi {
     } catch (e: ApiException) {
         if (e.code == 404) null else throw e
     }
+
+    /** بحث في النصوص المشروحة: `[{lessonId}]` للدروس التي يرد فيها النصّ. */
+    fun searchTranscripts(query: String, limit: Int = 25): JSONArray =
+        getJson("/v1/transcripts/search?q=${encode(query)}&limit=$limit").optJSONArray("items") ?: JSONArray()
 
     /** إعداد بعينه (مثل `android` لتذكير التحديث)؛ `null` إن لم يُضبط. */
     fun config(key: String): JSONObject? = try {
@@ -188,4 +193,94 @@ object MinbarApi {
     }
 
     private fun encode(value: String): String = java.net.URLEncoder.encode(value, "UTF-8")
+
+    // ---------- مجتمع المستمعين: بمعرّف الجهاز (X-Device-Id) ----------
+
+    /** معرّف التثبيت المستقرّ — نفس ما يسجّله [AppConfigRepository.installId]. */
+    fun deviceId(context: Context): String = AppConfigRepository.get(context).installId()
+
+    /** رابط قراءة عام لمرفق في R2 بمفتاحه (مرفقات الدعم وصور النصوص). */
+    fun mediaUrl(key: String): String = "${BASES[0]}/media/$key"
+
+    private fun userHeaders(context: Context): Map<String, String> = mapOf("X-Device-Id" to deviceId(context))
+
+    private fun requestUser(context: Context, path: String, method: String, body: String?): String =
+        request(path, method, body, userHeaders(context))
+
+    fun getUser(context: Context, path: String): JSONObject = JSONObject(requestUser(context, path, "GET", null))
+    fun postUser(context: Context, path: String, body: JSONObject): JSONObject =
+        JSONObject(requestUser(context, path, "POST", body.toString()).ifBlank { "{}" })
+    fun putUser(context: Context, path: String, body: JSONObject): JSONObject =
+        JSONObject(requestUser(context, path, "PUT", body.toString()).ifBlank { "{}" })
+    fun deleteUser(context: Context, path: String): JSONObject =
+        JSONObject(requestUser(context, path, "DELETE", null).ifBlank { "{}" })
+
+    /**
+     * رفع مرفق المستخدم (`PUT /v1/upload/{kind}/{name}`) ببثّ ثابت الطول وتبليغ
+     * النسبة. يعيد `{key, sha256, sizeBytes}`. النطاق الأول ثم البديل عند
+     * الانقطاع (لا عند رفض الخادم).
+     */
+    fun uploadUser(
+        context: Context,
+        kind: String,
+        name: String,
+        uri: android.net.Uri,
+        contentType: String,
+        onProgress: (Int) -> Unit = {},
+    ): JSONObject {
+        val resolver = context.contentResolver
+        val total = resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+        require(total > 0L) { "تعذّر قراءة الملف." }
+        val path = "/v1/upload/$kind/" + encode(name)
+        var last: IOException? = null
+        val order = if (preferred == 0) listOf(0, 1) else listOf(1, 0)
+        for (index in order) {
+            var connection: HttpURLConnection? = null
+            try {
+                connection = (URL(BASES[index] + path).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = 120_000
+                    requestMethod = "PUT"
+                    doOutput = true
+                    setFixedLengthStreamingMode(total)
+                    setRequestProperty("User-Agent", UA)
+                    setRequestProperty("Content-Type", contentType)
+                    setRequestProperty("X-Device-Id", deviceId(context))
+                }
+                connection.outputStream.use { output ->
+                    resolver.openInputStream(uri)!!.use { input ->
+                        val buffer = ByteArray(64 * 1024)
+                        var sent = 0L
+                        var lastPercent = -1
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            output.write(buffer, 0, count)
+                            sent += count
+                            val percent = ((sent * 100L) / total).toInt()
+                            if (percent != lastPercent) {
+                                lastPercent = percent
+                                onProgress(percent)
+                            }
+                        }
+                    }
+                }
+                val code = connection.responseCode
+                val text = readBody(connection)
+                if (code in 200..299) {
+                    preferred = index
+                    return JSONObject(text)
+                }
+                if (code in 400..499) throw ApiException(code, text.take(300))
+                last = ApiException(code, "HTTP $code")
+            } catch (e: ApiException) {
+                throw e
+            } catch (e: IOException) {
+                last = e
+            } finally {
+                connection?.disconnect()
+            }
+        }
+        throw last ?: IOException("تعذّر رفع الملف")
+    }
 }

@@ -111,21 +111,15 @@ class MinbarMessagingService : FirebaseMessagingService() {
          * تمرير رمز فارغ = إسكات: من أوقف الإشعارات لا تلاحقه بشرى القرار.
          */
         fun refreshPendingToken(token: String) {
-            val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
-            val db = FirebaseFirestore.getInstance()
-            for (collection in PENDING_COLLECTIONS) {
+            // يُكتب على الخادم لكل ما هو معلّق لهذا الجهاز (مساهمات، اقتراحات، محادثات).
+            val app = com.ali.menbaradkshk.MinbarApplication.instanceOrNull ?: return
+            Thread {
                 runCatching {
-                    db.collection(collection)
-                        .whereEqualTo("uid", uid)
-                        .whereEqualTo("status", "pending")
-                        .get()
-                        .addOnSuccessListener { snapshot ->
-                            snapshot.documents.forEach { document ->
-                                document.reference.update("fcmToken", token)
-                            }
-                        }
+                    com.ali.menbaradkshk.data.MinbarApi.postUser(
+                        app, "/v1/me/token", org.json.JSONObject().put("fcmToken", token),
+                    )
                 }
-            }
+            }.start()
         }
 
         /// نسخة تجلب الرمز الحاليّ بنفسها — للمداخل التي لا تملكه بين يديها

@@ -2,104 +2,67 @@ package com.ali.menbaradkshk.data
 
 import android.content.Context
 import android.net.Uri
-import com.google.firebase.Timestamp
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.DocumentSnapshot
-import com.google.firebase.firestore.FieldPath
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Source
-import com.google.firebase.functions.FirebaseFunctions
-import com.google.firebase.messaging.FirebaseMessaging
-import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.StorageMetadata
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.UUID
 
-/// هل الفشل عابر (شبكة/مهلة/عطل خادم لحظي) فيستحقّ محاولة ثانية؟
-/// مشتركة بين مساري المساهمة (الصوت والنص): إعادة استدعاء الدالّة بعد رفضٍ
-/// قاطع (حدّ يومي، فاصل أدنى، تحقّق) لا تُجدي وتؤخّر وصول سبب الرفض للمستخدم.
+/** الفشل العابر (شبكة/مهلة/5xx) يُعاد بعده الإرسال؛ ما عداه خطأ دائم. */
 internal fun isTransientFailure(failure: Throwable): Boolean {
-    val functionsFailure = failure as? com.google.firebase.functions.FirebaseFunctionsException
-        ?: failure.cause as? com.google.firebase.functions.FirebaseFunctionsException
-    return when (functionsFailure?.code) {
-        com.google.firebase.functions.FirebaseFunctionsException.Code.UNAVAILABLE,
-        com.google.firebase.functions.FirebaseFunctionsException.Code.DEADLINE_EXCEEDED,
-        com.google.firebase.functions.FirebaseFunctionsException.Code.INTERNAL,
-        -> true
-        // ليس خطأ دوالّ أصلاً: عابر فقط إن كان انقطاع إدخال/إخراج.
-        null -> generateSequence(failure) { it.cause }.take(5).any { it is java.io.IOException }
-        else -> false
-    }
+    val api = failure as? MinbarApi.ApiException ?: failure.cause as? MinbarApi.ApiException
+    if (api != null) return api.code >= 500 || api.code == 429 || api.code == 408
+    return generateSequence(failure) { it.cause }.take(5).any { it is java.io.IOException }
 }
 
 data class SubmissionDraft(
     val audioUri: Uri,
     val fileName: String,
     val title: String,
-    // ⚠️ القسمان **اختياريان**: كثير ممن يملك درساً لا يعرف أين يُصنَّف،
-    // وإلزامه بالتخمين يجعله يختار قسماً خاطئاً أو يترك المساهمة كلّها.
-    // الخادم يقبل مساهمةً بلا قسم، والمشرف يختار لها القسم عند النشر.
     val category: Category? = null,
     val subcategory: Subcategory? = null,
     val submitterName: String,
     val note: String,
     val rightsConfirmed: Boolean,
     val contentPolicyAccepted: Boolean,
-    // «النص المشروح» الاختياري المرافق — يُنشر مع الدرس عند اعتماد المساهمة.
     val transcript: TranscriptExtras = TranscriptExtras(),
 )
 
+/**
+ * 🎁 «شارك درساً» — على `minbar-api` (قرار 2026-09-10): الملفّ يُرفع إلى R2 عبر
+ * الـWorker، والسجلّ في D1 موسوماً بمعرّف الجهاز. «مساهماتي» استطلاعٌ خفيف
+ * كل نصف دقيقة ما دامت الشاشة مفتوحة (بديل مستمع Firestore الحيّ).
+ */
 class SubmissionRepository private constructor(context: Context) {
     private val appContext = context.applicationContext
     private val store = LocalStore.get(context)
-    private val auth = FirebaseAuth.getInstance()
-    private val db = FirebaseFirestore.getInstance()
-    private val functions = FirebaseFunctions.getInstance()
-    private val storage = FirebaseStorage.getInstance()
 
     suspend fun submit(
         draft: SubmissionDraft,
         onProgress: (Int) -> Unit = {},
-    ): String {
-        // ⚠️ الإقرار **ليس شرطاً** للإرسال: المشرفون يتحقّقون من كل درس بأنفسهم
-        // قبل النشر ولا يبنون قرارهم على ادّعاء المستخدم. كان هنا require يمنع
-        // الإرسال بلا إقرار، فيبقى زرّ «إرسال للمراجعة» صامتاً بلا تفسير.
-        // قيمتا الإقرار تُنقَلان كما اختارهما المستخدم ليراهما المشرف عند المراجعة.
+    ): String = withContext(Dispatchers.IO) {
         require(draft.title.isNotBlank()) { "أدخل عنوان الدرس." }
-        val user = auth.currentUser ?: auth.signInAnonymously().await().user
-        requireNotNull(user) { "تعذّر إنشاء الهوية الآمنة." }
-
         val size = appContext.contentResolver.openAssetFileDescriptor(draft.audioUri, "r")
             ?.use { it.length }
             ?: -1L
-        // فصل السببين: حجم مجهول (وصول مُنتزَع/ملف حُذف) ليس «تجاوز الحدّ».
         require(size >= 0) { "تعذّر قراءة الملف المحدّد — أعد اختياره." }
-        // ملفّ صفريّ الحجم (اختيار من مزوّد سحابي لم يُنزَّل محلياً، أو ملف
-        // تالف) كان يجتاز الفحص فيُرفَع فارغاً ويستهلك من الحدّ اليومي ثم
-        // يُرفض «الصوت لا يعمل» بلا أن يفهم المساهم السبب — بينما صور النص
-        // أدناه تشترط `in 1..MAX` أصلاً.
         require(size > 0L) { "الملف فارغ — أعد اختياره." }
         require(size <= MAX_FILE_BYTES) { "حجم الملف يتجاوز 100 ميجابايت." }
-        // افحص كل صور النص قبل رفع الصوت؛ كان اكتشاف صورة كبيرة/غير صالحة
-        // يحدث بعد رفع ملف صوتي قد يبلغ 100MB، فيُحذف ثم يعاد رفعه عند المحاولة.
         val validatedTranscriptImages = draft.transcript.images
             .take(TranscriptRepository.MAX_IMAGES)
             .mapIndexed { index, imageUri ->
                 val imageSize = appContext.contentResolver
                     .openAssetFileDescriptor(imageUri, "r")?.use { it.length } ?: -1L
-                // فصل السببين هنا أيضاً: حجم مجهول ليس «تجاوز الحدّ».
-                require(imageSize >= 0) {
-                    "تعذّرت قراءة صورة النص ${index + 1} — أعد اختيارها."
-                }
+                require(imageSize >= 0) { "تعذّرت قراءة صورة النص ${index + 1} — أعد اختيارها." }
                 require(imageSize in 1..TranscriptRepository.MAX_IMAGE_BYTES) {
                     "حجم صورة النص ${index + 1} يتجاوز 10 ميجابايت."
                 }
@@ -108,215 +71,95 @@ class SubmissionRepository private constructor(context: Context) {
                 imageUri to imageType
             }
         if (draft.submitterName.isNotBlank()) store.setSubmitterName(draft.submitterName)
-
         val id = "sub_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}"
         val safeName = draft.fileName.replace(Regex("[^\\p{L}\\p{N}._-]"), "_").take(120)
-        val storagePath = "submissions/${user.uid}/$id/$safeName"
-        val reference = storage.reference.child(storagePath)
-        val task = reference.putFile(
-            draft.audioUri,
-            StorageMetadata.Builder().setContentType(mimeFor(safeName)).build(),
-        )
-        task.addOnProgressListener { snapshot ->
-            if (snapshot.totalByteCount > 0L) {
-                onProgress(((snapshot.bytesTransferred * 100L) / snapshot.totalByteCount).toInt())
-            }
-        }
 
-        var uploaded = false
-        var callableStarted = false
-        val transcriptImagePaths = mutableListOf<String>()
+        // 1) الصوت (نسبة التقدّم كلّها له — الصور صغيرة بعده).
+        val uploaded = MinbarApi.uploadUser(
+            appContext, "submissions", safeName, draft.audioUri, mimeFor(safeName), onProgress,
+        )
+        val audioKey = uploaded.optString("key")
+        val imageKeys = mutableListOf<String>()
         try {
-            task.await()
-            uploaded = true
-            val audioUrl = reference.downloadUrl.await().toString()
-            // صور «النص المشروح» الاختيارية تُرفع لمساحة اقتراحات النصوص
-            // (قواعد التخزين تسمح لصاحبها برفع الصور هناك) بنفس معرّف المساهمة.
-            validatedTranscriptImages
-                .forEachIndexed { index, (imageUri, imageType) ->
-                    val imagePath = "transcript_submissions/${user.uid}/$id/lesson_${index}_page.jpg"
-                    storage.reference.child(imagePath).putFile(
-                        imageUri,
-                        StorageMetadata.Builder().setContentType(imageType).build(),
-                    ).await()
-                    transcriptImagePaths.add(imagePath)
-                }
+            validatedTranscriptImages.forEachIndexed { index, (imageUri, imageType) ->
+                imageKeys += MinbarApi.uploadUser(
+                    appContext, "transcripts", "lesson_${index}_page.jpg", imageUri, imageType,
+                ).optString("key")
+            }
             val fcmToken = if (store.notificationsEnabled()) {
-                runCatching { FirebaseMessaging.getInstance().token.await() }.getOrDefault("")
+                runCatching { com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await() }
+                    .getOrDefault("")
             } else {
                 ""
             }
-            val payload = mapOf(
-                "id" to id,
-                "uid" to user.uid,
-                "submitterName" to draft.submitterName.trim(),
-                "title" to draft.title.trim(),
-                // بلا قسم = حقول فارغة تصل الخادم (وهو يقبلها)، فتظهر
-                // المساهمة عند المشرف موسومة «بلا قسم» ليختار لها.
-                "categoryId" to draft.category?.id.orEmpty(),
-                "categoryName" to draft.category?.name.orEmpty(),
-                "subcategoryId" to draft.subcategory?.id.orEmpty(),
-                "subcategoryName" to draft.subcategory?.name.orEmpty(),
-                "note" to draft.note.trim(),
-                "audioUrl" to audioUrl,
-                "storagePath" to storagePath,
-                "fileName" to safeName,
-                "fileSize" to size,
-                "fcmToken" to fcmToken,
-                // إقرار المستخدم كما اختاره فعلاً (لا قيمة ثابتة): المشرف يراه
-                // عند المراجعة فيعرف هل أقرّ بالحقوق أم أرسل بلا إقرار.
-                "rightsConfirmed" to draft.rightsConfirmed,
-                "contentPolicyAccepted" to draft.contentPolicyAccepted,
-                "contentPolicyVersion" to CONTENT_POLICY_VERSION,
-                "termsAcceptedAt" to java.time.Instant.now().toString(),
-                "transcriptText" to draft.transcript.text.trim(),
-                "transcriptBookTitle" to draft.transcript.bookTitle.trim(),
-                "transcriptSourceRef" to draft.transcript.sourceRef.trim(),
-                "transcriptImagePaths" to transcriptImagePaths,
-            )
-            callableStarted = true
-            val result = runCatching {
-                functions.getHttpsCallable("createSubmission").call(payload).await()
-            }.getOrElse { first ->
-                // إعادة المحاولة للأعطال العابرة فقط (انقطاع/مهلة/عطل لحظي):
-                // الرفض القاطع (حدّ يومي، فاصل أدنى، تحقّق) كان يُستدعى مرّتين
-                // بلا جدوى ويؤخّر وصول رسالة الرفض للمستخدم.
-                if (!isTransientFailure(first)) throw first
-                kotlinx.coroutines.delay(1_500)
-                functions.getHttpsCallable("createSubmission").call(payload).await()
-            }
-            val returned = (result.data as? Map<*, *>)?.get("id")?.toString().orEmpty()
-            check(returned.isNotBlank()) { "استجابة الخادم غير مكتملة." }
-            return returned
-        } catch (failure: Throwable) {
-            // كان التنظيف مشروطاً بـ«لم يبدأ الاستدعاء» بينما العلم يُرفع **قبل**
-            // الاستدعاء، فأي فشل بعده (تجاوز حدّ المساهمات اليومي، أو الفاصل
-            // الأدنى بين مساهمتين، أو فشل App Check، أو رفض التحقق) يترك الملف
-            // المرفوع يتيماً إلى الأبد. الآن نحذف في **كل** مسار لم تُنشأ فيه
-            // وثيقة، ونمتنع عن الحذف حين يتعذّر التحقّق أصلاً.
-            val lookup = if (callableStarted) {
-                findMySubmission(id, user.uid)
-            } else {
-                Result.success<DocumentSnapshot?>(null)
-            }
-            val document = lookup.getOrNull()
-            if (document != null) {
-                // الوثيقة موجودة: المساهمة نجحت فعلاً وضاع ردّ الخادم فقط.
-                if (document.getString("storagePath") == storagePath) return id
-                throw failure
-            }
-            if (lookup.isSuccess) {
-                if (uploaded) runCatching { reference.delete().await() }
-                transcriptImagePaths.forEach { path ->
-                    runCatching { storage.reference.child(path).delete().await() }
+            val payload = JSONObject()
+                .put("id", id)
+                .put("submitterName", draft.submitterName.trim())
+                .put("title", draft.title.trim())
+                .put("categoryId", draft.category?.id.orEmpty())
+                .put("categoryName", draft.category?.name.orEmpty())
+                .put("subcategoryId", draft.subcategory?.id.orEmpty())
+                .put("subcategoryName", draft.subcategory?.name.orEmpty())
+                .put("note", draft.note.trim())
+                .put("audioKey", audioKey)
+                .put("fileName", safeName)
+                .put("fileSize", size)
+                .put("fcmToken", fcmToken)
+                .put("rightsConfirmed", draft.rightsConfirmed)
+                .put("contentPolicyAccepted", draft.contentPolicyAccepted)
+                .put("contentPolicyVersion", CONTENT_POLICY_VERSION)
+                .put("transcriptText", draft.transcript.text.trim())
+                .put("transcriptBookTitle", draft.transcript.bookTitle.trim())
+                .put("transcriptSourceRef", draft.transcript.sourceRef.trim())
+                .put("transcriptImageKeys", JSONArray(imageKeys))
+            val result = runCatching { MinbarApi.postUser(appContext, "/v1/submissions", payload) }
+                .getOrElse { first ->
+                    if (!isTransientFailure(first)) throw first
+                    delay(1_500)
+                    MinbarApi.postUser(appContext, "/v1/submissions", payload)
                 }
-            }
+            val returned = result.optString("id")
+            check(returned.isNotBlank()) { "استجابة الخادم غير مكتملة." }
+            returned
+        } catch (failure: Throwable) {
+            // إن كانت المساهمة قد سُجّلت فعلاً فالإرسال ناجح رغم الاستثناء.
+            val exists = runCatching { fetchMine().any { it.id == id } }.getOrDefault(false)
+            if (exists) return@withContext id
             throw failure
         }
     }
 
-    /**
-     * تبحث عن وثيقة المساهمة بعد فشلٍ ما. نستعمل استعلاماً مقيَّداً بـuid لا
-     * `get` مباشراً على الوثيقة: قواعد الأمان ترفض قراءة وثيقة غير موجودة
-     * أصلاً، فيلتبس «لم تُنشأ» بـ«تعذّر السؤال» ويضيع قرار حذف الملف اليتيم.
-     * نجاح ومعه وثيقة = أُنشئت، ونجاح بلا وثيقة = لم تُنشأ، وفشل = لا نعرف.
-     */
-    private suspend fun findMySubmission(id: String, uid: String): Result<DocumentSnapshot?> =
-        runCatching {
-            db.collection(COLLECTION)
-                .whereEqualTo("uid", uid)
-                .whereEqualTo(FieldPath.documentId(), id)
-                .limit(1)
-                .get(Source.SERVER)
-                .await()
-                .documents
-                .firstOrNull()
-        }
+    private suspend fun fetchMine(): List<LessonSubmission> {
+        val items = MinbarApi.getUser(appContext, "/v1/me/submissions").optJSONArray("items") ?: JSONArray()
+        return (0 until items.length()).mapNotNull { items.optJSONObject(it) }.map { o ->
+            LessonSubmission(
+                id = o.optString("id"),
+                title = o.optString("title"),
+                categoryName = o.optString("categoryName"),
+                subcategoryName = o.optString("subcategoryName"),
+                status = o.optString("status").ifBlank { "pending" },
+                rejectReason = o.optString("rejectReason"),
+                storagePath = o.optString("storagePath"),
+                createdAtMs = o.optLong("createdAtMs"),
+                decidedAtMs = o.optLong("decidedAtMs"),
+            )
+        }.sortedByDescending(LessonSubmission::createdAtMs)
+    }
 
-    /// نطاق مشاركة تدفّق «مساهماتي» — حيّ بعمر العمليّة (المستودع مفرد).
     private val mineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    /**
-     * 🔁 تدفّق مشترك: «مساهماتي» يُجمَع من أكثر من موضع (شاشة المساهمات +
-     * إشعارات القرارات) فكان مستمع Firestore يتضاعف بعددها. `shareIn`
-     * بـ`WhileSubscribed(5000)` يُبقي **مستمعاً واحداً** مهما تعدّدت الشاشات،
-     * ويُغلقه بعد ٥ ثوانٍ من آخر مُجمِّع. الخطأ يُبتلع إلى قائمة فارغة —
-     * وهو ما كان يفعله كلّ مُجمِّع بنفسه (`catch { emit(emptyList()) }`).
-     */
     private val mineShared: Flow<List<LessonSubmission>> by lazy {
-        mineUpstream()
+        flow {
+            while (true) {
+                emit(runCatching { fetchMine() }.getOrDefault(emptyList()))
+                delay(MINE_POLL_MS)
+            }
+        }
             .catch { emit(emptyList()) }
             .shareIn(mineScope, SharingStarted.WhileSubscribed(5_000), replay = 1)
     }
 
     fun mine(): Flow<List<LessonSubmission>> = mineShared
 
-    private fun mineUpstream(): Flow<List<LessonSubmission>> = callbackFlow {
-        // ⚠️ الهوية المجهولة قد لا تكون جاهزة لحظة التجميع: القراءة المفردة
-        // كانت تُغلق التدفّق فارغاً للأبد — فنتابع تغيّرات الهوية بمستمعٍ
-        // (نمط NotificationsRepository نفسه).
-        var registration: com.google.firebase.firestore.ListenerRegistration? = null
-        val authListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
-            registration?.remove()
-            val uid = firebaseAuth.currentUser?.uid
-            if (uid == null) {
-                trySend(emptyList())
-                return@AuthStateListener
-            }
-            registration = db.collection(COLLECTION)
-            .whereEqualTo("uid", uid)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    close(error)
-                    return@addSnapshotListener
-                }
-                // ⚠️ أي استثناء يفلت من ردّ مستمع Firestore يُسقط التطبيق كاملاً
-                // — قراءة آمنة نوعياً + عزل الردّ وكل وثيقة معطوبة.
-                runCatching {
-                    val list = snapshot?.documents.orEmpty().mapNotNull { document ->
-                        runCatching {
-                            LessonSubmission(
-                                id = document.id,
-                                title = (document.get("title") as? String).orEmpty(),
-                                categoryName = (document.get("categoryName") as? String).orEmpty(),
-                                subcategoryName = (document.get("subcategoryName") as? String).orEmpty(),
-                                status = (document.get("status") as? String).orEmpty().ifBlank { "pending" },
-                                rejectReason = (document.get("rejectReason") as? String).orEmpty(),
-                                storagePath = (document.get("storagePath") as? String).orEmpty(),
-                                // الخادم يكتب createdAt نصاً ISO مع createdAtTs/createdAtMs — نقرأ المتاح.
-                                createdAtMs = (document.get("createdAtMs") as? Number)?.toLong()
-                                    ?: (document.get("createdAtTs") as? Timestamp)?.toDate()?.time
-                                    ?: (document.get("createdAt") as? String)
-                                        ?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
-                                    ?: 0L,
-                                decidedAtMs = (document.get("decidedAtTs") as? Timestamp)?.toDate()?.time
-                                    ?: (document.get("decidedAt") as? String)
-                                        ?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
-                                    ?: 0L,
-                            )
-                        }.getOrNull()
-                    }.sortedByDescending(LessonSubmission::createdAtMs)
-                    trySend(list)
-                }.onFailure { trySend(emptyList()) }
-            }
-        }
-        auth.addAuthStateListener(authListener)
-        awaitClose {
-            auth.removeAuthStateListener(authListener)
-            registration?.remove()
-        }
-    }
-
-    /**
-     * ✏️ تصحيح عنوان مساهمة **ما دامت قيد المراجعة**.
-     *
-     * لماذا؟ أشيع خطأ في المساهمة خطأٌ في العنوان، ولم يكن أمام صاحبه إلا
-     * سحب الطلب ثم **رفع الملف الصوتي كلّه من جديد** — وهو ثمن باهظ على
-     * إنترنت ضعيف لأجل حرف واحد. الآن يُرسَل العنوان وحده.
-     *
-     * الحمولة `{ submissionId, title }` فقط (وnote إن كانت لدينا): الخادم لا
-     * يقبل تعديل شيء آخر، والملف المرفوع لا يُمَسّ.
-     */
     suspend fun updateMyTitle(
         submission: LessonSubmission,
         title: String,
@@ -325,24 +168,20 @@ class SubmissionRepository private constructor(context: Context) {
         if (submission.status != "pending") return
         val trimmed = title.trim()
         require(trimmed.isNotBlank()) { "أدخل عنوان الدرس." }
-        val payload = buildMap<String, Any> {
-            put("submissionId", submission.id)
-            put("title", trimmed)
-            note?.trim()?.takeIf(String::isNotBlank)?.let { put("note", it) }
-        }
-        functions.getHttpsCallable("updateMySubmission").call(payload).await()
+        MinbarApi.putUser(
+            appContext, "/v1/me/submissions/${submission.id}",
+            JSONObject().put("title", trimmed).put("note", note?.trim().orEmpty()),
+        )
     }
 
     suspend fun deletePending(submission: LessonSubmission) {
         if (submission.status != "pending") return
-        functions.getHttpsCallable("deleteMySubmission")
-            .call(mapOf("submissionId" to submission.id)).await()
+        MinbarApi.deleteUser(appContext, "/v1/me/submissions/${submission.id}")
     }
 
+    /** حذف كل ما يخصّ هذا الجهاز على الخادم (مساهمات ورسائل ومرفقات). */
     suspend fun deleteCloudIdentityData() {
-        if (auth.currentUser == null) return
-        functions.getHttpsCallable("deleteMyData").call().await()
-        auth.signOut()
+        MinbarApi.deleteUser(appContext, "/v1/me")
     }
 
     private fun mimeFor(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
@@ -360,7 +199,8 @@ class SubmissionRepository private constructor(context: Context) {
     companion object {
         const val MAX_FILE_BYTES = 100L * 1_024L * 1_024L
         const val CONTENT_POLICY_VERSION = "2026-07-16"
-        private const val COLLECTION = "lesson_submissions"
+        private const val MINE_POLL_MS = 30_000L
+
         @Volatile private var instance: SubmissionRepository? = null
         fun get(context: Context): SubmissionRepository = instance ?: synchronized(this) {
             instance ?: SubmissionRepository(context).also { instance = it }

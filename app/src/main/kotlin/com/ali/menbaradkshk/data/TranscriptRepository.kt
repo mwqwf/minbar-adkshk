@@ -3,23 +3,12 @@ package com.ali.menbaradkshk.data
 import android.content.Context
 import android.net.Uri
 import com.ali.menbaradkshk.util.normalizeArabic
-import com.google.firebase.Timestamp
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.DocumentSnapshot
-import com.google.firebase.firestore.FieldPath
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Source
-import com.google.firebase.functions.FirebaseFunctions
 import com.google.firebase.messaging.FirebaseMessaging
-import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.StorageMetadata
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.tasks.await
@@ -133,10 +122,6 @@ data class TranscriptSubmissionItem(
 class TranscriptRepository private constructor(context: Context) {
     private val appContext = context.applicationContext
     private val store = LocalStore.get(context)
-    private val auth = FirebaseAuth.getInstance()
-    private val db = FirebaseFirestore.getInstance()
-    private val functions = FirebaseFunctions.getInstance()
-    private val storage = FirebaseStorage.getInstance()
 
     // كاش جلسة بسيط: يمنع إعادة الجلب عند كل إعادة تركيب/عودة لنفس الدرس.
     // وهو الطبقة الأولى فوق كاش القرص أدناه لا بديلاً عنه.
@@ -308,244 +293,106 @@ class TranscriptRepository private constructor(context: Context) {
      * إرسال اقتراح: يرفع الصور (إن وُجدت) إلى مجلد المساهمة ثم يستدعي
      * createTranscriptSubmission. يعيد معرّف المساهمة.
      */
-    suspend fun submit(draft: TranscriptDraft, onProgress: (Int) -> Unit = {}): String {
-        require(draft.lessonId.isNotBlank()) { "الدرس غير محدد." }
-        require(
-            draft.text.trim().length >= 10 || draft.images.isNotEmpty(),
-        ) { "أدخل نص المقطع أو أرفق صورة صفحة واحدة على الأقل." }
-        // تحقّق من المجموعة كاملة قبل أول رفع، كي لا نرفع صوراً ثم نحذفها
-        // لمجرّد أن صورة لاحقة كبيرة أو ليست صورة.
-        val validatedImages = draft.images.take(MAX_IMAGES).mapIndexed { index, uri ->
-            val size = appContext.contentResolver.openAssetFileDescriptor(uri, "r")
-                ?.use { it.length } ?: -1L
-            // فصل السببين: حجم مجهول (وصول مُنتزَع/ملف حُذف) ليس «تجاوز الحدّ»،
-            // فالرسالة الواحدة كانت تتّهم حجم صورةٍ لم يُقرأ حجمها أصلاً.
-            require(size >= 0) { "تعذّرت قراءة الصورة ${index + 1} — أعد اختيارها." }
-            require(size in 1..MAX_IMAGE_BYTES) {
-                "حجم الصورة ${index + 1} يتجاوز 10 ميجابايت."
+    suspend fun submit(draft: TranscriptDraft, onProgress: (Int) -> Unit = {}): String =
+        withContext(Dispatchers.IO) {
+            require(draft.lessonId.isNotBlank()) { "الدرس غير محدد." }
+            require(
+                draft.text.trim().length >= 10 || draft.images.isNotEmpty(),
+            ) { "أدخل نص المقطع أو أرفق صورة صفحة واحدة على الأقل." }
+            val validatedImages = draft.images.take(MAX_IMAGES).mapIndexed { index, uri ->
+                val size = appContext.contentResolver.openAssetFileDescriptor(uri, "r")
+                    ?.use { it.length } ?: -1L
+                require(size >= 0) { "تعذّرت قراءة الصورة ${index + 1} — أعد اختيارها." }
+                require(size in 1..MAX_IMAGE_BYTES) { "حجم الصورة ${index + 1} يتجاوز 10 ميجابايت." }
+                val contentType = appContext.contentResolver.getType(uri) ?: "image/jpeg"
+                require(contentType.startsWith("image/")) { "الملف المرفق ليس صورة." }
+                uri to contentType
             }
-            val contentType = appContext.contentResolver.getType(uri) ?: "image/jpeg"
-            require(contentType.startsWith("image/")) { "الملف المرفق ليس صورة." }
-            uri to contentType
-        }
-        val user = auth.currentUser ?: auth.signInAnonymously().await().user
-        requireNotNull(user) { "تعذّر إنشاء الهوية الآمنة." }
-        if (draft.submitterName.isNotBlank()) store.setSubmitterName(draft.submitterName)
-
-        val id = "tsub_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}"
-        val uploadedPaths = mutableListOf<String>()
-        var callableStarted = false
-        try {
+            if (draft.submitterName.isNotBlank()) store.setSubmitterName(draft.submitterName)
+            val id = "tsub_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}"
+            val keys = mutableListOf<String>()
             validatedImages.forEachIndexed { index, (uri, contentType) ->
-                val path = "transcript_submissions/${user.uid}/$id/${index}_page.jpg"
-                val task = storage.reference.child(path).putFile(
-                    uri,
-                    StorageMetadata.Builder().setContentType(contentType).build(),
-                )
-                // ⚠️ كان التقدّم يُبلَّغ بعد اكتمال كل ملف فقط، فمع صورة واحدة
-                // (الحالة الأشيع) لا تظهر نسبة قطّ لأن القيمة الوحيدة 100،
-                // والواجهة تعرض النسبة في المدى 1..99 فقط.
-                task.addOnProgressListener { snapshot ->
-                    if (snapshot.totalByteCount > 0L) {
-                        val fileShare =
-                            snapshot.bytesTransferred * 100L / snapshot.totalByteCount
-                        onProgress(
-                            ((index * 100L + fileShare) / validatedImages.size).toInt(),
-                        )
-                    }
-                }
-                task.await()
-                uploadedPaths.add(path)
-                onProgress(((index + 1) * 100) / validatedImages.size.coerceAtLeast(1))
+                keys += MinbarApi.uploadUser(appContext, "transcripts", "${index}_page.jpg", uri, contentType) { share ->
+                    onProgress(((index * 100L + share) / validatedImages.size).toInt())
+                }.optString("key")
             }
             val fcmToken = if (store.notificationsEnabled()) {
                 runCatching { FirebaseMessaging.getInstance().token.await() }.getOrDefault("")
             } else {
                 ""
             }
-            val payload = mapOf(
-                "submissionId" to id,
-                "lessonId" to draft.lessonId,
-                "text" to draft.text.trim(),
-                "bookTitle" to draft.bookTitle.trim(),
-                "sourceRef" to draft.sourceRef.trim(),
-                "note" to draft.note.trim(),
-                "submitterName" to draft.submitterName.trim(),
-                "imagePaths" to uploadedPaths,
-                "fcmToken" to fcmToken,
-            )
-            callableStarted = true
-            val result = runCatching {
-                functions.getHttpsCallable("createTranscriptSubmission").call(payload).await()
-            }.getOrElse { first ->
-                // ⚠️ كانت الإعادة عمياء: الرفض القاطع (حدّ يومي، فاصل أدنى،
-                // تحقّق) يُستدعى مرّتين بلا جدوى ويؤخّر وصول سببه للمستخدم.
-                if (!isTransientFailure(first)) throw first
-                kotlinx.coroutines.delay(1_500)
-                functions.getHttpsCallable("createTranscriptSubmission").call(payload).await()
-            }
-            val returned = (result.data as? Map<*, *>)?.get("id")?.toString().orEmpty()
-            check(returned.isNotBlank()) { "استجابة الخادم غير مكتملة." }
-            return returned
-        } catch (failure: Throwable) {
-            // كان التنظيف مشروطاً بـ«لم يبدأ الاستدعاء» بينما العلم يُرفع **قبل**
-            // الاستدعاء، فأي فشل بعده (تجاوز حدّ المساهمات اليومي، أو الفاصل
-            // الأدنى بين مساهمتين، أو فشل App Check، أو «الدرس غير موجود»، أو
-            // رفض تحقّق الصور) يترك الصور يتيمة بلا مهمّة تنظّفها. الآن نحذف في
-            // **كل** مسار لم تُنشأ فيه وثيقة، ونمتنع حين يتعذّر التحقّق أصلاً.
-            val lookup = if (callableStarted) {
-                findMySubmission(id, user.uid)
-            } else {
-                Result.success<DocumentSnapshot?>(null)
-            }
-            // وثيقة موجودة: المساهمة نجحت فعلاً وضاع ردّ الخادم فقط.
-            if (lookup.getOrNull() != null) return id
-            if (lookup.isSuccess) {
-                uploadedPaths.forEach { path ->
-                    runCatching { storage.reference.child(path).delete().await() }
+            val payload = JSONObject()
+                .put("id", id)
+                .put("lessonId", draft.lessonId)
+                .put("text", draft.text.trim())
+                .put("bookTitle", draft.bookTitle.trim())
+                .put("sourceRef", draft.sourceRef.trim())
+                .put("note", draft.note.trim())
+                .put("submitterName", draft.submitterName.trim())
+                .put("imageKeys", JSONArray(keys))
+                .put("fcmToken", fcmToken)
+            val result = runCatching { MinbarApi.postUser(appContext, "/v1/transcript-submissions", payload) }
+                .getOrElse { first ->
+                    if (!isTransientFailure(first)) throw first
+                    kotlinx.coroutines.delay(1_500)
+                    MinbarApi.postUser(appContext, "/v1/transcript-submissions", payload)
                 }
-            }
-            throw failure
+            val returned = result.optString("id")
+            check(returned.isNotBlank()) { "استجابة الخادم غير مكتملة." }
+            returned
         }
+
+    private suspend fun fetchMine(): List<TranscriptSubmissionItem> {
+        val items = MinbarApi.getUser(appContext, "/v1/me/transcript-submissions").optJSONArray("items") ?: JSONArray()
+        return (0 until items.length()).mapNotNull { items.optJSONObject(it) }.map { o ->
+            TranscriptSubmissionItem(
+                id = o.optString("id"),
+                lessonId = o.optString("lessonId"),
+                lessonTitle = o.optString("lessonTitle"),
+                status = o.optString("status").ifBlank { "pending" },
+                rejectReason = o.optString("rejectReason"),
+                hasImages = o.optBoolean("hasImages", false),
+                createdAtMs = o.optLong("createdAtMs"),
+                decidedAtMs = o.optLong("decidedAtMs"),
+            )
+        }.sortedByDescending(TranscriptSubmissionItem::createdAtMs)
     }
 
-    /**
-     * تبحث عن وثيقة الاقتراح بعد فشلٍ ما. نستعمل استعلاماً مقيَّداً بـuid لا
-     * `get` مباشراً على الوثيقة: قواعد الأمان ترفض قراءة وثيقة غير موجودة
-     * أصلاً، فيلتبس «لم تُنشأ» بـ«تعذّر السؤال» ويضيع قرار حذف الصور اليتيمة.
-     * نجاح ومعه وثيقة = أُنشئت، ونجاح بلا وثيقة = لم تُنشأ، وفشل = لا نعرف.
-     */
-    private suspend fun findMySubmission(id: String, uid: String): Result<DocumentSnapshot?> =
-        runCatching {
-            db.collection(COLLECTION)
-                .whereEqualTo("uid", uid)
-                .whereEqualTo(FieldPath.documentId(), id)
-                .limit(1)
-                .get(Source.SERVER)
-                .await()
-                .documents
-                .firstOrNull()
-        }
-
-    /// نطاق مشاركة تدفّق «اقتراحاتي» — حيّ بعمر العمليّة (المستودع مفرد).
     private val mineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    /**
-     * 🔁 تدفّق مشترك: «اقتراحاتي» يُجمَع من أكثر من شاشة فكان مستمع Firestore
-     * يتضاعف بعددها. `shareIn` بـ`WhileSubscribed(5000)` يُبقي **مستمعاً
-     * واحداً** مهما تعدّدت الشاشات ويُغلقه بعد ٥ ثوانٍ من آخر مُجمِّع.
-     * الخطأ يُبتلع إلى قائمة فارغة — وهو ما كان يفعله كلّ مُجمِّع بنفسه.
-     */
     private val mineShared: Flow<List<TranscriptSubmissionItem>> by lazy {
-        mineUpstream()
+        kotlinx.coroutines.flow.flow {
+            while (true) {
+                emit(runCatching { fetchMine() }.getOrDefault(emptyList()))
+                kotlinx.coroutines.delay(30_000L)
+            }
+        }
             .catch { emit(emptyList()) }
             .shareIn(mineScope, SharingStarted.WhileSubscribed(5_000), replay = 1)
     }
 
     fun mine(): Flow<List<TranscriptSubmissionItem>> = mineShared
 
-    private fun mineUpstream(): Flow<List<TranscriptSubmissionItem>> = callbackFlow {
-        // ⚠️ الهوية المجهولة قد لا تكون جاهزة لحظة التجميع، والتدفّق صار
-        // مشترَكاً فإغلاقه فارغاً يجمّده على الفراغ — نتابع تغيّرات الهوية
-        // بمستمع (نمط SubmissionRepository/NotificationsRepository نفسه).
-        var registration: com.google.firebase.firestore.ListenerRegistration? = null
-        val authListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
-            registration?.remove()
-            val uid = firebaseAuth.currentUser?.uid
-            if (uid == null) {
-                trySend(emptyList())
-                return@AuthStateListener
-            }
-            registration = db.collection(COLLECTION)
-                .whereEqualTo("uid", uid)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        close(error)
-                        return@addSnapshotListener
-                    }
-                    // ⚠️ أي استثناء يفلت من ردّ مستمع Firestore يُسقط التطبيق
-                    // كاملاً — قراءة آمنة نوعياً + عزل الردّ وكل وثيقة معطوبة.
-                    runCatching {
-                        val list = snapshot?.documents.orEmpty().mapNotNull { document ->
-                            runCatching {
-                                TranscriptSubmissionItem(
-                                    id = document.id,
-                                    lessonId = (document.get("lessonId") as? String).orEmpty(),
-                                    lessonTitle = (document.get("lessonTitle") as? String).orEmpty(),
-                                    status = (document.get("status") as? String).orEmpty()
-                                        .ifBlank { "pending" },
-                                    rejectReason = (document.get("rejectReason") as? String).orEmpty(),
-                                    hasImages = (document.get("imagePaths") as? List<*>)
-                                        .orEmpty().isNotEmpty(),
-                                    createdAtMs = (document.get("createdAtMs") as? Number)?.toLong()
-                                        ?: (document.get("createdAtTs") as? Timestamp)?.toDate()?.time
-                                        ?: 0L,
-                                    decidedAtMs = (document.get("decidedAtTs") as? Timestamp)
-                                        ?.toDate()?.time ?: 0L,
-                                )
-                            }.getOrNull()
-                        }.sortedByDescending(TranscriptSubmissionItem::createdAtMs)
-                        trySend(list)
-                    }.onFailure { trySend(emptyList()) }
-                }
-        }
-        auth.addAuthStateListener(authListener)
-        awaitClose {
-            auth.removeAuthStateListener(authListener)
-            registration?.remove()
-        }
-    }
-
-    // ✏️ تعديل اقتراح النصّ يمرّ بعقد الخادم `updateMyTranscriptSubmission`
-    // (حقوله text/bookTitle/sourceRef/note) حين تُبنى واجهته — أُزيلت من هنا
-    // دالّة ميتة كانت ترسل {submissionId, title} خلافاً للعقد ولا تستعملها أي واجهة.
-
     suspend fun deletePending(item: TranscriptSubmissionItem) {
         if (!item.isPending) return
-        functions.getHttpsCallable("deleteMyTranscriptSubmission")
-            .call(mapOf("submissionId" to item.id)).await()
+        MinbarApi.deleteUser(appContext, "/v1/me/transcript-submissions/${item.id}")
     }
 
-    /**
-     * 🔎 بحث في متون «النص المشروح» — يعيد معرّفات دروسٍ وردت المرساة في
-     * متونها.
-     *
-     * استعلام **واحد** بـ`array-contains` على كلمة المرساة (انظر
-     * [transcriptSearchAnchor])، فلا تُجلب مجموعة المتون ولا يُخزَّن نصّ منها
-     * في الجهاز لأجل البحث — الوثيقة المفهرسة كلمات لا نصّ.
-     *
-     * ⚠️ **النتيجة نافذةٌ لا استيعاب**: الاستعلام بلا ترتيب، فيُرجع Firestore
-     * أوّل [SEARCH_LIMIT] وثيقة بترتيب المعرّف — عيّنةً من المطابقات لا
-     * كلَّها. ولهذا عمداً لا ترشيح محلّيّاً ببقيّة كلمات السؤال: شرطُ AND فوق
-     * نافذةٍ اعتباطيّة كان يُسقط دروساً مطابقة فعلاً ويكاد يُفرغ القائمة.
-     *
-     * الفشل (بلا اتصال مثلاً) يعود بلا نتائج لا باستثناء: هذا القسم زيادةٌ
-     * على البحث القائم، ولا يصحّ أن يُسقط شاشة البحث كلّها.
-     */
+    /** بحث في النصوص المشروحة على الخادم: معرّفات الدروس التي يرد فيها [keyword]. */
     suspend fun searchIndex(keyword: String): List<String> {
         if (keyword.length < MIN_SEARCH_KEYWORD) return emptyList()
         searchCache[keyword]?.let { return it }
         return withContext(Dispatchers.IO) {
-            val documents = runCatching {
-                db.collection(SEARCH_INDEX)
-                    .whereArrayContains("keywords", keyword)
-                    .limit(SEARCH_LIMIT)
-                    .get()
-                    .await()
-                    .documents
+            val hits = runCatching {
+                val items = MinbarApi.searchTranscripts(keyword, SEARCH_LIMIT.toInt())
+                (0 until items.length()).mapNotNull { items.optJSONObject(it)?.optString("lessonId") }
+                    .filter { it.isNotBlank() }
             }.getOrNull() ?: return@withContext emptyList<String>()
-            val hits = documents.map { document ->
-                document.getString("lessonId")?.takeIf(String::isNotBlank) ?: document.id
-            }
-            // سقف بسيط بدل إخراج الأقدم: جلسة بحثٍ واحدة لا تبلغه غالباً،
-            // وبلوغه يعني أن ما قبله لم يعد يُسأل عنه أصلاً.
             if (searchCache.size >= MAX_SEARCH_CACHE) searchCache.clear()
             searchCache[keyword] = hits
             hits
         }
     }
 
-    /** تفريغ كاش درس — الطبقتين معاً (بعد اعتماد اقتراح مثلاً ليظهر فوراً). */
     fun invalidate(lessonId: String) {
         cache.remove(lessonId)
         runCatching { entryFile(lessonId).delete() }

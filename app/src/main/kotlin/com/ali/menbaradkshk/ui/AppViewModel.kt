@@ -126,6 +126,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /// مستمع «قرارات مساهماتي» لا يُفتح أصلاً لمن لم يساهم قطّ — وهم أغلبية
     /// المستخدمين. يوفّر ذلك قراءة أوّليّة كاملة عند كل عودة إلى التطبيق.
     private val notificationsRepository = NotificationsRepository(
+        application,
         submissions,
         hasContributedBefore = { hasContributedBefore() },
         installedAtMs = { installedAtMs },

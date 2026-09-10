@@ -1,11 +1,6 @@
 package com.ali.menbaradkshk.data
 
 import android.content.Context
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.AggregateSource
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
-import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -17,7 +12,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -51,8 +45,6 @@ class ContentRepository private constructor(context: Context) {
     /// تفضيلات خاصّة بالمستودع وحده (علامات المسبار، إخفاء عناصر السجل،
     /// ترتيب قوائم التشغيل) — لا تُخلط بمخزن التطبيق العام.
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-    private val db by lazy { FirebaseFirestore.getInstance() }
-    private val functions by lazy { FirebaseFunctions.getInstance() }
     // قراءة واحدة لكل مخزن: كل استدعاء يعيد تحليل JSON كامل من التفضيلات
     // على خيط الإقلاع، وكان يتكرّر مرّتين للأقسام والدروس بلا داعٍ.
     private val _state = MutableStateFlow(
@@ -179,7 +171,7 @@ class ContentRepository private constructor(context: Context) {
                     snapshot.maxUpdatedMs >= server.maxUpdatedMs &&
                         snapshot.lessons.size == server.lessons
                     )
-            } ?: fetchFirestoreSnapshot(hasCache)
+            } ?: throw java.io.IOException("تعذّر جلب الكتالوج من خادم منبر")
         }.onSuccess { snapshot ->
             val categories = snapshot.categories
             val subcategories = snapshot.subcategories
@@ -246,78 +238,14 @@ class ContentRepository private constructor(context: Context) {
 
     /// الجلب الكامل من Firestore — المسار الاحتياطي الحرفي القديم (صفحات
     /// تُرسم تباعاً في أول تثبيت) عندما تتعذر واجهة الكتالوج لأي سبب.
-    private suspend fun fetchFirestoreSnapshot(hasCache: Boolean): Snapshot = coroutineScope {
-        val categoriesJob = async {
-            db.collection("categories").get().await().documents.map { document ->
-                Category.fromMap(document.id, document.data.orEmpty())
-            }
-        }
-        val subcategoriesJob = async {
-            db.collection("subcategories").get().await().documents.map { document ->
-                Subcategory.fromMap(document.id, document.data.orEmpty())
-            }
-        }
-        val newest = async { newestUpdatedMs() }
-        val newestCategories = async { newestUpdatedMs("categories") }
-        val newestSubcategories = async { newestUpdatedMs("subcategories") }
-
-        val categories = categoriesJob.await()
-        val subcategories = subcategoriesJob.await()
-        // 🚀 أوّل تثبيت: تُرسم المكتبة فور وصول الأقسام وتُملأ الدروس تباعاً.
-        // ⚠️ إلا إذا كانت اللقطة المضمّنة معروضة الآن: استبدال مكتبتها الكاملة
-        // بصفحةٍ أولى جزئية كان **يقلّص** ما يراه المستخدم في منتصف المزامنة —
-        // عندها تُترك الشاشة كما هي وتُستبدل دفعة واحدة عند الاكتمال.
-        val progressive = !hasCache && _state.value.lessons.isEmpty()
-        if (progressive) {
-            _state.value = _state.value.copy(
-                categories = categories,
-                subcategories = subcategories,
-                loading = false,
-                syncing = true,
-            )
-        }
-        val lessons = fetchLessonsPaged { page ->
-            if (progressive) {
-                _state.value = _state.value.copy(
-                    lessons = mergeDurations(page),
-                    loading = false,
-                    syncing = true,
-                )
-            }
-        }
-        Snapshot(
-            categories = categories,
-            subcategories = subcategories,
-            lessons = lessons,
-            maxUpdatedMs = newest.await(),
-            categoriesUpdatedMs = newestCategories.await(),
-            subcategoriesUpdatedMs = newestSubcategories.await(),
-        )
-    }
-
     /**
-     * الجلب الكامل عبر `/api/catalog`: طلب gzip واحد من كاش CDN يعيد المكتبة
-     * كلّها، فيوفّر مئات قراءات الوثائق. `null` عند أي فشل أو شكّ في السلامة
-     * (عدّ لا يطابق، JSON ناقص) — فيتولّى Firestore الأمر حرفياً كما كان.
+     * الجلب الكامل عبر `minbar-api`: طلب gzip واحد يعيد المكتبة كلّها (نفس عقد
+     * `/api/catalog` القديم حرفياً). `null` عند أي فشل أو شكّ في السلامة (عدّ
+     * لا يطابق، JSON ناقص) — فتبقى النسخة المحفوظة كما هي؛ لا Firestore بعد
+     * اليوم (قرار 2026-09-10: حصّته المجانية استُنفدت في يومٍ واحد).
      */
     private suspend fun fetchCatalogSnapshot(): Snapshot? = runCatching {
-        val connection = java.net.URL(CATALOG_URL).openConnection() as java.net.HttpURLConnection
-        connection.connectTimeout = 15_000
-        connection.readTimeout = 30_000
-        connection.setRequestProperty("Accept-Encoding", "gzip")
-        val body = try {
-            if (connection.responseCode != 200) return@runCatching null
-            val raw = connection.inputStream
-            val stream = if (connection.contentEncoding == "gzip") {
-                java.util.zip.GZIPInputStream(raw)
-            } else {
-                raw
-            }
-            stream.bufferedReader().use { it.readText() }
-        } finally {
-            connection.disconnect()
-        }
-        parseCatalog(JSONObject(body))
+        parseCatalog(MinbarApi.catalog())
     }.getOrNull()
 
     /// يحوّل JSON الكتالوج (واجهة الموقع أو اللقطة المضمّنة) إلى Snapshot،
@@ -431,117 +359,23 @@ class ContentRepository private constructor(context: Context) {
     )
 
     /**
-     * يجلب الدروس على صفحات مرتَّبة بمعرّف الوثيقة، ويُبلّغ [onPage] بكل ما
-     * تجمّع بعد كل صفحة.
-     *
-     * الترتيب بـ`__name__` مقصود: لا يحتاج فهرساً ولا يتأثّر بغياب حقل
-     * `createdAt` عن الوثائق القديمة المغلَّفة، والترقيم به مستقرّ فلا تتكرّر
-     * وثيقة ولا تسقط أخرى بين صفحتين.
+     * المسبار: **طلب واحد** إلى `minbar-api` يعيد الأعداد الثلاثة وأحدث طابع
+     * تعديل في كل مجموعة وأرضية الدلتا. `null` عند أي فشل — فيمضي المستدعي
+     * إلى الجلب الكامل. ⛔ لا كاش هنا قطّ: Firestore SDK كان يعيد نسخته
+     * المخزَّنة حين يسقط الخادم فتتساوى العلامات ويُظنّ «لا جديد» أياماً.
      */
-    private suspend fun fetchLessonsPaged(onPage: (List<Lesson>) -> Unit): List<Lesson> {
-        val all = mutableListOf<Lesson>()
-        var last: com.google.firebase.firestore.DocumentSnapshot? = null
-        while (true) {
-            var query = db.collection("lessons")
-                .orderBy(com.google.firebase.firestore.FieldPath.documentId())
-                .limit(LESSONS_PAGE_SIZE)
-            last?.let { query = query.startAfter(it) }
-            val snapshot = query.get().await()
-            if (snapshot.isEmpty) break
-            all += snapshot.documents.map { document ->
-                Lesson.fromMap(document.id, document.data.orEmpty())
-            }
-            onPage(all.toList())
-            if (snapshot.size() < LESSONS_PAGE_SIZE) break
-            last = snapshot.documents.last()
-        }
-        return all
-    }
-
-    /**
-     * المسبار: **قراءة واحدة** لوثيقة البصمة `content_meta/state` التي تحدّثها
-     * الدوال الخادمية (الأعداد الثلاثة + أحدث طابع تعديل في كل مجموعة).
-     * إن وُجدت مكتملة الحقول اشتُقّت منها العلامات نفسها التي كان يشتقّها
-     * المسار القديم؛ وإن غابت أو نقصت حقولها سقطنا إلى المسار القديم
-     * (تسعة استعلامات) كما هو حرفياً — فمتى تُطلق المزامنة لا يتغيّر.
-     */
-    private suspend fun probe(): ProbeMarks? = metaProbe() ?: legacyProbe()
-
-    /// يقرأ وثيقة البصمة ويشتقّ منها العلامات؛ `null` عند غيابها أو نقص أي
-    /// حقل من الستة (فالسقوط للمسار القديم هو الأمان).
-    private suspend fun metaProbe(): ProbeMarks? = runCatching {
-        val document = db.collection("content_meta").document("state").get().await()
-        if (!document.exists()) return@runCatching null
-        // أرضية الدلتا تُقرأ هنا مجاناً (نفس الوثيقة) وتُحفظ جانباً — ليست
-        // جزءاً من مساواة العلامات (تتقدم يومياً مع كنس سجل الحذف).
-        (document.get("deltaFloorMs") as? Number)?.toLong()?.let { serverDeltaFloorMs = it }
-        val lessons = (document.get("lessonsCount") as? Number)?.toInt()
-        val categories = (document.get("categoriesCount") as? Number)?.toInt()
-        val subcategories = (document.get("subcategoriesCount") as? Number)?.toInt()
-        val lessonsUpdated = document.get("lessonsUpdatedAtMs")
-        val categoriesUpdated = document.get("categoriesUpdatedAtMs")
-        val subcategoriesUpdated = document.get("subcategoriesUpdatedAtMs")
-        if (lessons == null || categories == null || subcategories == null ||
-            lessonsUpdated == null || categoriesUpdated == null || subcategoriesUpdated == null
-        ) {
-            return@runCatching null
-        }
+    private suspend fun probe(): ProbeMarks? = runCatching {
+        val json = MinbarApi.probe()
+        json.optLong("deltaFloorMs", 0L).takeIf { it > 0L }?.let { serverDeltaFloorMs = it }
         ProbeMarks(
-            categories = categories,
-            subcategories = subcategories,
-            lessons = lessons,
-            maxUpdatedMs = lessonsUpdated.timeMillis(),
-            categoriesUpdatedMs = categoriesUpdated.timeMillis(),
-            subcategoriesUpdatedMs = subcategoriesUpdated.timeMillis(),
+            categories = json.getInt("categoriesCount"),
+            subcategories = json.getInt("subcategoriesCount"),
+            lessons = json.getInt("lessonsCount"),
+            maxUpdatedMs = json.getLong("lessonsUpdatedAtMs"),
+            categoriesUpdatedMs = json.getLong("categoriesUpdatedAtMs"),
+            subcategoriesUpdatedMs = json.getLong("subcategoriesUpdatedAtMs"),
         )
     }.getOrNull()
-
-    private suspend fun legacyProbe(): ProbeMarks? = runCatching {
-        coroutineScope {
-            val categories = async { countOf("categories") }
-            val subcategories = async { countOf("subcategories") }
-            val lessons = async { countOf("lessons") }
-            val newest = async { newestUpdatedMs() }
-            val newestCategories = async { newestUpdatedMs("categories") }
-            val newestSubcategories = async { newestUpdatedMs("subcategories") }
-            ProbeMarks(
-                categories = categories.await(),
-                subcategories = subcategories.await(),
-                lessons = lessons.await(),
-                maxUpdatedMs = newest.await(),
-                categoriesUpdatedMs = newestCategories.await(),
-                subcategoriesUpdatedMs = newestSubcategories.await(),
-            )
-        }
-    }.getOrNull()
-
-    private suspend fun countOf(collection: String): Int =
-        db.collection(collection).count().get(AggregateSource.SERVER).await().count.toInt()
-
-    /// أحدث `updatedAt` في مجموعة (وثيقة واحدة لكل صيغة). الوثائق التي لا
-    /// تحمل الحقل لا تدخل الاستعلام أصلاً، فغيابه كلّياً يعني صفراً ثابتاً.
-    ///
-    /// ⚠️ صيغتان لا واحدة: الوثائق القديمة المغلَّفة `{data:{…}}` يكتب فيها
-    /// الطابعَ في `data.updatedAt`، فالاكتفاء بالحقل الأعلى يُبقيها خارج
-    /// البصمة فلا يُلتقط تعديلها أبداً.
-    private suspend fun newestUpdatedMs(collection: String = "lessons"): Long =
-        coroutineScope {
-            val plain = async { newestUpdatedBy(collection, "updatedAt") }
-            val wrapped = async { newestUpdatedBy(collection, "data.updatedAt") }
-            max(plain.await(), wrapped.await())
-        }
-
-    private suspend fun newestUpdatedBy(collection: String, field: String): Long = runCatching {
-        db.collection(collection)
-            .orderBy(field, Query.Direction.DESCENDING)
-            .limit(1)
-            .get()
-            .await()
-            .documents
-            .firstOrNull()
-            ?.get(field)
-            .timeMillis()
-    }.getOrDefault(0L)
 
     // ------------------------------------------------------------------
     // المزامنة التفاضليّة: ما تغيّر وحده لا المكتبة كلّها
@@ -589,32 +423,20 @@ class ContentRepository private constructor(context: Context) {
         if (floor > 0L && sinceDeleted <= floor) return@runCatching false
 
         coroutineScope {
-            val deletedJob = async { deletedSince(sinceDeleted) }
-            val categoriesJob = async {
-                if (server.categoriesUpdatedMs > stored.categoriesUpdatedMs) {
-                    changedDocs("categories", stored.categoriesUpdatedMs)
-                } else {
-                    emptyList()
-                }
-            }
-            val subcategoriesJob = async {
-                if (server.subcategoriesUpdatedMs > stored.subcategoriesUpdatedMs) {
-                    changedDocs("subcategories", stored.subcategoriesUpdatedMs)
-                } else {
-                    emptyList()
-                }
-            }
-            val lessonsJob = async {
-                if (server.maxUpdatedMs > stored.maxUpdatedMs) {
-                    changedDocs("lessons", stored.maxUpdatedMs)
-                } else {
-                    emptyList()
-                }
-            }
-            val deleted = deletedJob.await() ?: return@coroutineScope false
-            val changedCategories = categoriesJob.await() ?: return@coroutineScope false
-            val changedSubcategories = subcategoriesJob.await() ?: return@coroutineScope false
-            val changedLessons = lessonsJob.await() ?: return@coroutineScope false
+            // طلب واحد: ما تغيّر في المجموعات الثلاث منذ علاماتها + سجلّ الحذف
+            // منذ علامته. أي فشل ⇒ الجلب الكامل كما كان.
+            val delta = MinbarApi.delta(
+                lessonsSince = stored.maxUpdatedMs,
+                categoriesSince = stored.categoriesUpdatedMs,
+                subcategoriesSince = stored.subcategoriesUpdatedMs,
+                deletedSince = sinceDeleted,
+            )
+            val deletedArray = delta.optJSONArray("deleted") ?: JSONArray()
+            if (deletedArray.length() > MAX_DELTA_DOCS) return@coroutineScope false
+            val deleted = deletedFromDelta(deletedArray)
+            val changedCategories = delta.optJSONArray("categories").toObjects()
+            val changedSubcategories = delta.optJSONArray("subcategories").toObjects()
+            val changedLessons = delta.optJSONArray("lessons").toObjects()
 
             // تغييرٌ ضخم: التفاضليّ حينها أغلى من صفحات الجلب الكامل.
             val touched = changedCategories.size + changedSubcategories.size +
@@ -639,19 +461,19 @@ class ContentRepository private constructor(context: Context) {
 
             val categories = mergeById(
                 baseCategories,
-                changedCategories.map { Category.fromMap(it.id, it.data.orEmpty()) },
+                changedCategories.map { Category.fromMap(it.optString("id"), it.asDataMap()) },
                 deleted["categories"].orEmpty(),
                 Category::id,
             )
             val subcategories = mergeById(
                 baseSubcategories,
-                changedSubcategories.map { Subcategory.fromMap(it.id, it.data.orEmpty()) },
+                changedSubcategories.map { Subcategory.fromMap(it.optString("id"), it.asDataMap()) },
                 deleted["subcategories"].orEmpty(),
                 Subcategory::id,
             )
             val lessons = mergeById(
                 baseLessons,
-                changedLessons.map { Lesson.fromMap(it.id, it.data.orEmpty()) },
+                changedLessons.map { Lesson.fromMap(it.optString("id"), it.asDataMap()) },
                 deleted["lessons"].orEmpty(),
                 Lesson::id,
             )
@@ -681,82 +503,33 @@ class ContentRepository private constructor(context: Context) {
         }
     }.getOrDefault(false)
 
-    /**
-     * وثائق مجموعةٍ تغيّرت بعد [sinceMs].
-     *
-     * ⚠️ ستّة استعلامات لا واحد، ولكلٍّ سببه:
-     * - **حقلان**: الوثائق القديمة المغلَّفة `{data:{…}}` تكتب الطابع في
-     *   `data.updatedAt` لا في الجذر (نفس علّة [newestUpdatedBy]).
-     * - **ثلاثة أنواع**: Firestore يرتّب القيم بأنواعها أولاً، فحدٌّ من نوع
-     *   Timestamp لا يرى وثيقةً طابعها رقمٌ خام ولا نصٌّ والعكس — والقاعدة
-     *   فيها الأشكال الثلاثة: `updateCompat` في اللوحة كان يكتب `updatedAt`
-     *   **نصَّ ISO**، فتعديل عنوانٍ من اللوحة ما كان الدلتا يلتقطه أبداً
-     *   (والعدد لم يتغيّر فلا ينقذه حكم الأعداد) ولا يصل للمستخدمين إلا
-     *   بجلبة كاملة عرضيّة. والوثائق النصيّة القديمة باقية في القاعدة ولو
-     *   حُوِّلت اللوحة إلى Timestamp، فالحدّ النصي لازم دائماً.
-     *
-     * النتيجة تُدمج بمعرّف الوثيقة فلا تكرار. و`null` تعني فشلاً أو تجاوز
-     * الحدّ — أي «ارجع إلى الجلب الكامل».
-     */
-    private suspend fun changedDocs(
-        collection: String,
-        sinceMs: Long,
-    ): List<com.google.firebase.firestore.DocumentSnapshot>? = runCatching {
-        coroutineScope {
-            val bounds = listOf<Any>(
-                com.google.firebase.Timestamp(java.util.Date(sinceMs)),
-                sinceMs,
-                // حدّ النصّ: ISO بتوقيت UTC وميلي ثانية ثابتة العرض يقارَن
-                // معجمياً فيوافق الترتيب الزمني (انظر توثيق الدالة أعلاه).
-                isoUpdatedBound(sinceMs),
-            )
-            val jobs = listOf("updatedAt", "data.updatedAt").flatMap { field ->
-                bounds.map { bound -> async { changedBy(collection, field, bound) } }
-            }
-            val merged = LinkedHashMap<String, com.google.firebase.firestore.DocumentSnapshot>()
-            jobs.forEach { job -> job.await().forEach { merged[it.id] = it } }
-            if (merged.size > MAX_DELTA_DOCS) null else merged.values.toList()
-        }
-    }.getOrNull()
-
-    private suspend fun changedBy(
-        collection: String,
-        field: String,
-        bound: Any,
-    ): List<com.google.firebase.firestore.DocumentSnapshot> =
-        db.collection(collection)
-            .whereGreaterThan(field, bound)
-            .orderBy(field, Query.Direction.ASCENDING)
-            .limit(MAX_DELTA_DOCS + 1L)
-            .get()
-            .await()
-            .documents
-
-    /**
-     * ما حُذف من الخادم بعد [sinceMs]، مصنَّفاً بالمجموعة.
-     *
-     * الاستعلام التفاضليّ لا يكشف المحذوف أبداً (الوثيقة لم تعد موجودة
-     * لتُقرأ)، فالخادم يسجّل كل اختفاء في `deleted_ids` — وهذه قراءتها.
-     */
-    private suspend fun deletedSince(sinceMs: Long): Map<String, Set<String>>? = runCatching {
-        val documents = db.collection("deleted_ids")
-            .whereGreaterThan("deletedAtMs", sinceMs)
-            .orderBy("deletedAtMs", Query.Direction.ASCENDING)
-            .limit(MAX_DELTA_DOCS + 1L)
-            .get()
-            .await()
-            .documents
-        if (documents.size > MAX_DELTA_DOCS) return@runCatching null
+    /// سجلّ الحذف من استجابة الدلتا مصنَّفاً بالمجموعة (`kind` ⇒ اسم المجموعة).
+    private fun deletedFromDelta(array: JSONArray): Map<String, Set<String>> {
         val grouped = mutableMapOf<String, MutableSet<String>>()
-        documents.forEach { document ->
-            val collection = document.get("collection").text()
-            val docId = document.get("docId").text()
-            if (collection.isNotBlank() && docId.isNotBlank()) {
-                grouped.getOrPut(collection) { mutableSetOf() } += docId
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            val collection = when (item.optString("kind")) {
+                "category" -> "categories"
+                "subcategory" -> "subcategories"
+                "lesson" -> "lessons"
+                else -> continue
             }
+            val id = item.optString("id")
+            if (id.isNotBlank()) grouped.getOrPut(collection) { mutableSetOf() } += id
         }
-        grouped
-    }.getOrNull()
+        return grouped
+    }
+
+    private fun JSONArray?.toObjects(): List<JSONObject> {
+        if (this == null) return emptyList()
+        return (0 until length()).mapNotNull { optJSONObject(it) }
+    }
+
+    private fun JSONObject.asDataMap(): Map<String, Any?> {
+        val map = mutableMapOf<String, Any?>()
+        keys().forEach { key -> map[key] = opt(key) }
+        return map
+    }
 
     private fun deleteMark(): Long = prefs.getLong(KEY_DELETE_MARK, 0L)
 
@@ -1099,23 +872,12 @@ class ContentRepository private constructor(context: Context) {
 
     suspend fun incrementView(lessonId: String) {
         if (lessonId.isBlank() || store.isViewCountedToday(lessonId)) return
-        runCatching {
-            ensureSignedIn()
-            functions.getHttpsCallable("incrementLessonView")
-                .call(mapOf("lessonId" to lessonId)).await()
-        }.onSuccess { store.markViewCounted(lessonId) }
+        runCatching { MinbarApi.incrementView(lessonId) }
+            .onSuccess { store.markViewCounted(lessonId) }
     }
 
     suspend fun sendFeedback(lessonId: String, type: String, note: String) {
-        ensureSignedIn()
-        functions.getHttpsCallable("sendFeedback").call(
-            mapOf("lessonId" to lessonId, "type" to type, "note" to note.trim()),
-        ).await()
-    }
-
-    private suspend fun ensureSignedIn() {
-        val auth = FirebaseAuth.getInstance()
-        if (auth.currentUser == null) auth.signInAnonymously().await()
+        MinbarApi.feedback(lessonId, type, note.trim())
     }
 
     private fun withAudio(): List<Lesson> =
@@ -1139,8 +901,6 @@ class ContentRepository private constructor(context: Context) {
     }
 
     companion object {
-        /// واجهة الكتالوج العامة (كاش CDN، ‏gzip): الجلب الكامل بطلب واحد.
-        private const val CATALOG_URL = "https://minbar-adkassahk.vercel.app/api/catalog"
         private const val SYNC_INTERVAL_MS = 2 * 60 * 1_000L
         /// حدّ أدنى بين مسبارين — يبتلع عودات ON_RESUME المتلاحقة.
         private const val PROBE_INTERVAL_MS = 60 * 1_000L

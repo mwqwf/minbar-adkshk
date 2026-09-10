@@ -189,7 +189,7 @@ class PlaybackService : MediaSessionService() {
                             this@PlaybackService, "play",
                             "$trackedLessonId ${error.errorCodeName}",
                         )
-                        if (isRecoverableIoError(error)) tryOfflineFallback()
+                        if (isRecoverableIoError(error) && !tryMirrorFallback()) tryOfflineFallback()
                     }
 
                     override fun onPlaybackStateChanged(playbackState: Int) {
@@ -319,6 +319,33 @@ class PlaybackService : MediaSessionService() {
      */
     /// آخر محاولة إكمال بلا إنترنت — حارس ضدّ حلقة محاولات متلاحقة.
     private var offlineFallbackAtMs = 0L
+
+    /**
+     * 🪞 **مرآة الصوت**: العنصر الحالي درسٌ شبكيٌّ فشل رابطه (R2 على Cloudflare
+     * قد يُحجب على بعض الشبكات) وله بصمة ⇒ يُعاد بناؤه على مرآة الموقع من
+     * الموضع نفسه، مرّة واحدة لكل عنصر (الرابط الثاني لا مرآة له).
+     */
+    private fun tryMirrorFallback(): Boolean {
+        val index = player.currentMediaItemIndex
+        val item = player.currentMediaItem ?: return false
+        if (!isLesson(item.mediaId)) return false
+        val config = item.localConfiguration ?: return false
+        val uri = config.uri.toString()
+        if (!uri.startsWith("http", ignoreCase = true)) return false
+        if (com.ali.menbaradkshk.data.MinbarApi.isMirrorUrl(uri)) return false
+        val sha = config.customCacheKey.orEmpty()
+        if (sha.isBlank()) return false
+        val position = player.currentPosition.coerceAtLeast(0L)
+        val rebuilt = item.buildUpon()
+            .setUri(android.net.Uri.parse(com.ali.menbaradkshk.data.MinbarApi.audioMirrorUrl(sha)))
+            .build()
+        player.replaceMediaItem(index, rebuilt)
+        player.seekTo(index, position)
+        player.prepare()
+        player.play()
+        com.ali.menbaradkshk.util.DiagLog.log(this, "play", "${item.mediaId} mirror")
+        return true
+    }
 
     /// أخطاء الإدخال/الإخراج التي يجدي معها البديل المحلّي: الشبكة صراحةً،
     /// وأخطاء IO غير المصنّفة، وحالات HTTP السيّئة — كلّها «المصدر البعيد

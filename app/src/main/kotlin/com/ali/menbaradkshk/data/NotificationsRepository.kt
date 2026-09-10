@@ -13,6 +13,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /// مصدر الإشعارات المشترك — منقول من NotificationsFeed الأصلي:
@@ -36,6 +37,7 @@ class NotificationsRepository(
 
         /// نفس نافذة العرض في الواجهة (MoreScreens): آخر ٣٠ يوماً فقط.
         const val WINDOW_MS = 30L * 24 * 60 * 60 * 1_000
+        const val PUBLIC_POLL_MS = 5L * 60 * 1_000
     }
 
     /// حدّ القصّ الزمني — كان يقع محليّاً فقط (الواجهة تُسقط الأقدم بعد
@@ -61,24 +63,20 @@ class NotificationsRepository(
             trySend(items)
         }
 
-        val publicRegistration = db.collection("notifications")
-            .whereGreaterThanOrEqualTo("createdAtMs", cutoffMs())
-            .orderBy("createdAtMs", Query.Direction.DESCENDING)
-            .limit(limit)
-            .addSnapshotListener { snapshot, error ->
-                // خطأ دائم (مثل رفض القواعد) يُنهي المستمع بصمت، فتبقى الشاشة
-                // فارغة بلا سبب ظاهر. تسجيله يجعل التشخيص ممكناً من logcat.
-                if (error != null) Log.w(TAG, "تعذّرت قراءة الإشعارات العامة", error)
-                // ⚠️ أي استثناء يفلت من ردّ مستمع Firestore يُسقط التطبيق كاملاً
-                // (وثيقة بحقل مخالف النوع مثلاً) — فالردّ معزول وسقوطه آمن.
+        // الخلاصة العامة من `minbar-api` باستطلاع خفيف (كل خمس دقائق ما دامت
+        // الشاشة تجمع) — بديل مستمع Firestore الحيّ.
+        val publicJob = scope.launch {
+            while (isActive) {
                 runCatching {
-                    publicItems = snapshot?.documents.orEmpty()
-                        .mapNotNull { document ->
-                            runCatching { fromDocument("public:${document.id}", document) }.getOrNull()
-                        }
+                    val array = MinbarApi.notifications(cutoffMs(), limit.toInt())
+                    publicItems = (0 until array.length())
+                        .mapNotNull { index -> array.optJSONObject(index) }
+                        .map { item -> fromJson("public:" + item.optString("id"), item) }
                     emit()
-                }.onFailure { Log.w(TAG, "وثيقة إشعار عام معطوبة", it) }
+                }.onFailure { Log.w(TAG, "تعذّرت قراءة الإشعارات العامة", it) }
+                kotlinx.coroutines.delay(PUBLIC_POLL_MS)
             }
+        }
 
         val auth = FirebaseAuth.getInstance()
         val authListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
@@ -128,7 +126,7 @@ class NotificationsRepository(
         auth.addAuthStateListener(authListener)
 
         awaitClose {
-            publicRegistration.remove()
+            publicJob.cancel()
             privateRegistration?.remove()
             submissionsJob?.cancel()
             auth.removeAuthStateListener(authListener)
@@ -157,6 +155,17 @@ class NotificationsRepository(
             createdAtMs = s.decidedAtMs,
         )
     }
+
+    private fun fromJson(id: String, item: org.json.JSONObject): NotificationItem = NotificationItem(
+        id = id,
+        title = item.optString("title"),
+        body = item.optString("body"),
+        type = item.optString("type"),
+        lessonId = item.optString("lessonId"),
+        route = item.optString("route"),
+        refId = item.optString("refId").ifBlank { item.optString("lessonId") },
+        createdAtMs = item.optLong("createdAtMs", 0L),
+    )
 
     private fun fromDocument(id: String, document: DocumentSnapshot): NotificationItem {
         // حمولة الإشعار كما أرسلها الخادم — الوثيقة تحفظها كاملةً في `data`،

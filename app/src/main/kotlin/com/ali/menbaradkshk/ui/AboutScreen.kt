@@ -217,7 +217,7 @@ fun AboutScreen(vm: AppViewModel) {
                 supportingContent = {
                     Text(
                         "ننشر فيها فيديوهات توضيحية عن الجديد في التطبيق " +
-                            "وكيفية استعمال مزاياه خطوة بخطوة.\nyoutube.com/@mtfail",
+                            "وكيفية استعمال مزاياه خطوة بخطوة.\nyoutube.com/@Al-Mutafail",
                     )
                 },
             )
@@ -258,4 +258,4 @@ fun AboutScreen(vm: AppViewModel) {
 
 const val GITHUB_URL = "https://github.com/mwqwf"
 const val WEB_APP_URL = "https://minbar-adkassahk.vercel.app"
-const val YOUTUBE_URL = "https://youtube.com/@mtfail"
+const val YOUTUBE_URL = "https://youtube.com/@Al-Mutafail"

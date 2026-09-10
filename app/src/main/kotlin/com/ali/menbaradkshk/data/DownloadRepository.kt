@@ -144,7 +144,27 @@ class DownloadRepository private constructor(context: Context) {
 
     suspend fun download(lesson: Lesson): String {
         require(lesson.id.isNotBlank()) { "معرّف الدرس مفقود." }
-        return withLessonLock(lesson.id) { downloadLocked(lesson) }
+        return withLessonLock(lesson.id) {
+            try {
+                downloadLocked(lesson)
+            } catch (failure: Throwable) {
+                // 🪞 مرآة الصوت خارج Cloudflare: بعض الشبكات تحجب نطاق R2
+                // (حادثة 2026-08-30). البايتات واحدة (البصمة نفسها) فالتحقق
+                // بعد الاكتمال لا يتغيّر. الإلغاء والإيقاف لا يُلتقطان.
+                if (failure is CancellationException ||
+                    failure is DownloadPausedException ||
+                    failure is DownloadCancelledException ||
+                    lesson.sha256.isBlank() ||
+                    MinbarApi.isMirrorUrl(lesson.audioUrl)
+                ) {
+                    throw failure
+                }
+                com.ali.menbaradkshk.util.DiagLog.log(
+                    appContext, "dl", "${lesson.id} mirror after: ${failure.message}",
+                )
+                downloadLocked(lesson.copy(audioUrl = MinbarApi.audioMirrorUrl(lesson.sha256)))
+            }
+        }
     }
 
     private suspend fun downloadLocked(lesson: Lesson): String = withContext(Dispatchers.IO) {

@@ -91,6 +91,12 @@ class MinbarMessagingService : FirebaseMessagingService() {
         // دوريّ) فتبقى المساهمات المعلّقة حاملةً رمزاً ميتاً، ويذهب إشعار
         // «نُشرت مساهمتك»/«نتيجة المراجعة» إلى العدم بلا أن يعلم صاحبه.
         refreshPendingToken(token)
+        // الرمز الجديد يُسجَّل في `minbar-api` فوراً (الإرسال الموجَّه والإحصاءات).
+        runCatching {
+            com.ali.menbaradkshk.data.MinbarApi.registerDevice(
+                this, token, com.ali.menbaradkshk.data.ReleaseNotes.trimmed(),
+            )
+        }
     }
 
     companion object {

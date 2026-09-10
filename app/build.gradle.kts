@@ -146,8 +146,13 @@ android {
         // بادئة كاش البث في التنزيلات؛ صفر تنزيل تلقائي على بيانات الهاتف؛
         // حارس طابور بعد إعادة التشغيل وجولات مجزأة لأندرويد ≤13؛ إخلاء ذكي
         // يحصّن اليدوي؛ سؤال ترحيب واحد؛ سجل تشخيص محلي لرسائل الدعم.
-        versionCode = 28
-        versionName = "2.5.0"
+        // ٢٩ / ٢.٦.٠ — «الاستقلال عن Firebase»: المكتبة والمسبار والدلتا والنص
+        // المشروح وإعداد التحديث والإشعارات من minbar-api (Cloudflare D1)؛ الصوت
+        // من R2 بمرآة خارج Cloudflare تُجرَّب تلقائياً عند الحجب (بثاً وتنزيلاً)؛
+        // صور المصحف من دلو «مصحفك» على R2 بمضيف احتياطي؛ فهرس القراء والنصوص
+        // موحَّد مع «مصحفك» (ست روايات)؛ تسجيل الجهاز يومياً بدل reportAppVersion.
+        versionCode = 29
+        versionName = "2.6.0"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

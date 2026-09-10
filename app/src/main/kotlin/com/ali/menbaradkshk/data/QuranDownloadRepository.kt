@@ -211,7 +211,14 @@ class QuranDownloadRepository private constructor(context: Context) {
                 coroutineContext.ensureActive()
                 val target = File(dir, "$page.webp")
                 if (!(target.isFile && target.length() > 0L)) {
-                    fetchWithRetry(MushafRepository.pageUrl(riwayaId, page), target)
+                    try {
+                        fetchWithRetry(MushafRepository.pageUrl(riwayaId, page), target)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Throwable) {
+                        // المضيف الاحتياطي لنفس الصفحة قبل إسقاط التنزيل كله.
+                        fetchWithRetry(MushafRepository.legacyPageUrl(riwayaId, page), target)
+                    }
                 }
                 _pageProgress.value = PageProgress(page, total)
             }

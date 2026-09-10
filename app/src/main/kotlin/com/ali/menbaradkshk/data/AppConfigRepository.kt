@@ -2,8 +2,6 @@ package com.ali.menbaradkshk.data
 
 import android.content.Context
 import com.ali.menbaradkshk.BuildConfig
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Source
 import kotlinx.coroutines.tasks.await
 
 /**
@@ -30,7 +28,6 @@ class AppConfigRepository private constructor(context: Context) {
     /// يُحتاج Firestore إلا عند قراءة شبكيّة فعليّة (مرّة كل ست ساعات على
     /// الأكثر). فبناؤه فوراً كان يوقظ Firestore بلا داعٍ في كل تشغيل —
     /// وكان يجعل المستودع غير قابل للاختبار أصلاً بلا Firebase مهيّأ.
-    private val db by lazy { FirebaseFirestore.getInstance() }
     private val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     /** ما يُعرض للمستخدم — أو `None` حين لا شيء يُذكَر به. */
@@ -50,6 +47,7 @@ class AppConfigRepository private constructor(context: Context) {
      */
     suspend fun status(): Status {
         refreshIfStale()
+        registerDeviceIfDue()
         val latest = prefs.getInt(KEY_LATEST, 0)
         val minSupported = prefs.getInt(KEY_MIN, 0)
         val message = prefs.getString(KEY_MESSAGE, "").orEmpty()
@@ -189,23 +187,9 @@ class AppConfigRepository private constructor(context: Context) {
             prefs.edit().putInt(KEY_ANNOUNCED, current).apply()
             return
         }
-        val sent = runCatching {
-            com.google.firebase.functions.FirebaseFunctions.getInstance()
-                .getHttpsCallable("reportAppVersion")
-                .call(
-                    hashMapOf(
-                        "versionCode" to current,
-                        "versionName" to com.ali.menbaradkshk.BuildConfig.VERSION_NAME,
-                        "summary" to ReleaseNotes.trimmed(),
-                        // اسم الحزمة يُرسَل ليرفض الخادم نسخ التطوير (`.dev`)
-                        // ولو تسرّبت — الحارس المحلّي وحده لا يكفي.
-                        "packageName" to app.packageName,
-                        // 🎯 **البرهان**: من ثبَّت هذه النسخة؟
-                        "installer" to installerPackage(),
-                    ),
-                )
-                .await()
-        }.isSuccess
+        // التقرير يذهب مع تسجيل الجهاز إلى `minbar-api`؛ الخادم يطبّق الحرّاس
+        // الثلاثة (حزمة المتجر · مثبَّت من Play · مهلة ساعة) قبل أي إعلان.
+        val sent = runCatching { registerDeviceIfDue(force = true) }.isSuccess
         // الختم يُوضع عند النجاح فقط: فشل الشبكة يجب أن يُعيد المحاولة لاحقاً،
         // وإلا ضاع الإعلان لأنّ أوّل تشغيل صادف انقطاعاً.
         if (sent) prefs.edit().putInt(KEY_ANNOUNCED, current).apply()
@@ -245,36 +229,56 @@ class AppConfigRepository private constructor(context: Context) {
     private suspend fun refreshIfStale() {
         val now = System.currentTimeMillis()
         if (now - prefs.getLong(KEY_CHECKED, 0L) < CHECK_INTERVAL_MS) return
-        val reference = db.collection("app_config").document("android")
-        // ⚠️ الخادم أوّلاً دائماً: تقديم الكاش كان يجمّد القيم على أوّل قراءة
-        // إلى الأبد (الوثيقة تصير مخزَّنة فلا يُسأل الخادم بعدها قطّ، فلا يصل
-        // تذكير أيّ إصدار لاحق). الكاش هنا خطّة بديلة عند فشل الشبكة فقط.
-        val doc = runCatching { reference.get(Source.SERVER).await() }.getOrNull()
-            ?: runCatching { reference.get(Source.CACHE).await() }
-                .getOrNull()
-                ?.takeIf { it.exists() }
-            ?: run {
-                // ختم قصير عند فشل الشبكة: بلاه كان كل ON_RESUME يعيد طرق
-                // الخادم فوراً في حالات الانقطاع أو 5xx.
-                prefs.edit()
-                    .putLong(KEY_CHECKED, now - CHECK_INTERVAL_MS + FAILURE_RETRY_MS)
-                    .apply()
-                return
-            }
-        if (!doc.exists()) {
-            // لا وثيقة إعداد ⇒ لا تذكير. نُثبّت الختم كي لا نسأل كل مرّة.
+        // ⚠️ الخادم أوّلاً دائماً ولا كاش: إعداد التحديث يُقرأ من `minbar-api`
+        // (`/v1/config/android`) بطلب واحد. الفشل يُختم ختماً قصيراً كي لا
+        // يعيد كل ON_RESUME طرق الخادم فوراً عند الانقطاع.
+        val json = try {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { MinbarApi.config("android") }
+        } catch (failure: Exception) {
+            prefs.edit()
+                .putLong(KEY_CHECKED, now - CHECK_INTERVAL_MS + FAILURE_RETRY_MS)
+                .apply()
+            return
+        }
+        if (json == null) {
+            // لا إعداد ⇒ لا تذكير. نُثبّت الختم كي لا نسأل كل مرّة.
             prefs.edit().putLong(KEY_CHECKED, now).apply()
             return
         }
-        val latest = (doc.getLong("latestVersionCode") ?: 0L).toInt()
-        val minSupported = (doc.getLong("minSupportedVersionCode") ?: 0L).toInt()
         prefs.edit()
-            .putInt(KEY_LATEST, latest)
-            .putInt(KEY_MIN, minSupported)
-            .putString(KEY_MESSAGE, doc.getString("message").orEmpty())
-            .putString(KEY_STORE, doc.getString("storeUrl").orEmpty())
+            .putInt(KEY_LATEST, json.optInt("latestVersionCode", 0))
+            .putInt(KEY_MIN, json.optInt("minSupportedVersionCode", 0))
+            .putString(KEY_MESSAGE, json.optString("message"))
+            .putString(KEY_STORE, json.optString("storeUrl"))
             .putLong(KEY_CHECKED, now)
             .apply()
+    }
+
+    /**
+     * تسجيل الجهاز في `minbar-api` مرّة يومياً (رمز FCM + الإصدار + المواضيع):
+     * يغذّي إحصاءات اللوحة والإرسال الموجَّه، ويحمل تقرير الإصدار الجديد الذي
+     * يطبّق الخادم عليه حرّاس الإعلان الثلاثة.
+     */
+    suspend fun registerDeviceIfDue(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - prefs.getLong(KEY_DEVICE_REGISTERED, 0L) < DAY_MS) return
+        val ok = runCatching {
+            val token = runCatching {
+                com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
+            }.getOrDefault("").orEmpty()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                MinbarApi.registerDevice(app, token.ifBlank { "install:" + installId() }, ReleaseNotes.trimmed())
+            }
+        }.isSuccess
+        if (ok) prefs.edit().putLong(KEY_DEVICE_REGISTERED, now).apply()
+    }
+
+    /** معرّف تثبيت مستقرّ (بديل هوية Firebase المجهولة) — يُولَّد مرّة ويبقى. */
+    fun installId(): String {
+        prefs.getString(KEY_INSTALL_ID, null)?.let { return it }
+        val id = java.util.UUID.randomUUID().toString().replace("-", "")
+        prefs.edit().putString(KEY_INSTALL_ID, id).apply()
+        return id
     }
 
     companion object {
@@ -287,6 +291,8 @@ class AppConfigRepository private constructor(context: Context) {
         private const val PREFS = "minbar_app_config"
         /// آخر نسخة أعلنت عن نفسها من هذا الجهاز — كي لا يتكرّر الإبلاغ.
         private const val KEY_ANNOUNCED = "announced_version_code"
+        private const val KEY_DEVICE_REGISTERED = "device_registered_at_ms"
+        private const val KEY_INSTALL_ID = "install_id"
         private const val KEY_LATEST = "latest_version_code"
         private const val KEY_MIN = "min_supported_version_code"
         private const val KEY_MESSAGE = "message"

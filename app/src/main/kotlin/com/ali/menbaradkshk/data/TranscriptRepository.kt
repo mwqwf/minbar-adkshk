@@ -190,21 +190,24 @@ class TranscriptRepository private constructor(context: Context) {
                 }
             }
             val transcript = try {
-                val document = db.collection(TRANSCRIPTS).document(lessonId).get().await()
-                if (!document.exists()) {
+                // النص من `minbar-api` (`/v1/transcripts/{id}`): 404 = لا نصّ لهذا الدرس.
+                val document = MinbarApi.transcript(lessonId)
+                if (document == null) {
                     null
                 } else {
+                    val images = document.optJSONArray("images")
                     LessonTranscript(
                         lessonId = lessonId,
-                        text = document.getString("text").orEmpty(),
-                        bookTitle = document.getString("bookTitle").orEmpty(),
-                        sourceRef = document.getString("sourceRef").orEmpty(),
-                        imageUrls = (document.get("images") as? List<*>).orEmpty()
-                            .mapNotNull { item ->
-                                (item as? Map<*, *>)?.get("url")?.toString()
+                        text = document.optString("text"),
+                        bookTitle = document.optString("bookTitle"),
+                        sourceRef = document.optString("sourceRef"),
+                        imageUrls = (0 until (images?.length() ?: 0))
+                            .mapNotNull { index ->
+                                val item = images?.opt(index)
+                                (if (item is org.json.JSONObject) item.optString("url") else item?.toString())
                                     ?.takeIf { it.isNotBlank() }
                             },
-                        contributorName = document.getString("contributorName").orEmpty(),
+                        contributorName = document.optString("contributorName"),
                     )
                 }
             } catch (failure: Throwable) {

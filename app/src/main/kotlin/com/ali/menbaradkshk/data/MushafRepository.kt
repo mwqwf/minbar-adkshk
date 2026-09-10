@@ -98,7 +98,9 @@ class MushafRepository private constructor(context: Context) {
         const val PAGE_COUNT = 604
 
         /**
-         * ✅ صور صفحات المصحف الملوّن — **على استضافتنا** في Firebase Storage.
+         * ✅ صور صفحات المصحف الملوّن — **على استضافتنا** في Cloudflare R2
+         * (الدلو نفسه الذي يعتمده تطبيق «مصحفك»، فالمصدر واحد للتطبيقين —
+         * قرار 2026-09-10 بعد توقّف تخزين Firebase).
          *
          * مصدرها ملفّات **مجمع الملك فهد** الرسميّة (حفص ١٤٤١، ورش ١٤٤٢،
          * قالون ١٤٤٣)، وإذنُه المنشور يبيح استعمالها مجّاناً في البرامج
@@ -109,12 +111,22 @@ class MushafRepository private constructor(context: Context) {
          * إلى تخزين المشروع نفسه الذي يستضيف الصوتيات.
          */
         const val IMAGE_BASE =
+            "https://pub-2c2e1dcd92e84a2898820dd38d3e09e6.r2.dev/mushaf/"
+
+        /** المضيف السابق (Firebase Storage) — احتياطٌ يُجرَّب بعد فشل الأوّل. */
+        const val LEGACY_IMAGE_BASE =
             "https://firebasestorage.googleapis.com/v0/b/mxqp-8d1e8.firebasestorage.app/o/quran%2F"
 
         /** رابط صفحة بعينها (1..604) من مصحف رواية. */
         fun pageUrl(riwayaId: String, page: Int): String {
             val number = page.coerceIn(1, PAGE_COUNT).toString().padStart(3, '0')
-            return IMAGE_BASE + riwayaId + "%2F" + number + ".webp?alt=media"
+            return IMAGE_BASE + riwayaId + "/" + number + ".webp"
+        }
+
+        /** الرابط الاحتياطي لنفس الصفحة — يُجرَّب بعد فشل [pageUrl]. */
+        fun legacyPageUrl(riwayaId: String, page: Int): String {
+            val number = page.coerceIn(1, PAGE_COUNT).toString().padStart(3, '0')
+            return LEGACY_IMAGE_BASE + riwayaId + "%2F" + number + ".webp?alt=media"
         }
 
         /// ⚠️ الامتداد `.jz` لا `.gz` — أدوات البناء تفكّ ضغط أصول `.gz`

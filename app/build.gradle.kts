@@ -163,8 +163,12 @@ android {
         // نشاط الخادم) وعند العودة؛ إصلاحات: إشعارات الخادم
         // كانت لا تصل، تجمّد المحطّات الكبيرة، هوية التنزيل الجزئي بالبصمة،
         // استهلاك أقل للشبكة.
-        versionCode = 30
-        versionName = "2.7.0"
+        // ٣١ / ٢.٧.١ — «المكتبة في الحزمة»: حزمتا أصول Play (fast-follow) تحملان
+        // صوت المكتبة كلّه، تُنزّلهما Google تلقائياً بعد التثبيت مجاناً، ويسجّلها
+        // البذّار منزَّلةً فوراً فلا يطلبها محرّك التنزيل من R2 — والجديدُ بعد
+        // الإصدار يبقى على مساره المعتاد. (بلا حزم الأصول تبقى النسخة كما كانت.)
+        versionCode = 31
+        versionName = "2.7.1"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

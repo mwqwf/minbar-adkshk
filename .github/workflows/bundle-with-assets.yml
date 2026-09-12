@@ -1,6 +1,15 @@
 # 🎁 بناء حزمة المتجر مع حزمتي الأصول (المكتبة كاملة دون إنترنت) — على شبكة GitHub لا شبكة المالك.
-# التوقيع: إن وُجد السرّان UPLOAD_KEYSTORE_B64 وUPLOAD_KEYSTORE_PROPS (قرار المالك وحده) تُوقَّع الحزمة،
-# وإلا تُرفع غير موقّعة ويوقّعها المالك محلياً بـjarsigner (بلا تنزيل الأصول).
+#
+# 🔐 **الشيفرة عامّة والأسرار خاصّة** — وهذا مضمون بأربعة حواجز:
+#   ١) المحفّز `workflow_dispatch` وحدَه: لا يشغّله إلا من له صلاحية الكتابة.
+#      ⛔ ولا يُضاف هنا `pull_request_target` ولا `issue_comment` أبداً — هما البابان
+#         اللذان يسرّبان أسرار المستودعات العامّة (يشغّلان شيفرة الغريب بأسرارنا).
+#   ٢) طلبات الدمج من النسخ الخارجية (forks) **لا تُمنح الأسرار** أصلاً في GitHub.
+#   ٣) الإجراءات الخارجية مثبَّتة ببصمة الإيداع (SHA) لا بوسمٍ متحرّك، فلا يُبدَّل
+#      محتواها من تحتنا.
+#   ٤) صلاحية الرمز المدمج `contents: read` فقط، والمفتاح يُكتب في مجلّد مؤقّت
+#      خارج مساحة العمل (فلا يدخل أيّ حزمة) ويُمحى في كل الأحوال بعد البناء،
+#      ويُمرَّر بمتغيّرات بيئة لا بملفّ إعدادات.
 name: bundle-with-assets
 on:
   workflow_dispatch:
@@ -8,6 +17,8 @@ on:
       core_cap_mb:
         description: "سقف حزمة core بالميغابايت (≤ 500)"
         default: "480"
+permissions:
+  contents: read
 jobs:
   bundle:
     runs-on: ubuntu-latest
@@ -31,31 +42,44 @@ jobs:
         if: env.HAS_KS == 'true'
         env:
           KS: ${{ secrets.UPLOAD_KEYSTORE_B64 }}
-          PROPS: ${{ secrets.UPLOAD_KEYSTORE_PROPS }}
         run: |
-          echo "$KS" | base64 -d > upload.jks
-          printf '%s\n' "$PROPS" > signing.properties
+          umask 077
+          printf '%s' "$KS" | base64 -d > "$RUNNER_TEMP/upload.jks"
+          test -s "$RUNNER_TEMP/upload.jks"
       - name: بناء الحزمة
-        run: chmod +x gradlew && ./gradlew :app:bundleRelease --no-daemon $([ "$HAS_KS" = "true" ] || echo -PallowUnsigned=true)
+        env:
+          MINBAR_SIGNING_STORE_FILE: ${{ runner.temp }}/upload.jks
+          MINBAR_SIGNING_STORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
+          MINBAR_SIGNING_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+          MINBAR_SIGNING_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
+        run: chmod +x gradlew && ./gradlew :app:bundleRelease --no-daemon
       - name: تحقّق
         run: |
           ls -la app/build/outputs/bundle/release/
-          unzip -l app/build/outputs/bundle/release/*.aab | grep -c "serving/" || true
-      - uses: actions/upload-artifact@v4
-        with:
-          name: minbar-aab-with-assets
-          path: app/build/outputs/bundle/release/*.aab
-          retention-days: 7
-      # 🚀 الرفع إلى Play من هنا مباشرةً — فلا تعبر الـ٦١٠ م.ب شبكةَ المالك مرّتين
+          echo "عدد ملفّات الصوت داخل الحزمة:"
+          unzip -l app/build/outputs/bundle/release/*.aab | grep -c "serving/.*\.ogg" || true
+          echo "المعالجات:"
+          unzip -l app/build/outputs/bundle/release/*.aab | grep -oE "lib/[a-z0-9_-]+/" | sort -u
+          echo "التوقيع:"
+          jarsigner -verify app/build/outputs/bundle/release/*.aab | head -1
+      - name: محو المفتاح من العدّاء
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload.jks"
+      # 🚀 النشر إلى Play من هنا مباشرةً — فلا تعبر الـ٦١٠ م.ب شبكةَ المالك مرّتين
       # (تنزيلاً من Actions ورفعاً إلى المتجر). يعمل فقط متى وُجد سرُّ حساب الخدمة
-      # PLAY_SERVICE_ACCOUNT_JSON وكان مأذوناً في Play Console بـ«الإصدار في مسارات
-      # الاختبار». وبدونه تبقى الحزمة أثراً (artifact) يُنزَّل يدوياً.
-      - name: النشر إلى Play (مسار الاختبار الداخلي)
+      # وكان مأذوناً في Play Console بـ«الإصدار في مسارات الاختبار».
+      - name: النشر إلى Play (المسار الداخلي)
         if: env.HAS_PLAY == 'true' && env.HAS_KS == 'true'
-        uses: r0adkll/upload-google-play@v1
+        uses: r0adkll/upload-google-play@935ef9c68bb393a8e6116b1575626a7f5be3a7fb # v1.1.3
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: com.ali.menbaradkshk
           releaseFiles: app/build/outputs/bundle/release/*.aab
           track: internal
           status: completed
+      # الأثر يبقى احتياطاً (٧ أيام) لمن أراد الرفع يدوياً — ٦١٠ م.ب على شبكة ضعيفة.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minbar-aab-with-assets
+          path: app/build/outputs/bundle/release/*.aab
+          retention-days: 7

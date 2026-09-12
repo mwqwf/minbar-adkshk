@@ -19,3 +19,8 @@
 
 # Local test artifacts
 /artifacts/
+
+# أصول حزم Play تُملأ في CI (≈600 م.ب) — لا تُودَع
+/core_pack/src/main/assets/serving/*.ogg
+/rest_pack/src/main/assets/serving/*.ogg
+/asset-packs/manifest.json

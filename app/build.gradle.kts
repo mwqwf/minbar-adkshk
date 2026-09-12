@@ -35,8 +35,14 @@ val hasReleaseSigning = listOf(
 // وحدها. الحارس أسفل كتلة `android` يوقف البناء إن عاد أحد فأضاف لاحقة.
 val canonicalAppLabel = "منبر ادكصهك"
 
+// 🎁 حزم الأصول المملوءة فقط (انظر settings.gradle.kts)
+val filledAssetPacks = listOf("core_pack", "rest_pack").filter { pack ->
+    rootProject.file("$pack/src/main/assets/serving").listFiles()?.any { it.name.endsWith(".ogg") } == true
+}.map { ":$it" }
+
 android {
     namespace = "com.ali.menbaradkshk"
+    assetPacks += filledAssetPacks
     compileSdk = 36
 
     defaultConfig {
@@ -266,6 +272,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.navigation:navigation-compose:2.9.8")
     implementation("androidx.work:work-runtime-ktx:2.11.2")
+    // 🎁 قراءة موضع حزم أصول Play (fast-follow) — بلا Firebase ولا خدمات أخرى.
+    implementation("com.google.android.play:asset-delivery-ktx:2.3.0")
 
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-text-google-fonts")

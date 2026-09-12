@@ -205,6 +205,8 @@ class ContentRepository private constructor(context: Context) {
             setDeleteMark(now - DELETE_MARK_BACKOFF_MS)
             // تنظيف الملفات اليتيمة لدروس أُزيلت من الخادم.
             store.pruneDownloads(lessons.map(Lesson::id).toSet())
+            // 🎁 حزم أصول Play: ما وصل منها يُسجَّل منزَّلاً قبل أن يطلبه المحرّك من R2.
+            runCatching { AssetPackSeeder.seed(appContext, lessons) }
             _state.value = ContentState(
                 categories = categories,
                 subcategories = subcategories,
@@ -492,6 +494,8 @@ class ContentRepository private constructor(context: Context) {
             saveMarks(server)
             setDeleteMark(now - DELETE_MARK_BACKOFF_MS)
             store.pruneDownloads(lessons.map(Lesson::id).toSet())
+            // 🎁 حزم أصول Play: ما وصل منها يُسجَّل منزَّلاً قبل أن يطلبه المحرّك من R2.
+            runCatching { AssetPackSeeder.seed(appContext, lessons) }
             _state.value = ContentState(
                 categories = categories,
                 subcategories = subcategories,

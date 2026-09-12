@@ -1,0 +1,40 @@
+# 🎁 بناء حزمة المتجر مع حزمتي الأصول (المكتبة كاملة دون إنترنت) — على شبكة GitHub لا شبكة المالك.
+# التوقيع: إن وُجد السرّان UPLOAD_KEYSTORE_B64 وUPLOAD_KEYSTORE_PROPS (قرار المالك وحده) تُوقَّع الحزمة،
+# وإلا تُرفع غير موقّعة ويوقّعها المالك محلياً بـjarsigner (بلا تنزيل الأصول).
+name: bundle-with-assets
+on:
+  workflow_dispatch:
+    inputs:
+      core_cap_mb:
+        description: "سقف حزمة core بالميغابايت (≤ 500)"
+        default: "480"
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - uses: gradle/actions/setup-gradle@v4
+      - name: خطّة الحزمتين من الكتالوج
+        run: CORE_CAP_MB=${{ inputs.core_cap_mb }} python3 tools/assetpack/plan.py
+      - name: تنزيل الصوت من R2 (خروج مجاني)
+        run: python3 tools/assetpack/fetch.py
+      - name: مفتاح التوقيع (إن وُجد)
+        if: ${{ secrets.UPLOAD_KEYSTORE_B64 != '' }}
+        env: { KS: ${{ secrets.UPLOAD_KEYSTORE_B64 }} }
+        run: |
+          echo "$KS" | base64 -d > upload.jks
+          printf '%s\n' "${{ secrets.UPLOAD_KEYSTORE_PROPS }}" > signing.properties
+      - name: بناء الحزمة
+        run: ./gradlew :app:bundleRelease --no-daemon
+      - name: تحقّق
+        run: |
+          ls -la app/build/outputs/bundle/release/
+          unzip -l app/build/outputs/bundle/release/*.aab | grep -c "serving/" || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minbar-aab-with-assets
+          path: app/build/outputs/bundle/release/*.aab
+          retention-days: 7

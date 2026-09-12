@@ -14,6 +14,7 @@ jobs:
     timeout-minutes: 90
     env:
       HAS_KS: ${{ secrets.UPLOAD_KEYSTORE_B64 != '' }}
+      HAS_PLAY: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON != '' }}
       CORE_CAP_MB: ${{ inputs.core_cap_mb || '480' }}
     steps:
       - uses: actions/checkout@v4
@@ -45,3 +46,16 @@ jobs:
           name: minbar-aab-with-assets
           path: app/build/outputs/bundle/release/*.aab
           retention-days: 7
+      # 🚀 الرفع إلى Play من هنا مباشرةً — فلا تعبر الـ٦١٠ م.ب شبكةَ المالك مرّتين
+      # (تنزيلاً من Actions ورفعاً إلى المتجر). يعمل فقط متى وُجد سرُّ حساب الخدمة
+      # PLAY_SERVICE_ACCOUNT_JSON وكان مأذوناً في Play Console بـ«الإصدار في مسارات
+      # الاختبار». وبدونه تبقى الحزمة أثراً (artifact) يُنزَّل يدوياً.
+      - name: النشر إلى Play (مسار الاختبار الداخلي)
+        if: env.HAS_PLAY == 'true' && env.HAS_KS == 'true'
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.ali.menbaradkshk
+          releaseFiles: app/build/outputs/bundle/release/*.aab
+          track: internal
+          status: completed

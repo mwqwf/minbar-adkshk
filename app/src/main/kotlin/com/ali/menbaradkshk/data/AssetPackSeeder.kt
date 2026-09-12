@@ -56,6 +56,31 @@ object AssetPackSeeder {
         seeded.size
     }
 
+    /** حجم ما وصل من حزم المتجر على القرص (لعرضه في شاشة التنزيلات). */
+    fun bundledBytes(context: Context): Long = runCatching {
+        val manager = AssetPackManagerFactory.getInstance(context.applicationContext)
+        PACKS.sumOf { pack ->
+            val dir = manager.getPackLocation(pack)?.let { File(it.assetsPath(), "serving") }
+            dir?.listFiles()?.sumOf { it.length() } ?: 0L
+        }
+    }.getOrDefault(0L)
+
+    /**
+     * إزالة المكتبة المدمجة لتحرير المساحة — الطريق الوحيد الصحيح لحذف ملفّات
+     * الحزم (حذفُها ملفّاً ملفّاً يُفسدها ولا يعلم به المتجر). وما بعدها يعود
+     * الصوت من R2 بمحرّك التنزيل كما كان.
+     */
+    fun removeAll(context: Context) {
+        runCatching {
+            val manager = AssetPackManagerFactory.getInstance(context.applicationContext)
+            PACKS.forEach { manager.removePack(it) }
+            val store = LocalStore.get(context)
+            val bundled = store.downloads().keys.filter { store.isBundledDownload(it) }
+            bundled.forEach { store.removeDownload(it) }
+            Log.i(TAG, "removed asset packs and ${bundled.size} index entries")
+        }.onFailure { Log.d(TAG, "removeAll failed: $it") }
+    }
+
     /** يطلب إحضار الحزم إن لم تصل بعد (fast-follow تصل وحدها؛ هذا احتياط بعد مسح البيانات). */
     fun ensureFetched(context: Context) {
         runCatching {

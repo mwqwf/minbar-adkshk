@@ -580,7 +580,12 @@ class DownloadRepository private constructor(context: Context) {
     }
 
     suspend fun delete(lessonId: String) = withContext(Dispatchers.IO) {
-        store.localAudioPath(lessonId)?.let { File(it).delete() }
+        // ⛔ ما جاء من حزمة أصول المتجر لا يُحذف ملفُّه: Play يملكه، وحذفُه بأيدينا
+        // يُفسد الحزمة صامتاً ولا يستعيدها المتجر. يُسقط قيدُه من الفهرس وحسب،
+        // وتحريرُ مساحته إنما يكون بإزالة الحزمة كلّها من إعدادات التنزيلات.
+        if (!store.isBundledDownload(lessonId)) {
+            store.localAudioPath(lessonId)?.let { File(it).delete() }
+        }
         store.removeDownload(lessonId)
         // حذفٌ بيد المستخدم إشارة سلبية دائمة للتنزيل التلقائي وحده.
         store.markUserDeletedDownload(lessonId)

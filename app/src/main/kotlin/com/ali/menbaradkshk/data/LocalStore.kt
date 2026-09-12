@@ -262,7 +262,10 @@ class LocalStore private constructor(context: Context) {
         }
         val orphans = downloads().filterKeys { it !in validIds }
         if (orphans.isEmpty()) return 0
-        orphans.values.forEach { runCatching { File(it).delete() } }
+        // ⛔ ملفّات حزم المتجر تُستثنى من الحذف: نُسقط قيدها من الفهرس فقط.
+        orphans.forEach { (id, path) ->
+            if (!isBundledDownload(id)) runCatching { File(path).delete() }
+        }
         // ⚠️ كتابة **واحدة** لا واحدة لكل يتيم: كل كتابة تُعيد تسلسل الملفّ
         // كلّه وترفع `revision` فتُبطل كل `remember(revision, …)` في الواجهة.
         val json = jsonObject(KEY_DOWNLOADS)
@@ -300,6 +303,12 @@ class LocalStore private constructor(context: Context) {
 
     fun downloadMeta(lessonId: String): JSONObject? =
         jsonObject(KEY_DOWNLOADS_META).optJSONObject(lessonId)
+
+    /// ⛔ هل مصدرُ هذا التنزيل حزمةَ أصولٍ من المتجر؟ ملفّاتها ليست ملكنا:
+    /// يديرها Play، وحذفُها بأيدينا يُفسد الحزمة ولا يعرف المتجر أنها نقصت.
+    /// (الإزالة الصحيحة `AssetPackManager.removePack` وحدها.)
+    fun isBundledDownload(lessonId: String): Boolean =
+        downloadMeta(lessonId)?.optString("src") == "bundle"
 
     fun downloadSha(lessonId: String): String =
         downloadMeta(lessonId)?.optString("sha").orEmpty()

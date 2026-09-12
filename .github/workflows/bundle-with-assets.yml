@@ -55,13 +55,22 @@ jobs:
         run: chmod +x gradlew && ./gradlew :app:bundleRelease --no-daemon
       - name: تحقّق
         run: |
-          ls -la app/build/outputs/bundle/release/
-          echo "عدد ملفّات الصوت داخل الحزمة:"
-          unzip -l app/build/outputs/bundle/release/*.aab | grep -c "serving/.*\.ogg" || true
-          echo "المعالجات:"
-          unzip -l app/build/outputs/bundle/release/*.aab | grep -oE "lib/[a-z0-9_-]+/" | sort -u
-          echo "التوقيع:"
-          jarsigner -verify app/build/outputs/bundle/release/*.aab | head -1
+          set +e
+          AAB=$(ls app/build/outputs/bundle/release/*.aab | head -1)
+          ls -la "$AAB"
+          echo "::group::جرد الحزمة"
+          unzip -l "$AAB" > /tmp/list.txt
+          echo "ملفّات الصوت: $(grep -c 'serving/.*\.ogg' /tmp/list.txt)"
+          echo "حزم الأصول: $(grep -oE '^\s+[0-9]+\s+[0-9-]+\s+[0-9:]+\s+(core|rest)/' /tmp/list.txt | grep -oE '(core|rest)/' | sort -u | tr '
+' ' ')"
+          echo "المعالجات: $(grep -oE 'lib/[a-z0-9_-]+/' /tmp/list.txt | sort -u | tr '
+' ' ')"
+          echo "::endgroup::"
+          echo "== التوقيع =="
+          jarsigner -verify "$AAB" > /tmp/js.txt 2>&1
+          grep -m1 -E 'jar verified|jar is unsigned|no manifest' /tmp/js.txt || tail -3 /tmp/js.txt
+          keytool -printcert -jarfile "$AAB" 2>/dev/null | grep -m1 'SHA1:'
+          grep -qm1 'jar verified' /tmp/js.txt || { echo '⛔ الحزمة غير موقّعة — أوقف'; exit 1; }
       - name: محو المفتاح من العدّاء
         if: always()
         run: rm -f "$RUNNER_TEMP/upload.jks"

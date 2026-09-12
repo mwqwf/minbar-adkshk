@@ -151,8 +151,14 @@ android {
         // من R2 بمرآة خارج Cloudflare تُجرَّب تلقائياً عند الحجب (بثاً وتنزيلاً)؛
         // صور المصحف من دلو «مصحفك» على R2 بمضيف احتياطي؛ فهرس القراء والنصوص
         // موحَّد مع «مصحفك» (ست روايات)؛ تسجيل الجهاز يومياً بدل reportAppVersion.
-        versionCode = 29
-        versionName = "2.6.0"
+        // ٣٠ / ٢.٧.٠ — «الاستقلال التام عن Firebase»: لا مكتبات Google في
+        // التطبيق (أُزيلت FCM وApp Check وتهيئة Firebase)؛ الإشعارات والمحتوى
+        // بنبضٍ تكيّفي خفيف (ملف ≤1 ك.ب من CDN، من 30 دقيقة إلى 12 ساعة بحسب
+        // نشاط الخادم) وعند العودة؛ إصلاحات: إشعارات الخادم
+        // كانت لا تصل، تجمّد المحطّات الكبيرة، هوية التنزيل الجزئي بالبصمة،
+        // استهلاك أقل للشبكة.
+        versionCode = 30
+        versionName = "2.7.0"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -204,7 +210,7 @@ android {
         buildConfig = true
     }
     // التطبيق عربيّ حرفيّاً (كل نصوصه في الكود)، لكن مكتبات AndroidX/Compose/
-    // media3/Firebase تشحن ترجماتها بـ85+ لغة تصير أقساماً لغويّة في الحزمة.
+    // media3 تشحن ترجماتها بـ85+ لغة تصير أقساماً لغويّة في الحزمة.
     // الإبقاء على العربيّة + الافتراضيّة يقلّص الحزمة دون أي أثر على الواجهة.
     androidResources {
         localeFilters += listOf("ar")
@@ -284,14 +290,10 @@ dependencies {
     // يقرأ اتجاه EXIF بنفسه، بلا إضافة أي بايت جديد إلى الحزمة النهائية.
     implementation("androidx.exifinterface:exifinterface:1.4.2")
 
-    val firebaseBom = platform("com.google.firebase:firebase-bom:34.16.0")
-    implementation(firebaseBom)
-    implementation("com.google.firebase:firebase-messaging")
-    implementation("com.google.firebase:firebase-appcheck-playintegrity")
-    debugImplementation("com.google.firebase:firebase-appcheck-debug")
+    // ⛔ لا Firebase ولا مكتبات Google Play Services منذ ٣٠ / ٢.٧.٠ (قرار
+    // المالك 2026-09-12): الإشعارات باستطلاع خفيف من minbar-api.
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
 
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 

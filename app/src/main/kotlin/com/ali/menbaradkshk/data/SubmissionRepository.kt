@@ -11,7 +11,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.shareIn
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -86,12 +85,10 @@ class SubmissionRepository private constructor(context: Context) {
                     appContext, "transcripts", "lesson_${index}_page.jpg", imageUri, imageType,
                 ).optString("key")
             }
-            val fcmToken = if (store.notificationsEnabled()) {
-                runCatching { com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await() }
-                    .getOrDefault("")
-            } else {
-                ""
-            }
+            // بلا Firebase: مفتاح `fcmToken` يحمل معرّف التثبيت (الخادم يربط به
+            // قرار المساهمة، ويصل القرار بالاستطلاع لا بالدفع). فارغ لمن أوقف
+            // الإشعارات كما كان.
+            val fcmToken = if (store.notificationsEnabled()) "install:" + AppConfigRepository.get(appContext).installId() else ""
             val payload = JSONObject()
                 .put("id", id)
                 .put("submitterName", draft.submitterName.trim())

@@ -271,6 +271,21 @@ class LocalStore private constructor(context: Context) {
         return orphans.size
     }
 
+    /// 🎁 بذر دفعة من حزم أصول Play: كتابة واحدة للفهرس وواحدة للميتا (لا
+    /// نبضة لكل درس)، والمصدر `bundle` محصَّن من الإخلاء التلقائي كاليدوي.
+    fun seedBundledDownloads(entries: Map<String, Triple<String, String, Long>>) {
+        if (entries.isEmpty()) return
+        val index = jsonObject(KEY_DOWNLOADS)
+        val meta = jsonObject(KEY_DOWNLOADS_META)
+        val at = System.currentTimeMillis()
+        entries.forEach { (id, e) ->
+            index.put(id, e.first)
+            meta.put(id, JSONObject().put("sha", e.second).put("src", "bundle").put("at", at).put("size", e.third))
+        }
+        writeQuiet { putString(KEY_DOWNLOADS_META, meta.toString()) }
+        putJson(KEY_DOWNLOADS, index)
+    }
+
     fun removeDownload(lessonId: String) {
         val json = jsonObject(KEY_DOWNLOADS)
         json.remove(lessonId)
@@ -886,6 +901,14 @@ class LocalStore private constructor(context: Context) {
     fun notificationLastSeenMs(): Long = long(KEY_NOTIFICATION_SEEN)
     fun setNotificationLastSeenMs(value: Long) = write { putLong(KEY_NOTIFICATION_SEEN, value) }
     fun submissionsLastSeenMs(): Long = long(KEY_SUBMISSIONS_SEEN)
+    /// 💓 النبض التكيّفي (بديل FCM): لحظة آخر نبضة، وأحدث إشعار أُشعر به،
+    /// وآخر علامة محتوى نُبض لها — لا تُبطل `revision` فلا واجهة تُعاد لأجلها.
+    fun lastPulseMs(): Long = long(KEY_LAST_PULSE)
+    fun setLastPulseMs(value: Long) = writeQuiet { putLong(KEY_LAST_PULSE, value) }
+    fun lastSeenNotifMs(): Long = long(KEY_LAST_SEEN_NOTIF)
+    fun setLastSeenNotifMs(value: Long) = writeQuiet { putLong(KEY_LAST_SEEN_NOTIF, value) }
+    fun lastPulseContentMs(): Long = long(KEY_LAST_PULSE_CONTENT)
+    fun setLastPulseContentMs(value: Long) = writeQuiet { putLong(KEY_LAST_PULSE_CONTENT, value) }
     fun setSubmissionsLastSeenMs(value: Long) = write { putLong(KEY_SUBMISSIONS_SEEN, value) }
     fun dismissedNotificationIds(): List<String> = stringList(KEY_DISMISSED_NOTIFICATIONS)
     fun dismissNotification(id: String) {
@@ -1514,6 +1537,9 @@ class LocalStore private constructor(context: Context) {
         const val KEY_CONTINUE_REMINDER = "pref_continue_reminder"
         const val KEY_ANALYTICS = "analytics_event_counts"
         const val KEY_NOTIFICATION_SEEN = "notif_last_seen_ms"
+        const val KEY_LAST_PULSE = "pulse_last_ms"
+        const val KEY_LAST_SEEN_NOTIF = "pulse_last_seen_notif_ms"
+        const val KEY_LAST_PULSE_CONTENT = "pulse_last_content_ms"
         const val KEY_SUBMISSIONS_SEEN = "my_subs_seen_ms"
         const val KEY_NOTIFICATIONS = "notif_enabled"
         const val KEY_DISMISSED_NOTIFICATIONS = "notif_dismissed"

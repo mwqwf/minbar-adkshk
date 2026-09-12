@@ -16,11 +16,9 @@ import com.ali.menbaradkshk.data.TranscriptDraft
 import com.ali.menbaradkshk.data.TranscriptRepository
 import com.ali.menbaradkshk.media.PlaybackController
 import com.ali.menbaradkshk.notification.BackgroundScheduler
-import com.ali.menbaradkshk.notification.MinbarMessagingService
 import com.ali.menbaradkshk.util.AudioMerger
 import com.ali.menbaradkshk.util.AudioTranscodeMerger
 import com.ali.menbaradkshk.util.Mp3FormatException
-import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -29,7 +27,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -891,12 +888,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 _notificationsSeenBefore.value = store.notificationLastSeenMs()
                 store.setNotificationLastSeenMs(System.currentTimeMillis())
             }
-            Route.MySubmissions -> {
-                store.setSubmissionsLastSeenMs(System.currentTimeMillis())
-                // فرصة تصحيح الرمز: من تبدّل رمزه بين الإرسال والحسم يظلّ
-                // إشعار النتيجة يذهب إلى رمز ميت ما لم نُحدّثه من هنا.
-                if (store.notificationsEnabled()) MinbarMessagingService.refreshPendingToken()
-            }
+            Route.MySubmissions -> store.setSubmissionsLastSeenMs(System.currentTimeMillis())
             is Route.Category -> store.incrementCategoryVisit(route.id)
             is Route.Subcategory -> store.incrementSubcategoryVisit(route.id)
             else -> Unit
@@ -949,6 +941,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val segments = uri.pathSegments.orEmpty()
         if (host == "my-submissions" || uri.path?.contains("my-submissions") == true) {
             open(Route.MySubmissions)
+            return
+        }
+        // وجهة إشعارٍ عامّ بلا هدف بعينه (`minbar://notifications`): شاشة الإشعارات.
+        if (host == "notifications") {
+            open(Route.Notifications)
             return
         }
         // وجهة تذكير الأذكار: `minbar://adhkar/<القسم>` تفتح القسم مباشرةً،
@@ -1015,66 +1012,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         store.toggleFavorite(id)
     }
 
+    /// المتابعة محلّية بحتة منذ الاستقلال عن Firebase: لا اشتراك خادميّ يفشل
+    /// بصمت — عامل الاستطلاع يصفّي جديد الأقسام بقائمة المتابعة على الجهاز،
+    /// فما تُظهره الواجهة «متابَعاً» هو بعينه ما يصل إشعاره.
     fun toggleFollow(id: String) {
-        val wasFollowing = store.isFollowingSubcategory(id)
         store.toggleFollowSubcategory(id)
-        viewModelScope.launch {
-            runCatching {
-                if (wasFollowing) {
-                    FirebaseMessaging.getInstance().unsubscribeFromTopic("sec_$id").await()
-                } else if (store.notificationsEnabled()) {
-                    FirebaseMessaging.getInstance().subscribeToTopic("sec_$id").await()
-                }
-            }.onFailure {
-                // فشل FCM كان صامتاً: الواجهة تُظهر «متابِعاً» بينما الاشتراك
-                // لم يتم قط فلا تصل إشعارات القسم أبداً. نعكس الحالة ونخبر.
-                store.toggleFollowSubcategory(id)
-                showMessage("تعذّر تحديث المتابعة — تحقّق من الاتصال وحاول مجدداً.")
-            }
-        }
     }
 
+    /// المفتاح محلّي كذلك: عامل الاستطلاع يقرؤه عند كل دورة (وتذكير التحديث
+    /// يمرّ غير مشروط به كما كان).
     fun setNotificationsEnabled(enabled: Boolean) {
         store.setNotificationsEnabled(enabled)
         BackgroundScheduler.scheduleAll(getApplication())
-        viewModelScope.launch {
-            runCatching {
-                if (enabled) {
-                    FirebaseMessaging.getInstance().subscribeToTopic("content").await()
-                    store.followedSubcategories().forEach {
-                        FirebaseMessaging.getInstance().subscribeToTopic("sec_$it").await()
-                    }
-                } else {
-                    FirebaseMessaging.getInstance().unsubscribeFromTopic("content").await()
-                    store.followedSubcategories().forEach {
-                        FirebaseMessaging.getInstance().unsubscribeFromTopic("sec_$it").await()
-                    }
-                }
-                // إشعارات نتيجة المساهمة تُرسل إلى رمز الجهاز مباشرة لا إلى
-                // موضوع، فإلغاء الاشتراك وحده لا يوقفها: نمحو الرمز عند
-                // الإيقاف ونعيد كتابته عند التفعيل (وبه يُصلَح الرمز الفارغ
-                // لمن ساهم والإشعارات موقوفة).
-                if (enabled) MinbarMessagingService.refreshPendingToken()
-                else MinbarMessagingService.refreshPendingToken("")
-            }.onFailure {
-                store.setNotificationsEnabled(!enabled)
-                showMessage("تعذّر تحديث الإشعارات — تحقّق من الاتصال وحاول مجدداً.")
-            }
-        }
-    }
-
-    /// يعيد بناء اشتراكات مواضيع الأقسام المتابَعة — المتابعة محلّية تعود مع
-    /// النسخة الاحتياطية، أمّا الاشتراك فخادميّ لا تحمله النسخة، فكان
-    /// المستخدم يرى نفسه «متابِعاً» ولا يصله من القسم شيء.
-    fun resubscribeFollowedTopics() {
-        if (!store.notificationsEnabled()) return
-        viewModelScope.launch {
-            runCatching {
-                store.followedSubcategories().forEach {
-                    FirebaseMessaging.getInstance().subscribeToTopic("sec_$it").await()
-                }
-            }
-        }
     }
 
     fun setContinueReminderEnabled(enabled: Boolean) {
@@ -1639,9 +1588,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 restored < 0 -> showMessage("الملف ليس نسخة احتياطية صالحة للتطبيق.")
                 else -> {
                     content.refreshPersonalization()
-                    // المتابعات تعود بالاستعادة، أمّا اشتراكات مواضيعها فلا:
-                    // كان المستخدم يرى نفسه «متابِعاً» ولا يصله شيء منها.
-                    resubscribeFollowedTopics()
+                    // المتابعات تعود بالاستعادة، والإشعارات تُصفّى بها محلّياً —
+                    // لا اشتراك خادميّ يلزم إعادته.
                     // «عنصران»/«5 عناصر» لا «5 عنصراً» — بقاعدة الجمع الواحدة.
                     val label = com.ali.menbaradkshk.util.arabicCountLabel(
                         restored, "عنصر واحد", "عنصران", "عناصر", "عنصراً",

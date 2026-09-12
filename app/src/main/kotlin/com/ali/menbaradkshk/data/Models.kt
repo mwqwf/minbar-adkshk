@@ -1,6 +1,5 @@
 package com.ali.menbaradkshk.data
 
-import com.google.firebase.Timestamp
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Date
@@ -27,7 +26,6 @@ internal fun Any?.longValue(): Long = when (this) {
 
 internal fun Any?.timeMillis(): Long = when (this) {
     null -> 0L
-    is Timestamp -> toDate().time
     is Date -> time
     is Number -> toLong()
     is String -> runCatching { java.time.Instant.parse(this).toEpochMilli() }.getOrDefault(0L)

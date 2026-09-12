@@ -2,7 +2,6 @@ package com.ali.menbaradkshk.data
 
 import android.content.Context
 import com.ali.menbaradkshk.BuildConfig
-import kotlinx.coroutines.tasks.await
 
 /**
  * 🔔 تذكير التحديث.
@@ -255,7 +254,7 @@ class AppConfigRepository private constructor(context: Context) {
     }
 
     /**
-     * تسجيل الجهاز في `minbar-api` مرّة يومياً (رمز FCM + الإصدار + المواضيع):
+     * تسجيل الجهاز في `minbar-api` مرّة يومياً (معرّف التثبيت + الإصدار + المواضيع):
      * يغذّي إحصاءات اللوحة والإرسال الموجَّه، ويحمل تقرير الإصدار الجديد الذي
      * يطبّق الخادم عليه حرّاس الإعلان الثلاثة.
      */
@@ -263,17 +262,15 @@ class AppConfigRepository private constructor(context: Context) {
         val now = System.currentTimeMillis()
         if (!force && now - prefs.getLong(KEY_DEVICE_REGISTERED, 0L) < DAY_MS) return
         val ok = runCatching {
-            val token = runCatching {
-                com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
-            }.getOrDefault("").orEmpty()
+            // لا رمز دفع بعد الاستقلال عن Firebase: هوية الجهاز معرّف التثبيت وحده.
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                MinbarApi.registerDevice(app, token.ifBlank { "install:" + installId() }, ReleaseNotes.trimmed())
+                MinbarApi.registerDevice(app, "install:" + installId(), ReleaseNotes.trimmed())
             }
         }.isSuccess
         if (ok) prefs.edit().putLong(KEY_DEVICE_REGISTERED, now).apply()
     }
 
-    /** معرّف تثبيت مستقرّ (بديل هوية Firebase المجهولة) — يُولَّد مرّة ويبقى. */
+    /** معرّف تثبيت مستقرّ (هوية الجهاز الوحيدة لدى الخادم) — يُولَّد مرّة ويبقى. */
     fun installId(): String {
         prefs.getString(KEY_INSTALL_ID, null)?.let { return it }
         val id = java.util.UUID.randomUUID().toString().replace("-", "")

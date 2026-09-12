@@ -21,7 +21,8 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import com.ali.menbaradkshk.notification.MinbarMessagingService
+import com.ali.menbaradkshk.notification.BackgroundScheduler
+import com.ali.menbaradkshk.notification.NotificationPoster
 import com.ali.menbaradkshk.ui.AppViewModel
 import com.ali.menbaradkshk.ui.MinbarApp
 import com.ali.menbaradkshk.ui.MinbarTheme
@@ -45,10 +46,6 @@ class MainActivity : ComponentActivity() {
         // على targetSdk 35+ العرض حتى الحافة مفروض من النظام أصلاً، فيكفي أن
         // نُخبر النافذة بألّا تُقلّم المحتوى، ثم نضبط تباين أيقونات الشريطين.
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        // 🔔 تصفية الاشتراكات المعلّقة مرّة عند أوّل عودة: متابعةٌ سُجّلت
-        // محلّياً (من شاشة الترحيب خاصّة) وقد يفشل اشتراك FCM لها لضعف
-        // الشبكة — الإعادة لا-عمل لمن اشتراكه سليم، فلا تُكرَّر مع كل عودة.
-        var resubscribedOnce = false
         lifecycle.addObserver(
             LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
@@ -58,10 +55,9 @@ class MainActivity : ComponentActivity() {
                     // فكان صاحبه لا يرى تذكيراً أبداً بعد أوّل تشغيل.
                     // (القراءة الشبكيّة نفسها تبقى محكومة بخانق الست ساعات.)
                     viewModel.checkForUpdate()
-                    if (!resubscribedOnce) {
-                        resubscribedOnce = true
-                        viewModel.resubscribeFollowedTopics()
-                    }
+                    // 💓 نبضة فوريّة إن مضى ربع ساعة على آخرها — بدل دفع FCM الذي
+                    // أُزيل مع Firebase (ملفٌ واحد ≤ 1 ك.ب من CDN، وبقيد اتصال).
+                    BackgroundScheduler.pulseIfStale(applicationContext)
                 }
             },
         )
@@ -167,13 +163,10 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * وجهة النيّة: `intent.data` أولاً (الروابط العميقة وإشعارات المقدّمة
-     * التي يبنيها MinbarMessagingService)، ثم **extras**.
-     *
-     * الخادم يرسل `notification` + `data` معاً، فحين يكون التطبيق في
-     * الخلفية يرسم النظام الإشعار بنفسه ويفتح هذا النشاط بحمولة الـ`data`
-     * داخل extras لا في `intent.data` — فكان النقر يفتح الرئيسية دائماً.
-     * منطق «الحمولة ← وجهة» واحد ومشترك في `MinbarMessagingService`.
+     * وجهة النيّة: `intent.data` أولاً (الروابط العميقة والإشعارات المحلّية
+     * التي يبنيها `NotificationPoster`)، ثم **extras** — حمولةُ `data` نصّية
+     * في extras (إرثُ إشعارات FCM القديمة، وأي نيّة خارجية تحاكيها).
+     * منطق «الحمولة ← وجهة» واحد ومشترك في `NotificationPoster`.
      */
     private fun deepLinkFrom(intent: Intent?): Uri? {
         if (intent == null) return null
@@ -181,7 +174,7 @@ class MainActivity : ComponentActivity() {
         val extras = intent.extras ?: return null
         val payload = buildMap<String, String> {
             for (key in extras.keySet()) {
-                // حمولة FCM كلّها نصوص؛ أي مفتاح غير نصّي يُتجاهل بأمان.
+                // الحمولة كلّها نصوص؛ أي مفتاح غير نصّي يُتجاهل بأمان.
                 val value = runCatching { extras.getString(key) }.getOrNull()
                 if (!value.isNullOrBlank()) put(key, value)
             }
@@ -190,7 +183,7 @@ class MainActivity : ComponentActivity() {
         // 🛒 حمولة «صدر إصدار جديد» حين يرسم النظام إشعارها (التطبيق في
         // الخلفية): النقر يجب أن ينتهي في المتجر لا في الرئيسية. نقفز إليه
         // هنا ولا نُبقي وجهةً داخل التطبيق — والرابط يبقى مخفياً.
-        if (MinbarMessagingService.isUpdate(payload)) {
+        if (NotificationPoster.isUpdate(payload)) {
             com.ali.menbaradkshk.util.StoreRedirectActivity.open(
                 this,
                 payload["storeUrl"].orEmpty(),
@@ -199,8 +192,8 @@ class MainActivity : ComponentActivity() {
         }
         // بشرى اعتماد النص المشروح تفتح الدرس — فيجب أن يسقط كاش «لا نصّ»
         // أوّلاً، وإلا فُتح الدرس على فراغ الأمس (الشرح في المستقبل نفسه).
-        MinbarMessagingService.invalidateTranscriptCache(this, payload)
-        val destination = MinbarMessagingService.destinationFor(payload) ?: return null
+        NotificationPoster.invalidateTranscriptCache(this, payload)
+        val destination = NotificationPoster.destinationFor(payload) ?: return null
         return runCatching { Uri.parse(destination) }.getOrNull()
     }
 

@@ -18,7 +18,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.tasks.await
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -198,9 +197,8 @@ class SupportRepository private constructor(context: Context) {
             MinbarApi.uploadUser(appContext, "support", "${item.id}.m4a", Uri.fromFile(file), "audio/mp4")
                 .optString("key")
         }
-        val fcmToken = runCatching {
-            com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
-        }.getOrDefault("")
+        // بلا Firebase: المفتاح نفسه يحمل معرّف التثبيت (ردّ المطوّر يصل بالاستطلاع).
+        val fcmToken = "install:" + AppConfigRepository.get(appContext).installId()
         val payload = JSONObject().put("threadId", item.threadId)
         item.text.takeIf(String::isNotBlank)?.let { payload.put("text", it) }
         audioKey?.let { payload.put("audioKey", it) }

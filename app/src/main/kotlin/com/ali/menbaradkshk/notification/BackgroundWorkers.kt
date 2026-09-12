@@ -1,24 +1,17 @@
 package com.ali.menbaradkshk.notification
 
-import android.Manifest
-import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Build
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
-import androidx.core.content.ContextCompat
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequest
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import com.ali.menbaradkshk.MainActivity
-import com.ali.menbaradkshk.R
 import com.ali.menbaradkshk.data.AdhkarReminders
 import com.ali.menbaradkshk.data.ContentRepository
 import com.ali.menbaradkshk.data.DownloadRepository
@@ -44,7 +37,7 @@ class ContinueReminderWorker(
             ?: return Result.success()
         val lesson = ContentRepository.get(applicationContext).state.value.lessonById[candidate]
             ?: return Result.success()
-        NotificationPublisher.show(
+        NotificationPoster.show(
             applicationContext,
             id = 1,
             title = "تابع الاستماع",
@@ -81,7 +74,7 @@ class AdhkarReminderWorker(
             "sleep" -> Triple("أذكار النوم", "اختم يومك بأذكار النوم.", "sleep")
             else -> Triple("أذكار الاستيقاظ", "الحمد لله الذي أحيانا بعد ما أماتنا.", "wake")
         }
-        NotificationPublisher.show(
+        NotificationPoster.show(
             applicationContext,
             id = ADHKAR_NOTIFICATION_IDS[kind] ?: 40,
             title = title,
@@ -108,7 +101,7 @@ class WardWorker(
         val store = LocalStore.get(applicationContext)
         if (!store.notificationsEnabled() || !store.wardEnabled()) return Result.success()
         val lesson = ContentRepository.get(applicationContext).dailyWard() ?: return Result.success()
-        NotificationPublisher.show(
+        NotificationPoster.show(
             applicationContext,
             id = 700,
             title = "وِرد اليوم 🌿",
@@ -139,7 +132,7 @@ class QuranWardWorker(
         if (!store.notificationsEnabled() || !store.quranWardEnabled()) return Result.success()
         val remaining = store.quranWardRemaining()
         if (remaining <= 0) return Result.success()
-        NotificationPublisher.show(
+        NotificationPoster.show(
             applicationContext,
             id = 701,
             title = "وِرد المصحف 🕌",
@@ -355,9 +348,9 @@ class UpdateCheckWorker(
         // واحدة، ولا يُرسَل إن كان المستخدم قد صرف شاشة هذه النسخة أصلاً.
         if (!config.shouldNotify(latest)) return Result.success()
         config.markNotified(latest)
-        NotificationPublisher.show(
+        NotificationPoster.show(
             applicationContext,
-            id = MinbarMessagingService.UPDATE_NOTIFICATION_ID,
+            id = NotificationPoster.UPDATE_NOTIFICATION_ID,
             title = "تتوفّر نسخة أحدث من منبر ادكصهك",
             body = message.ifBlank { "حدِّث التطبيق لتصلك المزايا والإصلاحات الجديدة." },
             destination = com.ali.menbaradkshk.data.AppConfigRepository.PLAY_URL,
@@ -368,6 +361,181 @@ class UpdateCheckWorker(
     }
 }
 
+/**
+ * 💓 النبض التكيّفي — بديل FCM بعد الاستقلال التام عن Firebase (2.7.0).
+ *
+ * مصدر النبض ملفٌ صغير على CDN (`pulse.json` ≤ 1 ك.ب، مكاش دقيقة) يكتبه
+ * الخادم عند كل تغيير محتوى أو إشعار — لا يمرّ بالـWorker. احتياطه عند
+ * الحجب: `GET /v1/pulse` على قاعدتَي `MinbarApi`. وفي كل نبضة لا نداء آخر **إلا إن تغيّر شيء**:
+ * - `notifMs` أحدث من آخر ما رأيناه ⇒ خلاصة الإشعارات (العامة، والخاصة لمن
+ *   ساهم أو راسل من قبل) وإشعارٌ محلّي لكل جديد بقواعد التصفية أدناه.
+ * - `contentMs` أحدث من علامتنا ⇒ مزامنة الكتالوج الخفيفة (غير القسرية).
+ *
+ * والإيقاع من حداثة آخر تغيير على الخادم (السلّم في [PulseLadder]):
+ * كل نبضة تعيد جدولة نفسها بتأخير محسوب، وحارسٌ دوري كل 12 ساعة يعيد
+ * إطلاق السلسلة إن قطعها النظام. القيد اتصالٌ فقط — لا شحن ولا واي‑فاي.
+ *
+ * قواعد الإشعارات المحلّية:
+ * - تذكير التحديث **غير مشروط** بمفتاح الإشعارات ويقفز إلى المتجر.
+ * - `sec_<id>`: جديد قسمٍ لا يصل إلا لمتابِعه (المتابعة محلّية على الجهاز).
+ * - بشرى اعتماد النصّ تُفرغ كاش النصّ لحظة وصولها لا لحظة النقر.
+ * - ما فُتح في شاشة الإشعارات لا يُعاد إشعاره، ولا يُغرَق مُثبِّتٌ جديد بشهر.
+ */
+class PulseWorker(
+    context: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result {
+        val store = LocalStore.get(applicationContext)
+        val now = System.currentTimeMillis()
+        store.setLastPulseMs(now)
+        val pulse = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            com.ali.menbaradkshk.data.MinbarApi.pulse()
+        }
+        if (pulse != null) {
+            if (pulse.notifMs > store.lastSeenNotifMs()) {
+                pollNotifications(store, now)
+            }
+            if (pulse.contentMs > store.lastPulseContentMs()) {
+                runCatching { ContentRepository.get(applicationContext).refresh(false) }
+                    .exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
+                store.setLastPulseContentMs(pulse.contentMs)
+            }
+        }
+        // النبضة التالية بحسب حداثة آخر تغيير — وإن تعذّر النبض نفسه فبالحدّ الأقصى.
+        val latestChange = pulse?.let { maxOf(it.contentMs, it.notifMs, it.alertsMs) } ?: 0L
+        BackgroundScheduler.schedulePulseAfter(applicationContext, PulseLadder.delayMsFor(now - latestChange))
+        return Result.success()
+    }
+
+    private suspend fun pollNotifications(store: LocalStore, now: Long) {
+        val enabled = store.notificationsEnabled()
+        val followed = store.followedSubcategories().toSet()
+        // خطّ الأساس: آخر ما أُشعر به، وإلّا آخر ما رُئي في الشاشة، وإلّا
+        // آخر ٢٤ ساعة — فلا يُغرَق مُثبِّتٌ جديد بإشعارات شهرٍ كامل.
+        val baseline = maxOf(store.lastSeenNotifMs(), store.notificationLastSeenMs(), now - DAY_MS)
+        var newest = baseline
+        var posted = 0
+
+        fun handle(item: org.json.JSONObject, private: Boolean) {
+            val createdAt = item.optLong("createdAtMs", 0L)
+            if (createdAt <= baseline) return
+            val data = buildMap {
+                put("type", item.optString("type"))
+                put("route", item.optString("route"))
+                put("lessonId", item.optString("lessonId"))
+                item.optString("refId").takeIf { it.isNotBlank() }?.let { put("refId", it); put("id", it) }
+            }
+            val update = NotificationPoster.isUpdate(data)
+            if (update) {
+                // إشعار «إصدار جديد» يحمل رقمه في معرّفه (`update-<code>`):
+                // من يحمل نسخةً أحدث أو مساوية لا يُنبَّه.
+                val code = item.optString("id").substringAfter("update-", "").toIntOrNull()
+                if (code != null && code <= com.ali.menbaradkshk.BuildConfig.VERSION_CODE) return
+            } else {
+                val topic = item.optString("topic")
+                if (topic.startsWith("sec_") && topic.removePrefix("sec_") !in followed) return
+                // إبطال الكاش نظافةُ بيانات لا عرضُ إشعار — قبل حارس المفتاح.
+                NotificationPoster.invalidateTranscriptCache(applicationContext, data)
+                if (!enabled) return
+            }
+            newest = maxOf(newest, createdAt)
+            if (posted >= MAX_POSTED_PER_RUN) return
+            posted++
+            val title = item.optString("title")
+                .ifBlank { applicationContext.getString(com.ali.menbaradkshk.R.string.app_name) }
+            val body = item.optString("body")
+            if (update) {
+                NotificationPoster.show(
+                    applicationContext,
+                    id = NotificationPoster.UPDATE_NOTIFICATION_ID,
+                    title = title,
+                    body = body,
+                    destination = com.ali.menbaradkshk.data.AppConfigRepository.PLAY_URL,
+                    channel = NotificationChannels.CONTENT,
+                    toStore = true,
+                    highPriority = true,
+                )
+            } else {
+                val destination = NotificationPoster.destinationFor(data)
+                    ?: if (private) "minbar://my-submissions" else "minbar://notifications"
+                NotificationPoster.show(
+                    applicationContext,
+                    // معرّف ثابت لكل عنصر خادميّ: التكرار (لو وقع) يحلّ محلّ نفسه.
+                    id = ((if (private) "p:" else "g:") + item.optString("id")).hashCode(),
+                    title = title,
+                    body = body,
+                    destination = destination,
+                    channel = NotificationChannels.CONTENT,
+                    highPriority = true,
+                )
+            }
+        }
+
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val items = com.ali.menbaradkshk.data.MinbarApi.notifications(baseline + 1, LIMIT)
+                // الأقدم أولاً كي يظهر ترتيب الوصول طبيعياً في شريط النظام.
+                (items.length() - 1 downTo 0).mapNotNull { items.optJSONObject(it) }
+                    .forEach { handle(it, private = false) }
+            }
+            if (store.knownSubmissionStatuses().isNotEmpty() || store.submitterName().isNotBlank()) {
+                runCatching {
+                    val items = com.ali.menbaradkshk.data.MinbarApi
+                        .getUser(applicationContext, "/v1/me/notifications?since=${baseline + 1}")
+                        .optJSONArray("items") ?: org.json.JSONArray()
+                    (items.length() - 1 downTo 0).mapNotNull { items.optJSONObject(it) }
+                        .forEach { handle(it, private = true) }
+                }
+            }
+        }
+        if (newest > store.lastSeenNotifMs()) store.setLastSeenNotifMs(newest)
+    }
+
+    companion object {
+        private const val DAY_MS = 24L * 60 * 60 * 1_000
+        private const val LIMIT = 30
+        /// سقف الإشعارات في الدورة الواحدة — شريط النظام ليس صندوق بريد.
+        private const val MAX_POSTED_PER_RUN = 5
+    }
+}
+
+/**
+ * 📏 سلّم النبض — الثوابت كلّها هنا ولا مكان آخر.
+ *
+ * التأخير حتى النبضة التالية من **حداثة آخر تغيير على الخادم** (محتوى أو
+ * إشعار أو تنبيه): خادمٌ نشط يُسأل كثيراً، وساكنٌ يُترك — فلا تُهدر شبكة
+ * المستخدم ولا بطاريته على خادمٍ لم يتغيّر منذ أسبوع، ولا يتأخّر إشعارٌ
+ * في أسبوعٍ حافل.
+ *
+ * | آخر تغيير        | النبضة التالية |
+ * |------------------|----------------|
+ * | خلال 24 ساعة     | 30 دقيقة       |
+ * | خلال 1–3 أيام    | 3 ساعات        |
+ * | أقدم (أو مجهول)  | 12 ساعة        |
+ *
+ * والحدّان [30 دقيقة، 12 ساعة] لا يُتجاوزان.
+ */
+object PulseLadder {
+    const val MIN_DELAY_MS = 30L * 60 * 1_000
+    const val MAX_DELAY_MS = 12L * 60 * 60 * 1_000
+    private const val MID_DELAY_MS = 3L * 60 * 60 * 1_000
+    private const val DAY_MS = 24L * 60 * 60 * 1_000
+
+    /// نبضة فوريّة عند فتح التطبيق إن مضى هذا القدر على آخر نبضة.
+    const val FOREGROUND_STALE_MS = 15L * 60 * 1_000
+
+    /// حارس السلسلة الدوري: يعيد إطلاقها إن قطعها النظام (وتأخيره الأوّل إلزامي).
+    const val GUARDIAN_HOURS = 12L
+
+    fun delayMsFor(ageMs: Long): Long = when {
+        ageMs < 0L -> MIN_DELAY_MS
+        ageMs < DAY_MS -> MIN_DELAY_MS
+        ageMs < 3 * DAY_MS -> MID_DELAY_MS
+        else -> MAX_DELAY_MS
+    }.coerceIn(MIN_DELAY_MS, MAX_DELAY_MS)
+}
+
 object BackgroundScheduler {
     private const val CONTINUE_WORK = "continue_reminder"
     private const val WARD_WORK = "daily_ward"
@@ -376,6 +544,8 @@ object BackgroundScheduler {
     private const val SMART_DOWNLOAD_WORK = "smart_download"
     private const val UPDATE_CHECK_WORK = "update_check"
     private const val QUEUE_GUARDIAN_WORK = "download_queue_guardian"
+    private const val PULSE_WORK = "pulse"
+    private const val PULSE_GUARDIAN_WORK = "pulse_guardian"
 
     fun scheduleAll(context: Context) {
         scheduleContinue(context)
@@ -386,6 +556,7 @@ object BackgroundScheduler {
         scheduleQueueGuardian(context)
         scheduleUpdateCheck(context)
         scheduleAdhkar(context)
+        schedulePulseGuardian(context)
     }
 
     /// 🛡️ حارس الطابور: كل 6 ساعات بقيد اتصال (انظر [DownloadQueueGuardianWorker]).
@@ -474,6 +645,45 @@ object BackgroundScheduler {
             ExistingPeriodicWorkPolicy.UPDATE,
             request,
         )
+    }
+
+
+    /// 💓 حارس النبض: كل 12 ساعة بقيد اتصال — نبضةٌ تعيد إطلاق السلسلة
+    /// التكيّفية إن قطعها النظام (انظر [PulseWorker] و[PulseLadder]).
+    /// لا يُلغى بإطفاء الإشعارات: تذكير التحديث ومزامنة المحتوى يمرّان منه.
+    fun schedulePulseGuardian(context: Context) {
+        val request = PeriodicWorkRequestBuilder<PulseWorker>(PulseLadder.GUARDIAN_HOURS, TimeUnit.HOURS)
+            // ⛔ قاعدة ثابتة: أي عمل دوري جديد يلزمه setInitialDelay — أول
+            // تشغيل يقع فوراً فيتزاحم مع الإقلاع البارد على الأجهزة الضعيفة.
+            .setInitialDelay(PulseLadder.MIN_DELAY_MS, TimeUnit.MILLISECONDS)
+            .setConstraints(
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
+            )
+            .build()
+        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+            PULSE_GUARDIAN_WORK,
+            ExistingPeriodicWorkPolicy.UPDATE,
+            request,
+        )
+    }
+
+    /// النبضة التالية بعد تأخير محسوب — `REPLACE` باسم فريد: سلسلةٌ واحدة لا تتفرّع.
+    fun schedulePulseAfter(context: Context, delayMs: Long) {
+        val request = OneTimeWorkRequestBuilder<PulseWorker>()
+            .setInitialDelay(delayMs.coerceAtLeast(0L), TimeUnit.MILLISECONDS)
+            .setConstraints(
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
+            )
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(PULSE_WORK, ExistingWorkPolicy.REPLACE, request)
+    }
+
+    /// نبضة فوريّة عند فتح التطبيق إن مضى ربع ساعة على آخر نبضة — فمن يفتح
+    /// التطبيق لا ينتظر السلّم. تحلّ محلّ النبضة المؤجَّلة (التي ستُعاد جدولتها).
+    fun pulseIfStale(context: Context) {
+        val store = LocalStore.get(context)
+        if (System.currentTimeMillis() - store.lastPulseMs() < PulseLadder.FOREGROUND_STALE_MS) return
+        schedulePulseAfter(context, 0L)
     }
 
     fun scheduleContinue(context: Context) {
@@ -573,82 +783,4 @@ object BackgroundScheduler {
         if (!due.isAfter(now)) due = due.plusDays(1)
         return Duration.between(now, due).toMillis().coerceAtLeast(0L)
     }
-}
-
-private object NotificationPublisher {
-    fun show(
-        context: Context,
-        id: Int,
-        title: String,
-        body: String,
-        destination: String,
-        channel: String,
-        /// حين تكون الوجهة المتجر: نقفز إليه مباشرة عبر الوسيط الصامت بدل
-        /// فتح التطبيق. الرابط لا يظهر للمستخدم في الحالتين.
-        toStore: Boolean = false,
-        /// ⏵ وجهة زرّ «استمع الآن»: رابط درسٍ يبدأ تشغيله فور فتحه.
-        /// فارغة = بلا زرّ.
-        playDestination: String = "",
-    ) {
-        val intent = if (toStore) {
-            com.ali.menbaradkshk.util.StoreRedirectActivity.intent(context, destination)
-        } else {
-            Intent(context, MainActivity::class.java).apply {
-                action = Intent.ACTION_VIEW
-                data = android.net.Uri.parse(destination)
-                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            }
-        }
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            id,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val builder = NotificationCompat.Builder(context, channel)
-            .setSmallIcon(R.drawable.ic_stat_minbar)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setContentIntent(pendingIntent)
-            .setAutoCancel(true)
-        // ⏵ «استمع الآن» — ضغطةٌ واحدة لا اثنتان: النقر على الإشعار كان
-        // يفتح التطبيق على صفحة الدرس ثم يبحث المستخدم عن زرّ التشغيل.
-        //
-        // ولماذا يفتح التطبيق ولا يشغّل من الخلفية مباشرة؟ لأن بدء خدمة
-        // الوسائط والتطبيق في الخلفية ممنوع منذ أندرويد 8 (ويرمي استثناءً
-        // في 12+) — وهي العلّة نفسها الموثَّقة في ودجت «الآن يُشغَّل».
-        // فنسلك المسار القائم: رابط الدرس مع لحظة بدايةٍ صريحة، وشاشة
-        // المشغّل تبدأ التشغيل من تلقائها حين تصلها اللحظة. النتيجة
-        // للمستخدم واحدة: ضغطة واحدة ثم صوت.
-        if (playDestination.isNotBlank()) {
-            val playIntent = Intent(context, MainActivity::class.java).apply {
-                action = Intent.ACTION_VIEW
-                data = android.net.Uri.parse(playDestination)
-                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            }
-            builder.addAction(
-                0,
-                "▶ استمع الآن",
-                PendingIntent.getActivity(
-                    context,
-                    // رمز طلبٍ مستقلّ عن نقرة الإشعار نفسها، وإلّا داس
-                    // أحدهما الآخر (نفس السياق ونفس الرمز = نفس المُعلَّق).
-                    id + PLAY_REQUEST_OFFSET,
-                    playIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                ),
-            )
-        }
-        val notification = builder.build()
-        if (
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
-        ) return
-        runCatching { NotificationManagerCompat.from(context).notify(id, notification) }
-    }
-
-    /// إزاحة رموز الطلب لأزرار الإشعارات — بعيدة عن معرّفات الإشعارات كلّها.
-    private const val PLAY_REQUEST_OFFSET = 90_000
 }

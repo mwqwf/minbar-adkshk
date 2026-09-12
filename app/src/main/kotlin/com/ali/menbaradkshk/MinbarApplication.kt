@@ -17,9 +17,6 @@ import coil3.memory.MemoryCache
 import com.ali.menbaradkshk.data.LocalStore
 import com.ali.menbaradkshk.notification.NotificationChannels
 import com.ali.menbaradkshk.notification.BackgroundScheduler
-import com.google.firebase.FirebaseApp
-import com.google.firebase.FirebaseOptions
-import com.google.firebase.messaging.FirebaseMessaging
 import androidx.work.Configuration
 import java.io.File
 
@@ -56,7 +53,6 @@ class MinbarApplication : Application(), Configuration.Provider, SingletonImageL
         instanceOrNull = this
         LocalStore.get(this)
         createNotificationChannels()
-        initializeFirebase()
         BackgroundScheduler.scheduleAll(this)
         // استئناف طابور التحميل إن بقيت فيه دروس من جلسة سابقة.
         if (LocalStore.get(this).downloadQueue().isNotEmpty()) {
@@ -80,31 +76,6 @@ class MinbarApplication : Application(), Configuration.Provider, SingletonImageL
             com.ali.menbaradkshk.data.MushafRepository.trimMemory()
         } else if (level >= TRIM_MEMORY_RUNNING_LOW) {
             runCatching { imageCache?.let { it.trimToSize(it.size / 2) } }
-        }
-    }
-
-    private fun initializeFirebase() {
-        runCatching {
-            val app = FirebaseApp.getApps(this).firstOrNull() ?: FirebaseApp.initializeApp(
-                this,
-                FirebaseOptions.Builder()
-                    .setApiKey("AIzaSyCWAHqbzhfQ-ZcjSSVCAhFFqCTgQ66SdCs")
-                    .setApplicationId("1:502388954405:android:6ca4f526675c8c3a89b6cc")
-                    .setGcmSenderId("502388954405")
-                    .setProjectId("mxqp-8d1e8")
-                    .setStorageBucket("mxqp-8d1e8.firebasestorage.app")
-                    .build(),
-            )
-            val store = LocalStore.get(this)
-            if (store.notificationsEnabled()) {
-                FirebaseMessaging.getInstance().subscribeToTopic("content")
-                // مواضيع الأقسام المتابَعة تُعاد كذلك: كانت تُبنى عند نقر
-                // المتابعة وحده، فأيّ فقد لاشتراكات الرمز (تجديده أو مسح
-                // البيانات) يُسكت قسماً تُظهره الواجهة «متابَعاً».
-                store.followedSubcategories().forEach {
-                    FirebaseMessaging.getInstance().subscribeToTopic("sec_$it")
-                }
-            }
         }
     }
 

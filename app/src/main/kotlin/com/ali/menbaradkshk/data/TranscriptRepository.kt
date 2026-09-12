@@ -3,7 +3,6 @@ package com.ali.menbaradkshk.data
 import android.content.Context
 import android.net.Uri
 import com.ali.menbaradkshk.util.normalizeArabic
-import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -11,7 +10,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.shareIn
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -316,11 +314,8 @@ class TranscriptRepository private constructor(context: Context) {
                     onProgress(((index * 100L + share) / validatedImages.size).toInt())
                 }.optString("key")
             }
-            val fcmToken = if (store.notificationsEnabled()) {
-                runCatching { FirebaseMessaging.getInstance().token.await() }.getOrDefault("")
-            } else {
-                ""
-            }
+            // بلا Firebase: المفتاح نفسه يحمل معرّف التثبيت (القرار يصل بالاستطلاع).
+            val fcmToken = if (store.notificationsEnabled()) "install:" + AppConfigRepository.get(appContext).installId() else ""
             val payload = JSONObject()
                 .put("id", id)
                 .put("lessonId", draft.lessonId)

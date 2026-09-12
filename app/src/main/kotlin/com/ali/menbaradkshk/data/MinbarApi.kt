@@ -111,6 +111,41 @@ object MinbarApi {
     /** علامات الخادم: الأعداد الثلاثة وأحدث طابع في كل مجموعة + أرضية الدلتا. */
     fun probe(): JSONObject = getJson("/v1/probe")
 
+    /** 💓 نبض الخادم: آخر تغيير في المحتوى والإشعارات والتنبيهات (بالمللي ثانية). */
+    data class Pulse(val contentMs: Long, val notifMs: Long, val alertsMs: Long)
+
+    /// ملف النبض على CDN — يكتبه الخادم عند كل تغيير؛ ≤ 1 ك.ب ومكاش دقيقة،
+    /// ولا يمرّ بالـWorker فلا يكلّف شيئاً. (امتداد `.js` عمداً: CDN يكاشه
+    /// افتراضياً؛ والمحتوى JSON صرف: contentMs · lessonsCount · notifMs · alertsMs · at.)
+    private const val PULSE_URL = "https://media.menbar.app/pulse.js"
+
+    /**
+     * يقرأ النبض من CDN، وعند الحجب أو الفشل يسقط إلى `GET /v1/pulse` على
+     * قاعدتَي `MinbarApi` (المحتوى نفسه). `null` = تعذّر المصدران معاً.
+     */
+    fun pulse(): Pulse? {
+        runCatching {
+            val connection = (URL(PULSE_URL).openConnection() as HttpURLConnection).apply {
+                connectTimeout = CONNECT_TIMEOUT_MS
+                readTimeout = READ_TIMEOUT_MS
+                setRequestProperty("User-Agent", UA)
+                setRequestProperty("Accept", "application/json")
+            }
+            try {
+                if (connection.responseCode in 200..299) {
+                    val json = JSONObject(readBody(connection))
+                    return Pulse(json.optLong("contentMs"), json.optLong("notifMs"), json.optLong("alertsMs"))
+                }
+            } finally {
+                connection.disconnect()
+            }
+        }
+        return runCatching {
+            val json = getJson("/v1/pulse")
+            Pulse(json.optLong("contentMs"), json.optLong("notifMs"), json.optLong("alertsMs"))
+        }.getOrNull()
+    }
+
     /** ما تغيّر منذ العلامات المحفوظة (وسجلّ الحذف منذ علامته). */
     fun delta(
         lessonsSince: Long,

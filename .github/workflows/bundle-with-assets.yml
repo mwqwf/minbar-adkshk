@@ -77,6 +77,9 @@ jobs:
       # وكان مأذوناً في Play Console بـ«الإصدار في مسارات الاختبار».
       - name: النشر إلى Play (المسار الداخلي)
         if: env.HAS_PLAY == 'true' && env.HAS_KS == 'true'
+        # ⚠️ لا يُفشل البناءَ كلَّه: ما لم يُؤذَن لحساب الخدمة في Play Console بعد،
+        #    يخفق النشر وحدَه ويبقى الأثر (٦١٠ م.ب) قابلاً للتنزيل يدوياً.
+        continue-on-error: true
         uses: r0adkll/upload-google-play@935ef9c68bb393a8e6116b1575626a7f5be3a7fb # v1.1.3
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}

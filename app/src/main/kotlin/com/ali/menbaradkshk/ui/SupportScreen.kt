@@ -34,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -502,11 +503,21 @@ private fun SupportSent(onDone: () -> Unit) {
 
 /// `true` إن كان للمستخدم ردٌّ من المطوّر لم يفتحه بعد — تعرضه الإعدادات نقطةً
 /// على البند، فيعرف أنّ هناك جواباً بلا أن يفتح الميزة ليتفقّدها.
+/// [active]: يُجمع التدفّق (استعلام شبكيّ كل ٣٠ ثانية) ما دامت القيمة `true`
+/// وحدها. ⚠️ محتوى الدرج الجانبي يُركَّب دائماً ولو كان مغلقاً، فكانت
+/// الشاشة الرئيسية تستعلم عن رسائل الدعم مرّتين في الدقيقة طوال عمر
+/// التطبيق في المقدّمة — على شبكة ضعيفة وبطاريّة محدودة — بلا أن يفتح
+/// المستخدم الإعدادات أصلاً. آخر قيمة تبقى معروضة بعد الإغلاق.
 @Composable
-fun rememberSupportUnread(): Boolean {
+fun rememberSupportUnread(active: Boolean = true): Boolean {
     val context = LocalContext.current
     val repository = remember { SupportRepository.get(context) }
-    val threadsFlow = remember { repository.myThreads() }
-    val threads by threadsFlow.collectAsState(initial = emptyList())
-    return threads.any(repository::isUnread)
+    var unread by remember { mutableStateOf(false) }
+    LaunchedEffect(active) {
+        if (!active) return@LaunchedEffect
+        repository.myThreads().collect { threads ->
+            unread = threads.any(repository::isUnread)
+        }
+    }
+    return unread
 }

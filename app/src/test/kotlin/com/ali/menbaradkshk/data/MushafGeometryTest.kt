@@ -90,11 +90,11 @@ class MushafGeometryTest {
     @Test
     fun `رابط الصفحة بثلاث خانات ولكل رواية مجلَّدها`() {
         assertEquals(
-            MushafRepository.IMAGE_BASE + "hafs%2F001.webp?alt=media",
+            MushafRepository.IMAGE_BASE + "hafs/001.webp",
             MushafRepository.pageUrl("hafs", 1),
         )
         assertEquals(
-            MushafRepository.IMAGE_BASE + "warsh%2F604.webp?alt=media",
+            MushafRepository.IMAGE_BASE + "warsh/604.webp",
             MushafRepository.pageUrl("warsh", 604),
         )
         // خارج المدى يُحصر بدل أن يُنتج رابطاً ميّتاً.

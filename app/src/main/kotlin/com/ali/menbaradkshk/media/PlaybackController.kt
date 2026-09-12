@@ -280,7 +280,12 @@ class PlaybackController(context: Context) {
         }
         // الدرس المطلوب يتصدّر القائمة دائماً إن رشّحه المرشّح خارجها، كي لا
         // يسقط الفهرس إلى 0 فيُشغَّل درس آخر بموضع الدرس المطلوب.
-        val filtered = queue.filter { it.audioUrl.isNotBlank() || downloads.isDownloaded(it.id) }
+        // ⚠️ لقطة واحدة لفهرس التنزيلات: كان كل عنصر في القائمة يقرأ الفهرس
+        // ويحلّله من جديد (مرّة للترشيح ومرّة لبناء العنصر) على الخيط الرئيسي،
+        // ومحطّات الإذاعة تمرّر آلاف الدروس ⇒ آلاف التحليلات في ضغطة واحدة.
+        val localPaths = downloads.all()
+        fun localPathOf(id: String): String? = localPaths[id]?.takeIf { File(it).isFile }
+        val filtered = queue.filter { it.audioUrl.isNotBlank() || localPathOf(it.id) != null }
         val playable = if (filtered.any { it.id == lesson.id }) filtered else listOf(lesson) + filtered
         val index = playable.indexOfFirst { it.id == lesson.id }.coerceAtLeast(0)
         // نستأنف من الموضع المحفوظ فقط إن تجاوز 3 ثوانٍ (نمط الأصل).
@@ -291,7 +296,7 @@ class PlaybackController(context: Context) {
         lastQueue = queue
         // محاولة جديدة ⇒ خطأ المحاولة السابقة لم يعد يمثّل الحالة.
         _state.value = _state.value.copy(error = null)
-        player.setMediaItems(playable.map(::toMediaItem), index, position)
+        player.setMediaItems(playable.map { mediaItemFor(it, localPathOf(it.id)) }, index, position)
         player.prepare()
         player.play()
     }
@@ -516,9 +521,6 @@ class PlaybackController(context: Context) {
     fun clearError() {
         _state.value = _state.value.copy(error = null)
     }
-
-    private fun toMediaItem(lesson: Lesson): MediaItem =
-        mediaItemFor(lesson, downloads.localPath(lesson.id))
 
     private fun publish(player: Player) {
         val metadata = player.mediaMetadata

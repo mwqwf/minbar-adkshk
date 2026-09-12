@@ -40,7 +40,11 @@ class NotificationsRepository(
     fun stream(limit: Long = 30): Flow<List<NotificationItem>> = callbackFlow {
         var publicItems = listOf<NotificationItem>()
         var privateItems = listOf<NotificationItem>()
-        val scope = CoroutineScope(coroutineContext + Job())
+        // ⚠️ الشبكة على IO لا على سياق الجامع: التدفّق يُجمع من `viewModelScope`
+        // (الخيط الرئيسي)، وكان `MinbarApi` يُنادى عليه فيرمي
+        // `NetworkOnMainThreadException` في كل دورة ويُبتلع في `runCatching` —
+        // فلا تصل إشعارات الخادم أبداً بلا أي أثر ظاهر.
+        val scope = CoroutineScope(coroutineContext + Job() + kotlinx.coroutines.Dispatchers.IO)
 
         fun emit() {
             val items = (publicItems + privateItems)

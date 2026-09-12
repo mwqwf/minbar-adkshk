@@ -154,7 +154,8 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     // «راسِل المطوّر»: ميزة قائمة بذاتها تُفتح فوق الإعدادات بلا مسار تنقّل
     // خاصّ بها. والنقطة تظهر متى كان للمستخدم ردٌّ لم يقرأه.
     var supportOpen by remember { mutableStateOf(false) }
-    val supportUnread = rememberSupportUnread()
+    val settingsOpen by vm.showSettings.collectAsState()
+    val supportUnread = rememberSupportUnread(active = settingsOpen)
 
     // نسخة احتياطية محلية عبر منتقي ملفات النظام (بلا أي رفع للسحابة).
     // ⚠️ التنفيذ كلّه في AppViewModel على خيط الإدخال/الإخراج: الكتابة

@@ -60,7 +60,10 @@ object ImageMerger {
         return withContext(Dispatchers.IO) {
             val width = TARGET_WIDTH
             val totalHeight = heights.sum()
-            val merged = Bitmap.createBitmap(width, totalHeight, Bitmap.Config.ARGB_8888)
+            // RGB_565 لا ARGB_8888: الناتج JPEG بلا شفافية أصلاً، والصورة قد تبلغ
+            // 1440×14000 ⇒ 80 م.ب بأربع بايتات للبكسل فتُسقط الأجهزة الضعيفة
+            // بـOutOfMemoryError؛ بنصف ذلك تمرّ.
+            val merged = Bitmap.createBitmap(width, totalHeight, Bitmap.Config.RGB_565)
             try {
                 val canvas = Canvas(merged)
                 canvas.drawColor(Color.WHITE)

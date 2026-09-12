@@ -205,7 +205,28 @@ class LocalStore private constructor(context: Context) {
     fun lastSyncMs(): Long = long(KEY_LAST_SYNC)
     fun setLastSyncMs(value: Long) = write { putLong(KEY_LAST_SYNC, value) }
 
-    fun downloads(): Map<String, String> = jsonObject(KEY_DOWNLOADS).stringMap()
+    fun downloads(): Map<String, String> =
+        parsed("s:$KEY_DOWNLOADS", string(KEY_DOWNLOADS, "{}")) {
+            runCatching { JSONObject(it) }.getOrElse { JSONObject() }.stringMap()
+        }
+
+    /// ⚠️ كاش تحليل JSON للخرائط والقوائم المقروءة من التفضيلات.
+    /// كل صفّ في القوائم يقرأ الموضع والمدّة والمفضّلة (ثلاث خرائط تُحلَّل من
+    /// نصّها كاملةً في كل نداء وعلى الخيط الرئيسي)، ومسار التشغيل يقرأ
+    /// `downloads()` لكل عنصر في القائمة. النصّ الخام نفسه يبقى مرجعاً واحداً
+    /// في ذاكرة التفضيلات حتى الكتابة التالية، فمقارنته (بالمرجع أولاً) أرخص
+    /// بمراتب من إعادة التحليل. النتائج غير قابلة للتعديل فمشاركتها آمنة.
+    private val parsedCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Any>>()
+
+    @Suppress("UNCHECKED_CAST")
+    private fun <T : Any> parsed(cacheKey: String, raw: String, parse: (String) -> T): T {
+        parsedCache[cacheKey]?.let { (source, value) ->
+            if (source === raw || source == raw) return value as T
+        }
+        val value = parse(raw)
+        parsedCache[cacheKey] = raw to value
+        return value
+    }
     fun localAudioPath(lessonId: String): String? =
         downloads()[lessonId]?.takeIf { File(it).isFile }
 
@@ -267,6 +288,10 @@ class LocalStore private constructor(context: Context) {
 
     fun downloadSha(lessonId: String): String =
         downloadMeta(lessonId)?.optString("sha").orEmpty()
+
+    /// لقطة الفهرس الجانبي كاملاً — للقراءة فقط، لمن يفحص دروساً كثيرة دفعةً
+    /// واحدة بدل إعادة تحليله لكل درس.
+    fun downloadsMetaSnapshot(): JSONObject = jsonObject(KEY_DOWNLOADS_META)
 
     fun setDownloadMeta(lessonId: String, sha: String, source: String, sizeBytes: Long) {
         val json = jsonObject(KEY_DOWNLOADS_META).put(
@@ -355,14 +380,20 @@ class LocalStore private constructor(context: Context) {
         }
     }
 
-    fun intMap(key: String): Map<String, Long> = jsonObject(key).longMap()
+    fun intMap(key: String): Map<String, Long> =
+        parsed("m:$key", string(key, "{}")) {
+            runCatching { JSONObject(it) }.getOrElse { JSONObject() }.longMap()
+        }
     private fun setIntMap(key: String, value: Map<String, Long>) =
         putJson(key, JSONObject(value))
     /// نظيرة [setIntMap] بلا رفع [revision] — للخرائط التي تُكتب دورياً أثناء
     /// التشغيل وحده (المواضع والثواني اليوميّة). انظر [writeQuiet].
     private fun setIntMapQuiet(key: String, value: Map<String, Long>) =
         writeQuiet { putString(key, JSONObject(value).toString()) }
-    fun stringList(key: String): List<String> = jsonArray(key).strings()
+    fun stringList(key: String): List<String> =
+        parsed("l:$key", string(key, "[]")) {
+            runCatching { JSONArray(it) }.getOrElse { JSONArray() }.strings()
+        }
     private fun setStringList(key: String, value: List<String>) =
         putJson(key, JSONArray(value))
 

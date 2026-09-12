@@ -198,11 +198,15 @@ class DownloadRepository private constructor(context: Context) {
         // آخر كتنزيل «مكتمل» يُشغَّل مشوَّهاً بلا إنترنت إلى الأبد. الرابط
         // يُكتب في ملف جانبي، واختلافه يُسقط الجزئي فيبدأ التنزيل من الصفر.
         val sourceMark = File(directory, "$safeId.$extension.part.src")
+        // هويّة المصدر = البصمة إن وُجدت، وإلا الرابط. بالرابط وحده كان
+        // الانتقال إلى المرآة (رابط مختلف لنفس البايتات) يُسقط الجزئيَّ في
+        // الجولة التالية حين يُجرَّب الأصل أوّلاً — فيُعاد تنزيل ما نزل.
+        val sourceIdentity = lesson.sha256.ifBlank { lesson.audioUrl }
         if (partial.length() > 0L) {
-            val previousUrl = runCatching { sourceMark.readText() }.getOrDefault("")
-            if (previousUrl != lesson.audioUrl) partial.delete()
+            val previous = runCatching { sourceMark.readText() }.getOrDefault("")
+            if (previous != sourceIdentity) partial.delete()
         }
-        runCatching { sourceMark.writeText(lesson.audioUrl) }
+        runCatching { sourceMark.writeText(sourceIdentity) }
 
         // 💾 «البايت يُملَك»: قبل فتح أي اتصال، تُبذر في الجزئي **البادئة
         // المتصلة من البايت 0** المتجمّعة في كاش البثّ (استماعٌ سابق لنفس
@@ -537,12 +541,19 @@ class DownloadRepository private constructor(context: Context) {
      * التنزيل المسجَّلة. لا يُحكم على تنزيل بلا بصمة مسجّلة (سبق المعمارية)
      * إلا إن حمل الدرس بصمة الآن — فتنزيله القديم مجهول الهوية ويُجدَّد.
      */
-    fun staleDownloadIds(lessons: List<Lesson>): List<String> = lessons.mapNotNull { lesson ->
-        if (lesson.sha256.isBlank()) return@mapNotNull null
-        val path = store.localAudioPath(lesson.id) ?: return@mapNotNull null
-        if (!File(path).isFile) return@mapNotNull null
-        val recorded = store.downloadSha(lesson.id)
-        if (recorded != lesson.sha256) lesson.id else null
+    fun staleDownloadIds(lessons: List<Lesson>): List<String> {
+        // لقطة واحدة للفهرسين: كان كلّ درس يُعيد تحليل خريطة التنزيلات
+        // وخريطة البيانات الغنيّة كاملتين — آلاف التحليلات في كل تخطيط.
+        val paths = store.downloads()
+        if (paths.isEmpty()) return emptyList()
+        val meta = store.downloadsMetaSnapshot()
+        return lessons.mapNotNull { lesson ->
+            if (lesson.sha256.isBlank()) return@mapNotNull null
+            val path = paths[lesson.id] ?: return@mapNotNull null
+            if (!File(path).isFile) return@mapNotNull null
+            val recorded = meta.optJSONObject(lesson.id)?.optString("sha").orEmpty()
+            if (recorded != lesson.sha256) lesson.id else null
+        }
     }
 
     /**

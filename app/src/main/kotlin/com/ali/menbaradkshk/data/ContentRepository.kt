@@ -47,38 +47,57 @@ class ContentRepository private constructor(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     // قراءة واحدة لكل مخزن: كل استدعاء يعيد تحليل JSON كامل من التفضيلات
     // على خيط الإقلاع، وكان يتكرّر مرّتين للأقسام والدروس بلا داعٍ.
-    private val _state = MutableStateFlow(
-        run {
-            val cachedCategories = store.categories()
-            val cachedLessons = store.lessons()
-            if (cachedCategories.isEmpty() && cachedLessons.isEmpty()) {
-                // 🎁 أول تشغيل بلا أي كاش: لقطة الكتالوج المضمّنة وقت البناء
-                // تجعل المكتبة كلّها قابلة للتصفّح فوراً وبلا إنترنت إطلاقاً
-                // (عناوين/أقسام/شيوخ/مدد) — والدروس تنتظر أول اتصال. تُقرأ
-                // مرة واحدة في العمر هنا؛ وأي فشل يُعيد الشاشة الفارغة القديمة.
-                val seeded = readBundledSnapshot(appContext)
-                ContentState(
-                    categories = seeded?.categories.orEmpty(),
-                    subcategories = seeded?.subcategories.orEmpty(),
-                    lessons = mergeDurations(seeded?.lessons.orEmpty()),
-                    loading = seeded == null,
-                    offline = seeded != null,
-                )
-            } else {
-                ContentState(
-                    categories = cachedCategories,
-                    subcategories = store.subcategories(),
-                    lessons = mergeDurations(cachedLessons),
-                    loading = false,
-                )
-            }
-        },
-    )
+    // ⚠️ كان الحمل الأوّل (تحليل JSON لـ485 درساً من التفضيلات، أو فكّ لقطة
+    // gzip في أوّل تشغيل) يجري داخل المنشئ على الخيط الذي ينادي `get()` — وهو
+    // الخيط الرئيسي من AppViewModel ⇒ ثوانٍ من الجمود عند الإقلاع على الأجهزة
+    // الضعيفة و«ANR: No response to onStartJob» متى تزامن مع عامل خلفي
+    // (رُصد على المحاكي 2026-09-12). صار الحمل على IO حين يُنادى من الخيط
+    // الرئيسي، ومتزامناً حين يناديه عامل خلفي (فيبقى مضمون الاكتمال له).
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val _state = MutableStateFlow(ContentState(loading = true))
     val state: StateFlow<ContentState> = _state.asStateFlow()
+
+    private fun loadInitialState(): ContentState {
+        val cachedCategories = store.categories()
+        val cachedLessons = store.lessons()
+        return if (cachedCategories.isEmpty() && cachedLessons.isEmpty()) {
+            // 🎁 أول تشغيل بلا أي كاش: لقطة الكتالوج المضمّنة وقت البناء
+            // تجعل المكتبة كلّها قابلة للتصفّح فوراً وبلا إنترنت إطلاقاً
+            // (عناوين/أقسام/شيوخ/مدد) — والدروس تنتظر أول اتصال. تُقرأ
+            // مرة واحدة في العمر هنا؛ وأي فشل يُعيد الشاشة الفارغة القديمة.
+            val seeded = readBundledSnapshot(appContext)
+            ContentState(
+                categories = seeded?.categories.orEmpty(),
+                subcategories = seeded?.subcategories.orEmpty(),
+                lessons = mergeDurations(seeded?.lessons.orEmpty()),
+                loading = seeded == null,
+                offline = seeded != null,
+            )
+        } else {
+            ContentState(
+                categories = cachedCategories,
+                subcategories = store.subcategories(),
+                lessons = mergeDurations(cachedLessons),
+                loading = false,
+            )
+        }
+    }
+
+    /// يضع الحالة الأولى فقط إن لم تسبقها مزامنة (لا تدوس بياناتٍ أحدث).
+    private fun publishInitial(initial: ContentState) {
+        _state.compareAndSet(_state.value.takeIf { it.loading && it.lessons.isEmpty() } ?: return, initial)
+    }
+
+    init {
+        if (android.os.Looper.getMainLooper().isCurrentThread) {
+            scope.launch { publishInitial(loadInitialState()) }
+        } else {
+            publishInitial(loadInitialState())
+        }
+    }
 
     /// نطاق خاص بالمستودع: التحديث الصريح لا يُلغى بمغادرة الشاشة، فلا تبقى
     /// حالة «جارٍ التحديث» عالقة إن انصرف المستخدم أثناء السحب-للتحديث.
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var deepJob: Job? = null
 
     /// تحديث كامل صريح يتخطّى المسبار (سحب-للتحديث و«إعادة المحاولة»).

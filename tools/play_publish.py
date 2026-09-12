@@ -12,6 +12,10 @@
 
 حساب الخدمة الافتراضيّ: migration-cache/fcm_service_account.json (⛔ خارج git).
 ⚠️ لا يرفع هذا السكربت شيئاً إلا بـ`--aab`؛ و`--list` قراءةٌ محضة.
+⛔⛔ **ولا تنادِ هذه الأداة — ولا حتى `--list` — على تطبيقٍ يجري نشرُه الآن**:
+   كلُّ نداءٍ يفتح «تحريراً» في Play، وفتحُ تحريرٍ ثانٍ يُبطل الأوّل، فيخفق النشر
+   الجاري برسالة `This Edit has been deleted` بعد رفع الحزمة كاملةً (وقع 2026-09-12
+   مع اللوحة: رُفعت ١١ م.ب ثمّ ضاعت لأنّ استعلامي زاحمها). انتظر انتهاء التشغيلة.
 """
 import argparse, base64, json, os, sys, time, urllib.error, urllib.parse, urllib.request
 from cryptography.hazmat.primitives import hashes, serialization

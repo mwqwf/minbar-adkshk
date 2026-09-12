@@ -69,18 +69,29 @@ def main() -> int:
     p.add_argument("--notes", default="")
     p.add_argument("--sa", default=DEFAULT_SA)
     p.add_argument("--list", action="store_true", help="اعرض المسارات وإصداراتها ولا ترفع شيئاً")
+    p.add_argument("--promote", help="رقّ إصداراً مرفوعاً سلفاً إلى مسارٍ آخر (versionCode)")
     a = p.parse_args()
 
     tok = access_token(a.sa)
     base = f"{API}/{a.package}/edits"
     edit = json.load(call(tok, base, "POST", b""))["id"]
     try:
-        if a.list or not a.aab:
+        if a.list or (not a.aab and not a.promote):
             tracks = json.load(call(tok, f"{base}/{edit}/tracks"))
             for tr in tracks.get("tracks", []):
                 for r in tr.get("releases", []):
                     if r.get("versionCodes"):
                         print(f"{tr['track']:<12} {r.get('status'):<10} {r['versionCodes']}  {r.get('name','')}")
+            return 0
+
+        if a.promote:
+            rel = {"name": str(a.promote), "versionCodes": [str(a.promote)], "status": "completed"}
+            if a.notes:
+                rel["releaseNotes"] = [{"language": "ar", "text": a.notes[:500]}]
+            call(tok, f"{base}/{edit}/tracks/{a.track}", "PUT",
+                 json.dumps({"track": a.track, "releases": [rel]}).encode())
+            call(tok, f"{base}/{edit}:commit", "POST", b"")
+            print(f"تمّت الترقية: {a.promote} إلى مسار «{a.track}».")
             return 0
 
         size = os.path.getsize(a.aab)

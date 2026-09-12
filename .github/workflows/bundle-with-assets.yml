@@ -17,6 +17,9 @@ on:
       core_cap_mb:
         description: "سقف حزمة core بالميغابايت (≤ 500)"
         default: "480"
+      track:
+        description: "مسار Play — منبر يُنشر إلى الإنتاج مباشرةً بأمر المالك"
+        default: "production"
 permissions:
   contents: read
 jobs:
@@ -34,6 +37,8 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
+      - name: الاختبارات (بوّابةٌ قبل أيّ بناء — النشر إلى الإنتاج لا يحتمل تسرّب خلل)
+        run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest --no-daemon
       - name: خطّة الحزمتين من الكتالوج
         run: python3 tools/assetpack/plan.py
       - name: تنزيل الصوت من R2 (خروج مجاني)
@@ -69,23 +74,25 @@ jobs:
           grep -m1 -E 'jar verified|jar is unsigned|no manifest' /tmp/js.txt || tail -3 /tmp/js.txt
           keytool -printcert -jarfile "$AAB" 2>/dev/null | grep -m1 'SHA1:'
           grep -qm1 'jar verified' /tmp/js.txt || { echo '⛔ الحزمة غير موقّعة — أوقف'; exit 1; }
+          n=$(grep -oE 'lib/[a-z0-9_-]+/' /tmp/list.txt | sort -u | wc -l)
+          [ "$n" -ge 4 ] || { echo "⛔ المعالجات $n < 4 — توافق الأجهزة ناقص"; exit 1; }
+          grep -q 'assets/catalog/snapshot.jz' /tmp/list.txt || { echo '⛔ لقطة الكتالوج غائبة — أول تشغيل بلا إنترنت سيخلو من المكتبة'; exit 1; }
+          a=$(grep -c 'serving/.*\.ogg' /tmp/list.txt)
+          [ "$a" -ge 400 ] || { echo "⛔ ملفّات الصوت $a — الحزم ناقصة"; exit 1; }
       - name: محو المفتاح من العدّاء
         if: always()
         run: rm -f "$RUNNER_TEMP/upload.jks"
       # 🚀 النشر إلى Play من هنا مباشرةً — فلا تعبر الـ٦١٠ م.ب شبكةَ المالك مرّتين
       # (تنزيلاً من Actions ورفعاً إلى المتجر). يعمل فقط متى وُجد سرُّ حساب الخدمة
       # وكان مأذوناً في Play Console بـ«الإصدار في مسارات الاختبار».
-      - name: النشر إلى Play (المسار الداخلي)
+      - name: النشر إلى Play
         if: env.HAS_PLAY == 'true' && env.HAS_KS == 'true'
-        # ⚠️ لا يُفشل البناءَ كلَّه: ما لم يُؤذَن لحساب الخدمة في Play Console بعد،
-        #    يخفق النشر وحدَه ويبقى الأثر (٦١٠ م.ب) قابلاً للتنزيل يدوياً.
-        continue-on-error: true
         uses: r0adkll/upload-google-play@935ef9c68bb393a8e6116b1575626a7f5be3a7fb # v1.1.3
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: com.ali.menbaradkshk
           releaseFiles: app/build/outputs/bundle/release/*.aab
-          track: internal
+          track: ${{ inputs.track || 'production' }}
           status: completed
       # الأثر يبقى احتياطاً (٧ أيام) لمن أراد الرفع يدوياً — ٦١٠ م.ب على شبكة ضعيفة.
       - uses: actions/upload-artifact@v4

@@ -35,7 +35,7 @@ jobs:
           echo "$KS" | base64 -d > upload.jks
           printf '%s\n' "$PROPS" > signing.properties
       - name: بناء الحزمة
-        run: chmod +x gradlew && ./gradlew :app:bundleRelease --no-daemon
+        run: chmod +x gradlew && ./gradlew :app:bundleRelease --no-daemon $([ "$HAS_KS" = "true" ] || echo -PallowUnsigned=true)
       - name: تحقّق
         run: |
           ls -la app/build/outputs/bundle/release/

@@ -318,9 +318,12 @@ tasks.matching {
     it.name == "bundleRelease" || it.name == "assembleRelease"
 }.configureEach {
     doFirst {
-        check(hasReleaseSigning) {
+        // -PallowUnsigned: حزمة غير موقّعة من CI (بلا مفتاح على GitHub) يوقّعها المالك محلياً بـjarsigner.
+        val allowUnsigned = project.findProperty("allowUnsigned") == "true"
+        check(hasReleaseSigning || allowUnsigned) {
             "Missing release signing values. Use signing.properties or the MINBAR_SIGNING_* environment variables with the original upload key."
         }
+        if (!hasReleaseSigning) logger.warn("⚠️ حزمة غير موقّعة (allowUnsigned) — وقّعها بـjarsigner قبل الرفع")
     }
 }
 

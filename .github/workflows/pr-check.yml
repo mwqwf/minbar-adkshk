@@ -30,6 +30,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: حارس التوثيق (README يطابق مصدر الحقيقة)
         run: python3 tools/sync_readme_version.py --check
+      # 🚧 والموقع يُنشر من mwqwf/menbar-site: نسخةٌ منه هنا تُصلَح ولا تصل أحداً.
+      - name: حارس نسخة الموقع الميّتة
+        run: python3 tools/no_dead_site_copy.py
       # ⛔ خطوةٌ لكل فحص لا خطوةٌ للثلاثة: حين تفشل واحدة يقول اسمُ الخطوة أيُّها
       #    فشل، بلا تنقيبٍ في سجلٍّ طويل.
       - name: الاختبارات

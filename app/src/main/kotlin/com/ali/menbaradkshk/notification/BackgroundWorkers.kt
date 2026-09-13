@@ -151,6 +151,12 @@ private object AutoDownloadPolicy {
     /// Data Saver مفعَّل؟ لا تنزيل تلقائياً البتة — احترامٌ صريح لاختيار
     /// النظام قبل قيود WorkManager (القيود لا تعرف Data Saver).
     fun dataSaverOn(context: Context): Boolean {
+        // ⛔ `restrictBackgroundStatus` من API 24 و`minSdk` عندنا 23 — وكانت
+        // تُستدعى بلا حارسٍ ولا لفّ. وهي أوّل سطرٍ في عامل التنزيل التلقائي،
+        // فكان العامل يسقط على أندرويد ٦ بـNoSuchMethodError: تنزيلٌ تلقائي
+        // معطَّل هناك بالكامل وبصمت. و«Data Saver» نفسه لم يوجد قبل API 24،
+        // فغيابُه على ٦ ليس تخميناً بل حقيقةً: لا قيدَ لنحترمه.
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.N) return false
         val manager = context.getSystemService(android.net.ConnectivityManager::class.java)
             ?: return false
         return manager.restrictBackgroundStatus ==

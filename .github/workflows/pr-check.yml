@@ -34,20 +34,10 @@ jobs:
       #    فشل، بلا تنقيبٍ في سجلٍّ طويل.
       - name: الاختبارات
         run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest --no-daemon
-      # ⚠️ **تقريرٌ لا بوّابة — مؤقّتاً، وبإعلانٍ لا بصمت.**
-      # أوّل تشغيلةٍ لـlint (ولم يكن يعمل في أيّ سير عملٍ قطّ) أخرجت ستّة أخطاء
-      # **سابقةٍ لهذا الطلب** في ملفّات لا يمسّها، أخطرُها اثنان على أندرويد ٦
-      # (minSdk 23) — وهي في نسخة الإنتاج الحالية أصلاً:
-      #   · QuranDownloadWorker.kt:132,141  MissingPermission
-      #   · BackgroundWorkers.kt:156        NewApi (restrictBackgroundStatus، API 24)
-      #   · OfflineOnly.kt:90               NewApi (registerDefaultNetworkCallback، API 24)
-      #   · PlaybackController.kt:588       UnsafeOptInUsageError
-      #   · widget_now_playing.xml:58       UseAppTint
-      # فجعلُها بوّابةً اليوم يوقف كلّ عمل على دَينٍ قديم ليس من صنع هذا الطلب.
-      # وتُعالَج في طلب سحبٍ مخصَّص، ثمّ **يعود هذا السطر بوّابةً** بحذف
-      # `continue-on-error`. ⛔ ولا يُترك هكذا: دَينٌ مؤجَّل لا دَينٌ ملغى.
-      - name: الفحص (lint) — تقريرٌ لا بوّابة حتى يُصفّى الدَّين
-        continue-on-error: true
+      # 🔒 بوّابةٌ لا تقرير: الدَّين القديم صُفِّي في هذه الدفعة نفسها (ستّة
+      #    أخطاء: عطلا أندرويد ٦، وإقرارا media3، وإنذاران كاذبان مكتومان
+      #    بسببهما المكتوب). فمن أدخل خطأ lint جديداً بعد اليوم لا يمرّ.
+      - name: الفحص (lint)
         run: ./gradlew :app:lintDebug --no-daemon
       - name: بناء نسخة التصحيح
         run: ./gradlew :app:assembleDebug --no-daemon

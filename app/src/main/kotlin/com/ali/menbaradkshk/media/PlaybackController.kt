@@ -576,6 +576,9 @@ class PlaybackController(context: Context) {
                 .build()
 
         /// بناء عنصر التشغيل من الدرس — يستعمله أيضاً استئناف الجلسة في `PlaybackService`.
+        // ⚠️ `setCustomCacheKey` واجهةٌ غير مستقرّة في media3، فيلزمها إقرارٌ
+        // صريح كما في PlaybackService وMinbarApplication. إقرارٌ لا تغييرَ سلوك.
+        @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
         fun mediaItemFor(lesson: Lesson, localPath: String?): MediaItem {
             val uri = if (localPath != null) Uri.fromFile(File(localPath)) else Uri.parse(lesson.audioUrl)
             return MediaItem.Builder()

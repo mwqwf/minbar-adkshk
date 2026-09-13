@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- ودجت الشاشة الرئيسية: آخر درس مع زر تشغيل/إيقاف. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="horizontal"
@@ -49,6 +50,9 @@
          الحدّ الموصى به. والصبغة الذهبيّة تُدخل أيقونة النظام في هوية منبر.
          ⚠️ لا تستبدل src برسمة متجهية: minSdk=23 وRemoteViews لا تضمن
          VectorDrawable قبل API 24، فيسقط تضخيم الودجت كلّه على 6.0. -->
+    <!-- ⚠️ `tools:ignore="UseAppTint"` لإنذارٍ كاذب: `app:tint` من AppCompat
+         ويلزمه AppCompatImageView، و**RemoteViews لا تدعمه** — فاستعماله هنا
+         يكسر الودجت لا يصلحه. و`android:tint` مدعومٌ من API 21 فهو الصواب. -->
     <ImageView
         android:id="@+id/widget_play"
         android:layout_width="48dp"
@@ -56,5 +60,6 @@
         android:padding="6dp"
         android:src="@android:drawable/ic_media_play"
         android:tint="#FDD459"
-        android:contentDescription="@string/widget_play" />
+        android:contentDescription="@string/widget_play"
+        tools:ignore="UseAppTint" />
 </LinearLayout>

@@ -91,7 +91,6 @@ private fun AutoDownloadQuestion(
                     // الواي فاي وحده: هذا نصّ السؤال حرفياً، فلا يجوز أن
                     // ينتهي الجواب بتحميلٍ على بيانات الهاتف. ومحرّك الأولوية
                     // يتولّى «ماذا يُنزَّل أولاً» بلا أي سؤال إضافي.
-                    vm.setAutoDownloadTarget("recent")
                     vm.setAutoDownloadWifiOnly(true)
                     vm.setAutoDownloadEnabled(true)
                     onDone()

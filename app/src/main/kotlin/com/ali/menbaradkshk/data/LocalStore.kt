@@ -886,10 +886,6 @@ class LocalStore private constructor(context: Context) {
 
     fun autoDownloadEnabled(): Boolean = bool(KEY_AUTO_DOWNLOAD)
     fun setAutoDownloadEnabled(value: Boolean) = write { putBoolean(KEY_AUTO_DOWNLOAD, value) }
-    fun autoDownloadTarget(): String? = string(KEY_AUTO_TARGET).takeIf { it.isNotBlank() }
-    fun setAutoDownloadTarget(value: String?) = write {
-        if (value == null) remove(KEY_AUTO_TARGET) else putString(KEY_AUTO_TARGET, value)
-    }
     fun autoDownloadWifiOnly(): Boolean = bool(KEY_WIFI_ONLY, true)
     fun setAutoDownloadWifiOnly(value: Boolean) = write { putBoolean(KEY_WIFI_ONLY, value) }
 
@@ -1541,7 +1537,6 @@ class LocalStore private constructor(context: Context) {
         const val KEY_CELEBRATED_SUBS = "pers_celebrated_subs"
         const val KEY_BT_CAR_MODE = "bt_car_mode"
         const val KEY_HOME_MORE_EXPANDED = "home_more_expanded"
-        const val KEY_AUTO_TARGET = "auto_dl_target"
         const val KEY_WIFI_ONLY = "auto_dl_wifi_only"
         const val KEY_CONTINUE_REMINDER = "pref_continue_reminder"
         const val KEY_ANALYTICS = "analytics_event_counts"

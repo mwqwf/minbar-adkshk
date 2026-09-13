@@ -179,8 +179,12 @@ android {
         // تُسقط عامل التنزيل التلقائي كلّه، و`registerDefaultNetworkCallback`
         // تسقط صامتةً فتتجمّد لافتة «بلا إنترنت». وسؤال أوّل تشغيل صار يعلم
         // بحزم المتجر فلا يَعِد بما هو واقعٌ أصلاً.
-        versionCode = 33
-        versionName = "2.7.3"
+        // ٣٤ / ٢.٧.٤ — حذفُ إعدادٍ ميّت. «ما الذي يُنزّل تلقائياً؟» بخياراته
+        // الثلاثة فقد قارئَه الوحيد في إيداع «معمارية المكتبة الكاملة»
+        // (3647e7d) حين حلّ محرّك الأولوية محلّ الأهداف، فبقيت الورقة تُعرض
+        // وتُحفظ قيمتُها ولا أثرَ لها في شيء: وعدٌ للمستخدم بلا وفاء.
+        versionCode = 34
+        versionName = "2.7.4"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

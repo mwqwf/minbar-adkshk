@@ -466,6 +466,10 @@ class DownloadRepository private constructor(context: Context) {
      * (يُحذف الجزئي كله — أسلم من خليط). مفتاح الكاش = بصمة المحتوى إن
      * وُجدت (فيبقى الكاش صالحاً عبر تبديل المضيف) وإلا الرابط (السلوك القديم).
      */
+    // ⚠️ كاش media3 (ContentMetadata وCacheDataSource وDataSpec) واجهةٌ غير
+    // مستقرّة، فيلزمها إقرارٌ صريح كما في PlaybackService وMinbarApplication —
+    // وكان ناقصاً هنا وحدَه، فأخطأ lint بأربعة عشر خطأً. إقرارٌ لا تغييرَ سلوك.
+    @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
     private fun seedPartialFromStreamCache(lesson: Lesson, partial: File): Long = runCatching {
         val cache = com.ali.menbaradkshk.MinbarApplication.mediaCache(appContext)
         val key = lesson.sha256.ifBlank { lesson.audioUrl }

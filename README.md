@@ -1,6 +1,6 @@
 # منبر ادكصهك — Android أصلي بـ Kotlin
 
-> **🎧 استمع الآن على الويب:** [minbar-adkassahk.vercel.app/listen](https://minbar-adkassahk.vercel.app/listen) — مكتبة الدروس تُشغَّل من المتصفّح مباشرةً، بلا حساب وبلا تثبيت. والتطبيق أوسع: استماعٌ دون إنترنت وتنزيلٌ وإشعارات.
+> **🎧 استمع الآن على الويب:** [minbar-adkassahk.vercel.app](https://minbar-adkassahk.vercel.app) — مكتبة الدروس تُشغَّل من المتصفّح مباشرةً، بلا حساب وبلا تثبيت. مستودعُ الموقع منفصل: [mwqwf/menbar-site](https://github.com/mwqwf/menbar-site). والتطبيق أوسع: استماعٌ دون إنترنت وتنزيلٌ وإشعارات.
 > **📱 التطبيق على أندرويد:** [Google Play](https://play.google.com/store/apps/details?id=com.ali.menbaradkshk) · **▶️ قناتنا:** [يوتيوب](https://youtube.com/@Al-Mutafail)
 
 هذه نسخة Android أصلية موازية للتطبيق المنشور، مكتوبة بـ Kotlin وJetpack Compose.

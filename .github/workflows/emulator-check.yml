@@ -41,24 +41,9 @@ jobs:
           profile: pixel_5
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: |
-            set -e
-            adb install -r app/build/outputs/apk/debug/app-debug.apk
-            PKG=$(adb shell pm list packages | grep -o 'com.ali.menbaradkshk[a-z.]*' | head -1)
-            echo "الحزمة: $PKG"
-            adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS || true
-            adb logcat -c
-            adb shell am start -n "$PKG/com.ali.menbaradkshk.MainActivity"
-            sleep 45
-            adb shell dumpsys activity activities | grep -m1 topResumedActivity || true
-            adb logcat -d > logcat.txt
-            adb exec-out screencap -p > screen.png || true
-            # حرّاسٌ يُسقطون التشغيلة: انهيارٌ أو تجمّدٌ أو خروجٌ من المقدّمة.
-            grep -q "FATAL EXCEPTION" logcat.txt && { echo '⛔ انهيار'; grep -A20 "FATAL EXCEPTION" logcat.txt; exit 1; } || true
-            grep -q "ANR in $PKG" logcat.txt && { echo '⛔ تجمّد (ANR)'; exit 1; } || true
-            adb shell dumpsys activity activities | grep -q "topResumedActivity.*$PKG" \
-              || { echo '⛔ التطبيق ليس في المقدّمة بعد ٤٥ ثانية'; exit 1; }
-            echo "✅ أقلع وبقي حيّاً ٤٥ ثانية بلا انهيارٍ ولا تجمّد."
+          # ⛔ سطرٌ واحد عمداً: العدّاء ينفّذ كلّ سطرٍ في صدفةٍ مستقلّة
+          #    فتضيع المتغيّرات بين الأسطر — والمنطق كلّه في السكربت.
+          script: bash .github/scripts/emulator-smoke.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

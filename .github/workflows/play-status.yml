@@ -1,0 +1,29 @@
+# 🔎 حالة منبر ولوحته في Play — لأيّ جلسةٍ لا تملك أسرار المالك.
+# قراءةٌ محضة: يفتح تحريراً ويقرأ المسارات ثمّ يحذفه. لا يرفع ولا يغيّر شيئاً.
+# ⛔ لا تُشغّله وسير نشرٍ يجري على الحزمة نفسها: التحرير الثاني يُبطل الأوّل.
+name: play-status
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet cryptography
+      - name: قراءة المسارات
+        env:
+          SA: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          [ -n "$SA" ] || { echo "⛔ PLAY_SERVICE_ACCOUNT_JSON غير مضبوط"; exit 1; }
+          printf '%s' "$SA" > "$RUNNER_TEMP/sa.json"
+          for p in com.ali.menbaradkshk com.ali.ishaqiyin_admin; do
+            echo "== $p"
+            python tools/play_publish.py --package "$p" --list --sa "$RUNNER_TEMP/sa.json" || true
+          done
+          rm -f "$RUNNER_TEMP/sa.json"

@@ -20,8 +20,14 @@ gh workflow run bundle-with-assets.yml -R mwqwf/minbar-adkshk   # بناء + ت�
 gh workflow run emulator-check.yml -R mwqwf/minbar-adkshk       # برهان المحاكي (لقطة + سجلّ)
 gh workflow run build-publish.yml -R mwqwf/minbar-adkshk-admin  # اللوحة ⇐ الاختبار المغلق
 gh workflow run deploy.yml -R mwqwf/minbar-cloud                # الخادم
+gh workflow run play-status.yml -R mwqwf/minbar-adkshk           # حالة التطبيقين في Play
+gh workflow run deploy.yml -R mwqwf/minbar-cloud -f what=query -f sql="SELECT …"  # قراءة D1
 gh run list -R <repo> -L 1 && gh run view <id> -R <repo> --log   # التحقّق من الأثر
 ```
+
+⛔⛔ **ولا تقل «يلزم حاسوب المالك»**: كلّ شيء هنا. وإن عجزتَ فالسبب سرٌّ ناقص (سمِّه)،
+أو صلاحية رمزك لا تبلغ مستودعاً آخر (اطلب جلسةً عليه)، أو حدٌّ من المنصّة (اذكره).
+ولا تطلب منه مفتاحاً ولا كلمة مرور قطّ.
 
 ## «ابنِ» و«ارفع» = ثلاثة معاً (أمر المالك 2026-09-12)
 

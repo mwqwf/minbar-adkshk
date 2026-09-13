@@ -28,6 +28,12 @@ gh workflow run emulator-check.yml -R mwqwf/minbar-adkshk       # برهان ا�
 gh workflow run deploy.yml -R mwqwf/minbar-cloud                # الخادم (يحتاج CLOUDFLARE_API_TOKEN)
 ```
 
+```bash
+gh workflow run play-status.yml -R mwqwf/minbar-adkshk            # حالة التطبيقين في Play (قراءة)
+gh workflow run deploy.yml -R mwqwf/minbar-cloud -f what=schema   # مخطّطات D1
+gh workflow run deploy.yml -R mwqwf/minbar-cloud -f what=query -f sql="SELECT …"   # استعلام قراءة
+```
+
 والتحقّق من النتيجة **يُقرأ من السجلّ لا يُفترض**:
 
 ```bash
@@ -68,6 +74,15 @@ gh run view <id> -R <المستودع> --log | grep -aE "jar verified|المعا
 5. **لا إيداع لأيّ سرّ** ولا لمفتاح، ولا `git add <مجلّد>` (يكنس ما لم تكتبه) — بل مسارات صريحة.
 6. **أسماء متغيّرات التوقيع تختلف**: `MINBAR_SIGNING_*` للتطبيق و`MINBAR_ADMIN_SIGNING_*` للوحة.
 7. **الهاتف ممنوع** للاختبار — المحاكي وحده، وهو الآن في CI (`emulator-check.yml`).
+
+## ٥ب. ⛔⛔ ولا تقل «يلزم حاسوب المالك»
+
+كلّ ما يلزم العملَ صار في السحابة: البناء والتوقيع والنشر والمحاكي وقراءة Play وقاعدة D1
+ونشر الخادم. فإن عجزتَ عن شيء فالسبب واحدٌ من ثلاثة، **سمِّه بعينه ولا تُحِل على جهازه**:
+1. **سرٌّ ناقص** في المستودع (اسمه يظهر في فشل سير العمل) ⇒ أخبر المالك باسم السرّ وحدَه.
+2. **صلاحية رمزك** لا تبلغ مستودعاً آخر ⇒ اطلب منه تشغيل جلسةٍ على ذلك المستودع.
+3. **حدٌّ من المنصّة** (سقف Play، مراجعة المتجر) ⇒ اذكره بنصّه.
+وما عدا ذلك يُنجَز من هنا. ⛔ ولا تطلب منه مفتاحاً ولا كلمة مرور قطّ.
 
 ## ٦. معيار «أُنجز»
 

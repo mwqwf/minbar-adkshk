@@ -37,6 +37,8 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
+      - name: حارس التوثيق (README يطابق مصدر الحقيقة — لا نسخةَ تُنشر ووصفُها متخلّف)
+        run: python3 tools/sync_readme_version.py --check
       - name: الاختبارات (بوّابةٌ قبل أيّ بناء — النشر إلى الإنتاج لا يحتمل تسرّب خلل)
         run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest --no-daemon
       - name: خطّة الحزمتين من الكتالوج

@@ -151,6 +151,12 @@ private object AutoDownloadPolicy {
     /// Data Saver مفعَّل؟ لا تنزيل تلقائياً البتة — احترامٌ صريح لاختيار
     /// النظام قبل قيود WorkManager (القيود لا تعرف Data Saver).
     fun dataSaverOn(context: Context): Boolean {
+        // ⛔ `restrictBackgroundStatus` من API 24 و`minSdk` عندنا 23 — وكانت
+        // تُستدعى بلا حارسٍ ولا لفّ. وهي أوّل سطرٍ في عامل التنزيل التلقائي،
+        // فكان العامل يسقط على أندرويد ٦ بـNoSuchMethodError: تنزيلٌ تلقائي
+        // معطَّل هناك بالكامل وبصمت. و«Data Saver» نفسه لم يوجد قبل API 24،
+        // فغيابُه على ٦ ليس تخميناً بل حقيقةً: لا قيدَ لنحترمه.
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.N) return false
         val manager = context.getSystemService(android.net.ConnectivityManager::class.java)
             ?: return false
         return manager.restrictBackgroundStatus ==
@@ -184,8 +190,15 @@ class AutoDownloadWorker(
         // محرك الأولوية بدل الأهداف الثلاثة: طبقة السياق ثم النية ثم الباقي.
         // على شبكة محدودة سمح بها صراحةً: ميزانية 20م.ب كحدّ أقصى للدورة.
         val budget = if (metered) 20L * 1024 * 1024 else Long.MAX_VALUE
+        // 🎁 ما زالت حزم المتجر في الطريق؟ إذن لا نسحب من R2 ما سيصل منها
+        // مجّاناً بعد قليل — وإلّا دفع المستخدم شبكته ومساحته مرّتين.
+        val deferred = if (com.ali.menbaradkshk.data.AssetPackSeeder.storeDeliveryPending(applicationContext)) {
+            content.bundledShas(applicationContext)
+        } else {
+            emptySet()
+        }
         val planned = com.ali.menbaradkshk.data.PriorityEngine
-            .plan(applicationContext, budgetBytes = budget, maxItems = MAX_PER_RUN)
+            .plan(applicationContext, budgetBytes = budget, maxItems = MAX_PER_RUN, deferredShas = deferred)
         // ⚠️ ما هو في الطابور الآن دخله بنيّةٍ سُجّلت وقتها (يدويّة غالباً) —
         // وسمه «تلقائياً» هنا كان يقلب تنزيلاً يدويّاً منتظراً إلى مرشَّح إخلاء.
         val queuedNow = store.downloadQueue().toSet()

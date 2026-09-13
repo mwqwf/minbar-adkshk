@@ -126,6 +126,11 @@ class QuranDownloadWorker(
                 Manifest.permission.POST_NOTIFICATIONS,
             ) == PackageManager.PERMISSION_GRANTED
 
+    // ⚠️ إنذارٌ كاذب من lint: الإذن **مفحوصٌ فعلاً** في `canNotify()` أعلاه
+    // (POST_NOTIFICATIONS على تيراميسو فأعلى)، لكنّ lint لا يتتبّع الفحص عبر
+    // دالّةٍ مساعدة فيظنّه غائباً. ⛔ فلا يُضاف فحصٌ مكرّر إرضاءً له — الشيفرة
+    // صحيحة، والمكتوم هو الإنذار لا الخطر.
+    @android.annotation.SuppressLint("MissingPermission")
     private fun notify(notification: Notification) {
         if (!canNotify()) return
         runCatching {
@@ -134,6 +139,8 @@ class QuranDownloadWorker(
         }
     }
 
+    // ⚠️ الإنذار الكاذب نفسه: `canNotify()` تحرس الاستدعاء أدناه. انظر `notify`.
+    @android.annotation.SuppressLint("MissingPermission")
     private fun showDone(text: String) {
         val manager = NotificationManagerCompat.from(applicationContext)
         manager.cancel(NOTIFICATION_ID)

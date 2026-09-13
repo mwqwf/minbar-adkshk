@@ -11,6 +11,13 @@
 #      خارج مساحة العمل (فلا يدخل أيّ حزمة) ويُمحى في كل الأحوال بعد البناء،
 #      ويُمرَّر بمتغيّرات بيئة لا بملفّ إعدادات.
 name: bundle-with-assets
+#
+# 🚀 **الدمج ينشر** (أمر المالك 2026-09-13): دمجُ طلبِ سحبٍ في `main` يرفع
+#    `versionCode` ⇒ تُبنى النسخة وتُوقَّع وتُنشر إلى الإنتاج بلا ضغطةٍ من أحد.
+#    ⛔ والحارسُ الذي يمنع هذا من أن يكون كارثة هو **بوّابة رقم الإصدار** أدناه:
+#       لا يُبنى شيءٌ إلا إذا تغيّر `versionCode` فعلاً في هذه الدفعة. فتصحيحُ
+#       سطرٍ في README أو تعليقٍ في الشيفرة لا يُشعل نشراً، ولا تُرفع حزمةٌ
+#       برقمٍ مكرّر يرفضه Play أصلاً. ورفعُ الرقم فعلٌ واعٍ لا يقع سهواً.
 on:
   workflow_dispatch:
     inputs:
@@ -20,10 +27,50 @@ on:
       track:
         description: "مسار Play — منبر يُنشر إلى الإنتاج مباشرةً بأمر المالك"
         default: "production"
+  push:
+    branches: [main]
+    paths:
+      - "app/build.gradle.kts"   # لا يُوقظ السيرَ إلا ملفُّ رقم الإصدار نفسه
 permissions:
   contents: read
+# ⛔ نشرٌ واحدٌ في كلّ لحظة: تشغيلتان متوازيتان تفتحان تحريرَين في Play
+# فيُبطل الثاني الأوّل — وهي القاعدة نفسها التي يحرسها play-status.
+concurrency:
+  group: minbar-play-publish
+  cancel-in-progress: false
 jobs:
+  # 🔢 بوّابة رقم الإصدار: هل تغيّر `versionCode` في هذه الدفعة؟
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.check.outputs.go }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # الدفعة وسابقتها تكفيان للمقارنة
+      - id: check
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "🖐️ تشغيلٌ يدويّ — البوّابة مفتوحة بلا شرط."
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          read_code() { grep -m1 -oE 'versionCode[[:space:]]*=[[:space:]]*[0-9]+' | grep -oE '[0-9]+'; }
+          cur=$(read_code < app/build.gradle.kts)
+          prev=$(git show HEAD^:app/build.gradle.kts 2>/dev/null | read_code || echo "")
+          echo "السابق: ${prev:-«لا سابق»} · الحالي: $cur"
+          if [ -n "$prev" ] && [ "$prev" = "$cur" ]; then
+            echo "⏸️ رقم الإصدار لم يتغيّر — لا بناءَ ولا نشر. (هذا هو المقصود.)"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "🚀 رقم الإصدار صار $cur — البناء والنشر إلى الإنتاج."
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
   bundle:
+    needs: gate
+    if: needs.gate.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -37,6 +84,8 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
+      - name: حارس التوثيق (README يطابق مصدر الحقيقة — لا نسخةَ تُنشر ووصفُها متخلّف)
+        run: python3 tools/sync_readme_version.py --check
       - name: الاختبارات (بوّابةٌ قبل أيّ بناء — النشر إلى الإنتاج لا يحتمل تسرّب خلل)
         run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest --no-daemon
       - name: خطّة الحزمتين من الكتالوج

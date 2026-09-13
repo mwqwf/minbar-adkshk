@@ -1,16 +1,39 @@
 # 🔎 حالة منبر ولوحته في Play — لأيّ جلسةٍ لا تملك أسرار المالك.
 # قراءةٌ محضة: يفتح تحريراً ويقرأ المسارات ثمّ يحذفه. لا يرفع ولا يغيّر شيئاً.
 # ⛔ لا تُشغّله وسير نشرٍ يجري على الحزمة نفسها: التحرير الثاني يُبطل الأوّل.
+#
+# ⏰ **ولماذا جدولٌ لا تشغيلٌ يدوي؟** لأنّ جلسات كلود لا تُشغّل سيرَ عمل — وهو
+#    منعٌ من منصّة أنثروبيك نفسها لا من صلاحيّات المستودع، فلا يرفعه أيّ دورٍ
+#    يمنحه المالك. والجدولُ يقلب المعادلة: السجلّ يُكتب من تلقائه كلّ يوم،
+#    والجلسة تقرؤه (والقراءة مباحة لها). فلا تنتظر المالكَ ضغطةً.
 name: play-status
 on:
   workflow_dispatch:
+  schedule:
+    # 03:17 بتوقيت UTC يومياً — دقيقةٌ شاذّة عمداً: ذروة الساعة مزدحمة عند GitHub.
+    - cron: "17 3 * * *"
 permissions:
   contents: read
+  actions: read   # للحارس أدناه وحدَه: يقرأ هل يجري نشرٌ الآن. لا كتابة.
 jobs:
   status:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: ⛔ حارس التصادم — لا قراءةَ والنشر جارٍ (التحرير الثاني يُبطل الأوّل)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          busy=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/actions/workflows/bundle-with-assets.yml/runs?per_page=20" \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(1 for r in d.get("workflow_runs",[]) if r.get("status") in ("queued","in_progress","waiting","requested")))')
+          if [ "$busy" != "0" ]; then
+            echo "⏸️ سير نشرٍ يجري الآن ($busy تشغيلة) — أُلغي القراءة صوناً للتحرير الجاري."
+            exit 1
+          fi
+          echo "✅ لا نشرَ جارياً — القراءة آمنة."
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:

@@ -347,6 +347,25 @@ class ContentRepository private constructor(context: Context) {
         }
     }.getOrNull()
 
+    /**
+     * 🎁 بصمات الدروس التي تحملها حزم المتجر — أي التي كانت في الكتالوج لحظة
+     * البناء، وهي بعينها ما تُحضره `core` و`rest`. يُقرأ من اللقطة المضمّنة
+     * مرّةً ويُحفظ، فلا يُفكّ gzip في كل دورة تنزيل.
+     *
+     * فارغةٌ حين لا لقطة (نسخةٌ قديمة أو بناءٌ بلا أصول) — وحينها لا يؤجَّل شيء.
+     */
+    fun bundledShas(context: Context): Set<String> = bundledShasCache ?: synchronized(this) {
+        bundledShasCache ?: (
+            readBundledSnapshot(context)
+                ?.lessons
+                ?.mapNotNullTo(HashSet()) { it.sha256.takeIf(String::isNotBlank) }
+                ?: emptySet()
+            ).also { bundledShasCache = it }
+    }
+
+    @Volatile
+    private var bundledShasCache: Set<String>? = null
+
     fun refreshPersonalization() {
         _state.value = _state.value.copy(lessons = mergeDurations(_state.value.lessons))
     }

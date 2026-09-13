@@ -87,7 +87,21 @@ fun rememberOnline(): Boolean {
                 online = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             }
         }
-        runCatching { connectivity.registerDefaultNetworkCallback(callback) }
+        // ⚠️ `registerDefaultNetworkCallback` من API 24، و`minSdk` عندنا 23.
+        // كان الاستدعاء ملفوفاً بـrunCatching وحدَها، فيسقط صامتاً على أندرويد ٦:
+        // لا تُسجَّل مراقبةٌ أصلاً، فتتجمّد لافتة «بلا إنترنت» على أوّل حالة ولا
+        // تتحدّث أبداً. والبديل على ٦ هو الطلب العام بمرشّح الإنترنت — وهو من
+        // API 21، ويعطي التنبيهات نفسها للشبكة الافتراضية عملياً.
+        runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                connectivity.registerDefaultNetworkCallback(callback)
+            } else {
+                val request = android.net.NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build()
+                connectivity.registerNetworkCallback(request, callback)
+            }
+        }
         onDispose { runCatching { connectivity.unregisterNetworkCallback(callback) } }
     }
     return online

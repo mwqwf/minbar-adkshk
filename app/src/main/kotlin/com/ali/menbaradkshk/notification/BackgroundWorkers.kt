@@ -184,8 +184,15 @@ class AutoDownloadWorker(
         // محرك الأولوية بدل الأهداف الثلاثة: طبقة السياق ثم النية ثم الباقي.
         // على شبكة محدودة سمح بها صراحةً: ميزانية 20م.ب كحدّ أقصى للدورة.
         val budget = if (metered) 20L * 1024 * 1024 else Long.MAX_VALUE
+        // 🎁 ما زالت حزم المتجر في الطريق؟ إذن لا نسحب من R2 ما سيصل منها
+        // مجّاناً بعد قليل — وإلّا دفع المستخدم شبكته ومساحته مرّتين.
+        val deferred = if (com.ali.menbaradkshk.data.AssetPackSeeder.storeDeliveryPending(applicationContext)) {
+            content.bundledShas(applicationContext)
+        } else {
+            emptySet()
+        }
         val planned = com.ali.menbaradkshk.data.PriorityEngine
-            .plan(applicationContext, budgetBytes = budget, maxItems = MAX_PER_RUN)
+            .plan(applicationContext, budgetBytes = budget, maxItems = MAX_PER_RUN, deferredShas = deferred)
         // ⚠️ ما هو في الطابور الآن دخله بنيّةٍ سُجّلت وقتها (يدويّة غالباً) —
         // وسمه «تلقائياً» هنا كان يقلب تنزيلاً يدويّاً منتظراً إلى مرشَّح إخلاء.
         val queuedNow = store.downloadQueue().toSet()

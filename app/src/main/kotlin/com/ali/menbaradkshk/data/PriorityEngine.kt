@@ -20,7 +20,16 @@ object PriorityEngine {
     /// «الأحدث نشراً» في طبقة المنبر = آخر ثلاثين يوماً.
     private const val FRESH_WINDOW_MS = 30L * 24 * 60 * 60 * 1_000
 
-    fun plan(context: Context, budgetBytes: Long, maxItems: Int): List<Lesson> {
+    /**
+     * @param deferredShas بصمات دروسٍ يُنتظر أن يُحضرها متجر Play بعدُ، فلا
+     *   تُسحب من R2 الآن. فارغةٌ في الحالة العامّة (وصلت الحزم، أو لا حزم).
+     */
+    fun plan(
+        context: Context,
+        budgetBytes: Long,
+        maxItems: Int,
+        deferredShas: Set<String> = emptySet(),
+    ): List<Lesson> {
         if (maxItems <= 0 || budgetBytes <= 0L) return emptyList()
         val store = LocalStore.get(context)
         val content = ContentRepository.get(context)
@@ -79,6 +88,10 @@ object PriorityEngine {
             candidates.asSequence()
                 .filter { it.id !in picked && it.id !in userDeleted }
                 .filter { allowDownloaded || it.id !in downloadedIds }
+                // 🎁 ما يُنتظر من المتجر لا يُسحب من R2: وصولُه بعد قليلٍ مجّاناً
+                // خيرٌ من دفع شبكة المستخدم في نسخةٍ ثانية من الصوت نفسه.
+                // و«stale» استثناء: صوتُه بُدِّل بعد البناء فالحزمة لا تحمله.
+                .filter { allowDownloaded || it.sha256 !in deferredShas }
                 .sortedBy(::bytesRemaining)
                 .forEach { lesson ->
                     if (result.size >= maxItems) return

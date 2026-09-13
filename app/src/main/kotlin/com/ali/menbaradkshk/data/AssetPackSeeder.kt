@@ -66,6 +66,42 @@ object AssetPackSeeder {
     }.getOrDefault(0L)
 
     /**
+     * ⏳ هل ما زال يُنتظر من متجر Play أن يُحضر بقيّة المكتبة؟
+     *
+     * **لماذا هذا السؤال أصلاً؟** لأنّ حزمتي `fast-follow` تصلان **بعد** التثبيت
+     * بمدّة يقرّرها المتجر، بينما يكتمل الكتالوج في ثوانٍ. فبين اللحظتين يرى
+     * محرّك التنزيل مكتبةً «غير منزَّلة» فيسحبها من R2 — ثمّ تصل الحزم بالصوت
+     * نفسه. فتُدفع الشبكة مرّتين وتُشغل المساحة مرّتين.
+     *
+     * والحكم هنا محافظ عمداً، فالخطأ في الاتجاهين مكلف:
+     * - `installerIsPlay`: نسخةٌ لم تأتِ من المتجر لا حزمَ لها أصلاً، فلا يُنتظر
+     *   لها شيء — وإلّا حُرم مستخدمُها من التنزيل التلقائي إلى الأبد.
+     * - `GRACE_MS`: وإن جاءت من المتجر ولم تصل الحزم خلال المهلة، فالأرجح أنّها
+     *   لن تصل (مساحة، أو حذفَها المستخدم). فنعود إلى R2 ولا نتركه بلا صوت.
+     *
+     * فالتأجيل مؤقّت دائماً، ولا يمنع تنزيلاً إلى غير رجعة.
+     */
+    fun storeDeliveryPending(context: Context): Boolean = runCatching {
+        val app = context.applicationContext
+        val pm = app.packageManager
+        val installer = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            pm.getInstallSourceInfo(app.packageName).installingPackageName
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getInstallerPackageName(app.packageName)
+        }
+        if (installer != PLAY_STORE_PACKAGE) return@runCatching false
+        val installedAt = pm.getPackageInfo(app.packageName, 0).firstInstallTime
+        System.currentTimeMillis() - installedAt < GRACE_MS
+    }.getOrDefault(false)
+
+    /** حزمة متجر Play — مصدر التثبيت الذي وحدَه يُنتظر منه إحضار الحزم. */
+    private const val PLAY_STORE_PACKAGE = "com.android.vending"
+
+    /** مهلة انتظار حزم `fast-follow` قبل العودة إلى R2: سبعة أيام. */
+    private const val GRACE_MS = 7L * 24 * 60 * 60 * 1_000
+
+    /**
      * إزالة المكتبة المدمجة لتحرير المساحة — الطريق الوحيد الصحيح لحذف ملفّات
      * الحزم (حذفُها ملفّاً ملفّاً يُفسدها ولا يعلم به المتجر). وما بعدها يعود
      * الصوت من R2 بمحرّك التنزيل كما كان.

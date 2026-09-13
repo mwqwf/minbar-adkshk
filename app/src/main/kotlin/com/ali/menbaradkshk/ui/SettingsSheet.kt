@@ -114,7 +114,6 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     val themeMode = remember(revision) { vm.store.themeMode() }
     val fontScale = remember(revision) { vm.store.fontScale() }
     val autoDownload = remember(revision) { vm.store.autoDownloadEnabled() }
-    val autoTarget = remember(revision) { vm.store.autoDownloadTarget() ?: "recent" }
     val wifiOnly = remember(revision) { vm.store.autoDownloadWifiOnly() }
     val continueReminder = remember(revision) { vm.store.continueReminderEnabled() }
     val wardEnabled = remember(revision) { vm.store.wardEnabled() }
@@ -123,9 +122,6 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     val quranWardPages = remember(revision) { vm.store.quranWardPages() }
     val quranWardHour = remember(revision) { vm.store.quranWardHour() }
     val quranWardMinute = remember(revision) { vm.store.quranWardMinute() }
-    // عدد المتابَعات يُكتب في وصف هدف التنزيل «الأقسام التي أتابعها» كي لا
-    // يبدو الخيار معطوباً لمن لا يتابع شيئاً.
-    val followedCount = remember(revision) { vm.store.followedSubcategories().size }
     val weeklyGoal = remember(revision) { vm.store.weeklyGoalMinutes() }
     val downloadsMap = remember(revision) { vm.store.downloads() }
     val downloadsCount = downloadsMap.size
@@ -145,7 +141,6 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     var wardTimeDialog by remember { mutableStateOf(false) }
     var quranWardSheet by remember { mutableStateOf(false) }
     var quranWardTimeDialog by remember { mutableStateOf(false) }
-    var autoTargetSheet by remember { mutableStateOf(false) }
     var autoModeSheet by remember { mutableStateOf(false) }
     var goalSheet by remember { mutableStateOf(false) }
     var deleteDialog by remember { mutableStateOf(false) }
@@ -328,23 +323,6 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                         },
                         onClick = { autoModeSheet = true },
                     )
-                }
-                if (autoDownload) {
-                    item(key = "autodl-target") {
-                        SettingsTile(
-                            icon = Icons.Filled.DownloadDone,
-                            title = "ما الذي يُنزّل تلقائياً؟",
-                            trailing = {
-                                Text(
-                                    autoTargetLabel(autoTarget),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            },
-                            // ⚠️ ورقةٌ لا تبديلٌ بالنقر: صارت الأهداف ثلاثة،
-                            // والتدوير بينها يُخفي الخيارَين اللذين لا يظهران.
-                            onClick = { autoTargetSheet = true },
-                        )
-                    }
                 }
                 item(key = "smartdl") {
                     // 🧠 مستقلّ عن «التنزيل التلقائي» أعلاه: مفعَّل افتراضياً
@@ -830,10 +808,7 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                         when (value) {
                             "off" -> vm.setAutoDownloadEnabled(false)
                             else -> {
-                                if (!autoDownload) {
-                                    vm.setAutoDownloadEnabled(true)
-                                    vm.setAutoDownloadTarget(autoTarget)
-                                }
+                                if (!autoDownload) vm.setAutoDownloadEnabled(true)
                                 vm.setAutoDownloadWifiOnly(value == "wifi")
                             }
                         }
@@ -842,41 +817,6 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                     headlineContent = { Text(label) },
                     supportingContent = { Text(hint) },
                     trailingContent = if (current == value) {
-                        { Icon(Icons.Filled.Check, null, tint = Teal) }
-                    } else {
-                        null
-                    },
-                )
-            }
-            Spacer(Modifier.height(24.dp))
-        }
-    }
-
-    if (autoTargetSheet) {
-        ModalBottomSheet(onDismissRequest = { autoTargetSheet = false }) {
-            Text(
-                "ما الذي يُنزّل تلقائياً؟",
-                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                textAlign = TextAlign.Center,
-                style = MaterialTheme.typography.titleMedium,
-            )
-            AUTO_TARGETS.forEach { (value, label) ->
-                // وصفٌ لكل هدف — و«الأقسام التي أتابعها» يقول عددها صراحةً كي
-                // لا يبدو معطوباً لمن لم يتابع بعد.
-                val hint = when {
-                    value == "main" -> "ما يُقترح لك بحسب استماعك"
-                    value != "followed" -> "آخر ما نُشر في المنبر"
-                    followedCount > 0 -> "تتابع ${sectionsLabel(followedCount)}"
-                    else -> "لا تتابع أقساماً بعد — تابِع قسماً ليعمل"
-                }
-                ListItem(
-                    modifier = Modifier.clickable {
-                        vm.setAutoDownloadTarget(value)
-                        autoTargetSheet = false
-                    },
-                    headlineContent = { Text(label) },
-                    supportingContent = { Text(hint) },
-                    trailingContent = if (autoTarget == value) {
                         { Icon(Icons.Filled.Check, null, tint = Teal) }
                     } else {
                         null
@@ -942,17 +882,6 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     }
 }
 
-/// أهداف التنزيل التلقائي الثلاثة: القيمة المخزَّنة واسمها المعروض. الترتيب
-/// هو ترتيب الورقة، و«recent» أوّلها لأنّه الافتراض.
-private val AUTO_TARGETS = listOf(
-    "recent" to "أحدث الدروس",
-    "main" to "خلاصتك المقترحة",
-    "followed" to "الأقسام التي أتابعها",
-)
-
-private fun autoTargetLabel(value: String): String =
-    AUTO_TARGETS.firstOrNull { it.first == value }?.second ?: AUTO_TARGETS.first().second
-
 /**
  * مقادير وِرد المصحف الخمسة: عدد الصفحات واسمُه كما يقوله الناس.
  *
@@ -972,11 +901,6 @@ private fun quranWardAmountLabel(pages: Int): String =
     QURAN_WARD_AMOUNTS.firstOrNull { it.first == pages }?.second
         ?: com.ali.menbaradkshk.util.quranPagesLabel(pages)
 
-/// عدد الأقسام بصيغة عربيّة صحيحة («قسمين» لا «2 قسم») — بقاعدة
-/// [com.ali.menbaradkshk.util.arabicCountLabel] الواحدة نفسها التي تصوغ
-/// الصفحات، فلا صيغتا جمعٍ تفترقان.
-private fun sectionsLabel(n: Int): String =
-    com.ali.menbaradkshk.util.arabicCountLabel(n, "قسماً واحداً", "قسمين", "أقسام", "قسماً")
 
 /// وقتٌ بصيغة ١٢ ساعة عربيّة — يتقاسمه وِردا الدروس والمصحف، فالساعة السالبة
 /// تعني «بلا تذكير» في كليهما.

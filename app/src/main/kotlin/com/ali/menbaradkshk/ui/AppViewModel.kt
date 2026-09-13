@@ -1063,11 +1063,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         BackgroundScheduler.scheduleAutoDownload(getApplication())
     }
 
-    fun setAutoDownloadTarget(target: String?) {
-        store.setAutoDownloadTarget(target)
-        BackgroundScheduler.scheduleAutoDownload(getApplication())
-    }
-
     /// 📴 «أظهر المحفوظ فقط» — مفتاح شريط انقطاع الإنترنت.
     ///
     /// حالة عابرة لا تُحفظ في الجهاز عن قصد: هي جوابٌ على وضعٍ راهن (لا شبكة

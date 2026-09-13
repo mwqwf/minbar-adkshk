@@ -23,6 +23,7 @@
   .btn{display:block;width:100%;padding:14px 18px;border-radius:14px;font-size:16px;font-weight:700;
        text-decoration:none;margin-bottom:10px}
   .btn-secondary{background:#eaf4f4;color:var(--teal-dark)}
+  .btn-listen{background:var(--teal);color:#fff}
   .gplay{display:flex;align-items:center;justify-content:center;gap:11px;background:var(--navy);color:#fff;
          border:1px solid rgba(255,255,255,.22);border-radius:14px;padding:12px 18px;text-decoration:none;
          line-height:1.25;margin-bottom:10px;transition:border-color .15s ease}
@@ -43,7 +44,19 @@
     </div>
     <h1>هذا درس صوتي من منبر ادكصهك</h1>
     <p>إن كان التطبيق مثبَّتاً على جهازك فسيُفتح الدرس مباشرة عند النقر على الرابط.
-       وإن لم يكن مثبَّتاً بعد، حمّله من Google Play ثم افتح الرابط من جديد.</p>
+       وإن لم يكن مثبَّتاً بعد، فاستمع إليه هنا في المتصفّح، أو حمّل التطبيق.</p>
+    <!-- 🎧 زرُّ الاستماع في المتصفّح: يظهر فقط متى عُرف معرّف الدرس من المسار،
+         فلا يَعِد بما لا يقدر عليه. والمشغّل نفسه في /listen. -->
+    <a class="btn btn-listen" id="listen" href="/listen" style="display:none">🎧 استمع في المتصفّح</a>
+    <script>
+      (function () {
+        var m = location.pathname.match(/^\/lesson\/([^/]+)\/?$/);
+        var a = document.getElementById("listen");
+        if (!m || !a) return;
+        a.href = "/listen?id=" + encodeURIComponent(decodeURIComponent(m[1]));
+        a.style.display = "block";
+      })();
+    </script>
     <a class="gplay" href="https://play.google.com/store/apps/details?id=com.ali.menbaradkshk" rel="noopener">
       <svg viewBox="0 0 512 512" aria-hidden="true"><path fill="#EA4335" d="M325.3 234.3 104.6 13.6 375 168.9z"/><path fill="#FBBC04" d="M410.9 186.4 375 168.9l-49.7 65.4 49.7 65.4 36.9-17.5c19.3-9.4 19.3-86.4-1-95.8z"/><path fill="#4285F4" d="M104.6 498.4 325.3 277.7 375 343.1z"/><path fill="#34A853" d="M104.6 13.6c-8.5 4.4-14.6 12.6-14.6 24.5v435.8c0 11.9 6.1 20.1 14.6 24.5l220.7-220.7z"/></svg>
       <span class="t"><small>حمّله من</small><b>Google Play</b></span>

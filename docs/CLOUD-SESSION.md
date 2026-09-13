@@ -25,7 +25,7 @@
 gh workflow run bundle-with-assets.yml -R mwqwf/minbar-adkshk   # التطبيق ⇐ الإنتاج
 gh workflow run build-publish.yml -R mwqwf/minbar-adkshk-admin  # اللوحة ⇐ الاختبار المغلق
 gh workflow run emulator-check.yml -R mwqwf/minbar-adkshk       # برهان المحاكي
-gh workflow run deploy.yml -R mwqwf/minbar-cloud                # الخادم (يحتاج CLOUDFLARE_API_TOKEN)
+gh workflow run deploy.yml -R mwqwf/minbar-cloud                # الخادم
 ```
 
 ```bash
@@ -96,5 +96,7 @@ gh run view <id> -R <المستودع> --log | grep -aE "jar verified|المعا
 - الخادم منشور وفيه جلسات المشرفين وسجلّ التدقيق ورموز الربط والنبض.
 - **معلَّقٌ بقرار المالك**: إعادة تشكيل شاشة التنزيلات إلى «المكتبة على جهازك»
   (سطرٌ للمكتبة المدمجة بحجمها وزرّ إزالتها + الدروس غير المشمولة بالحزم وحدها).
-- **ينقص سرٌّ واحد**: `CLOUDFLARE_API_TOKEN` في `mwqwf/minbar-cloud` لينشر الخادمَ من CI.
+- **الأسرار كلّها مضبوطة**: التوقيع وحساب Play في مستودعَي التطبيقين، و`CLOUDFLARE_API_TOKEN`
+  في `mwqwf/minbar-cloud` — ونشر الخادم من CI **متحقَّق** (2026-09-13: `Deployed minbar-api`
+  ثمّ `/v1/probe` أعاد 485 درساً). فلا شيء في منبر يحتاج جهاز المالك.
 - نسخة الأسرار الاحتياطية المشفّرة في دلو R2 خاصّ — الطريق في `minbar-cloud/RESTORE.md`.

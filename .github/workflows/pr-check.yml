@@ -30,15 +30,29 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: حارس التوثيق (README يطابق مصدر الحقيقة)
         run: python3 tools/sync_readme_version.py --check
-      - name: الترجمة والاختبارات والفحص
-        run: |
-          chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-daemon
-      - name: تقرير الفحص عند الفشل
+      # ⛔ خطوةٌ لكل فحص لا خطوةٌ للثلاثة: حين تفشل واحدة يقول اسمُ الخطوة أيُّها
+      #    فشل، بلا تنقيبٍ في سجلٍّ طويل.
+      - name: الاختبارات
+        run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest --no-daemon
+      - name: الفحص (lint)
+        run: ./gradlew :app:lintDebug --no-daemon
+      - name: بناء نسخة التصحيح
+        run: ./gradlew :app:assembleDebug --no-daemon
+      # 📄 وتقريرٌ **مقتضب** عند الفشل: أسطر الخطأ وحدها. وسكبُ التقرير كاملاً
+      #    كان يدفن الخطأ تحت آلاف أسطر HTML — فلا يُقرأ.
+      - name: أسطر الخطأ عند الفشل
         if: failure()
         run: |
-          for f in app/build/reports/lint-results-debug.txt \
-                   app/build/reports/tests/testDebugUnitTest/index.html; do
-            [ -f "$f" ] && { echo "::group::$f"; head -c 20000 "$f"; echo; echo "::endgroup::"; }
+          lint=app/build/reports/lint-results-debug.txt
+          if [ -f "$lint" ]; then
+            echo "::group::أخطاء lint"
+            grep -nE "^[^ ].*: (Error|Warning):" "$lint" | head -40 || echo "لا سطرَ مطابق"
+            echo "::endgroup::"
+          fi
+          for x in app/build/test-results/testDebugUnitTest/*.xml; do
+            [ -f "$x" ] || continue
+            grep -l "<failure" "$x" >/dev/null 2>&1 && {
+              echo "::group::اختبارٌ فاشل: $x"; head -c 4000 "$x"; echo; echo "::endgroup::"
+            }
           done
           exit 1

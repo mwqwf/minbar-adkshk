@@ -25,7 +25,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Cancel
@@ -36,7 +36,7 @@ import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Downloading
 import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
@@ -746,7 +746,7 @@ private fun MushafPagesRow(vm: AppViewModel, riwayaId: String) {
                 when {
                     running -> Icons.Filled.Close
                     complete -> Icons.Filled.DownloadDone
-                    else -> Icons.Filled.MenuBook
+                    else -> Icons.AutoMirrored.Filled.MenuBook
                 },
                 null,
                 tint = when {
@@ -2054,7 +2054,7 @@ private fun QuranReaderBar(
             // سينتقل إليه** لا ما هو فيه، فالزرّ وعدٌ بالنتيجة لا وصفٌ للحال.
             if (showModeToggle) TextButton(onClick = onToggleMode) {
                 Icon(
-                    if (imageMode) Icons.Filled.Article else Icons.Filled.MenuBook,
+                    if (imageMode) Icons.AutoMirrored.Filled.Article else Icons.AutoMirrored.Filled.MenuBook,
                     contentDescription = null,
                     modifier = Modifier.size(18.dp),
                     tint = Teal,

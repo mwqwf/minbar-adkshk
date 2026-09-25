@@ -27,7 +27,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -385,7 +385,7 @@ private fun SupportComposer(onSend: (String, File?) -> Unit) {
             enabled = text.isNotBlank() || recorded != null,
             modifier = Modifier.fillMaxWidth().height(56.dp),
         ) {
-            Icon(Icons.Filled.Send, contentDescription = null)
+            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)
             Spacer(Modifier.width(8.dp))
             Text("أرسل")
         }

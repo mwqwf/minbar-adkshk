@@ -47,7 +47,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.ThumbUp
-import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Add
@@ -250,7 +250,7 @@ fun PlayerScreen(
                             )
                             DropdownMenuItem(
                                 text = { Text("مشكلة في الصوت") },
-                                leadingIcon = { Icon(Icons.Filled.VolumeOff, null) },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.VolumeOff, null) },
                                 onClick = { feedbackMenu = false; feedbackFor = "audio_issue" },
                             )
                             DropdownMenuItem(

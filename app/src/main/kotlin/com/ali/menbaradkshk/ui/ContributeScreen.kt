@@ -37,6 +37,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledTonalButton
@@ -491,7 +492,7 @@ fun ContributeScreen(vm: AppViewModel) {
                 value = if (noCategory) "يختاره المشرف" else category?.name.orEmpty(),
                 onValueChange = {},
                 readOnly = true,
-                modifier = Modifier.fillMaxWidth().menuAnchor(),
+                modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
                 label = { Text("القسم الرئيسي") },
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(categoryMenu) },
                 isError = missingField == FIELD_CATEGORY,
@@ -521,7 +522,7 @@ fun ContributeScreen(vm: AppViewModel) {
                 value = if (noCategory) "يختاره المشرف" else subcategory?.name.orEmpty(),
                 onValueChange = {},
                 readOnly = true,
-                modifier = Modifier.fillMaxWidth().menuAnchor(),
+                modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
                 label = { Text("القسم الفرعي") },
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(subcategoryMenu) },
                 isError = missingField == FIELD_SUBCATEGORY,

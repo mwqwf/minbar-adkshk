@@ -1,0 +1,46 @@
+# 🩺 صحّة منبر ولوحته في Play: الأعطال وANR ومشكلاتها بأثرها ومراجعات الأسبوع.
+# قراءةٌ محضة عبر Play Developer Reporting API — لا يفتح «تحريراً»، فلا يزاحم نشراً جارياً.
+#
+# ⏰ جدولٌ يوميّ + دفعٌ إلى فرعٍ claude/** يمسّ هذا الملفّ أو الأداة: لأنّ جلسات كلود
+#    لا تُشغّل سيرَ عمل، والدفعُ زنادٌ تملكه. والمستودع عامّ فالدقائق مجّانية.
+#    النتيجة في السجلّ وفي أثرٍ (artifact) اسمه play-vitals.
+name: play-vitals
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "47 3 * * *"
+  push:
+    branches: ["claude/**"]
+    paths:
+      - ".github/workflows/play-vitals.yml"
+      - "tools/play_vitals.py"
+permissions:
+  contents: read
+concurrency:
+  group: play-vitals
+  cancel-in-progress: true
+jobs:
+  vitals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet cryptography
+      - name: قراءة الصحّة
+        env:
+          SA: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          [ -n "$SA" ] || { echo "⛔ PLAY_SERVICE_ACCOUNT_JSON غير مضبوط"; exit 1; }
+          printf '%s' "$SA" > "$RUNNER_TEMP/sa.json"
+          python tools/play_vitals.py --sa "$RUNNER_TEMP/sa.json" \
+            --package com.ali.menbaradkshk --package com.ali.ishaqiyin_admin --out vitals.json
+          rm -f "$RUNNER_TEMP/sa.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: play-vitals
+          path: vitals.json
+          retention-days: 14

@@ -53,7 +53,6 @@ import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.HowToVote
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.LocalFireDepartment
-import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircleFilled
@@ -67,7 +66,7 @@ import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Today
-import androidx.compose.material.icons.filled.Undo
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -674,9 +673,9 @@ private fun notificationIcon(type: String): ImageVector = when (type) {
     "lesson" -> Icons.Filled.Audiotrack
     "category" -> Icons.Filled.Folder
     "subcategory" -> Icons.Filled.FolderOpen
-    "book" -> Icons.Filled.MenuBook
+    "book" -> Icons.AutoMirrored.Filled.MenuBook
     "submission" -> Icons.Filled.HowToVote
-    "transcript" -> Icons.Filled.MenuBook
+    "transcript" -> Icons.AutoMirrored.Filled.MenuBook
     "update" -> Icons.Filled.SystemUpdate
     else -> Icons.Filled.Campaign
 }
@@ -1013,7 +1012,7 @@ fun MySubmissionsScreen(vm: AppViewModel) {
                                     }
                                     TextButton(onClick = { withdrawTarget = submission }) {
                                         Icon(
-                                            Icons.Filled.Undo,
+                                            Icons.AutoMirrored.Filled.Undo,
                                             null,
                                             modifier = Modifier.size(18.dp),
                                             tint = MaterialTheme.colorScheme.error,
@@ -1203,7 +1202,7 @@ private fun TranscriptSubmissionCard(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = onWithdraw) {
                         Icon(
-                            Icons.Filled.Undo,
+                            Icons.AutoMirrored.Filled.Undo,
                             null,
                             modifier = Modifier.size(18.dp),
                             tint = MaterialTheme.colorScheme.error,

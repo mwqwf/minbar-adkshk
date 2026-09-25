@@ -25,7 +25,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.DownloadForOffline
-import androidx.compose.material.icons.filled.FactCheck
+import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.FolderShared
@@ -36,7 +36,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.LocalFireDepartment
-import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Restore
@@ -246,7 +246,7 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                     onClick = { group = "data" },
                 )
                 SettingsTile(
-                    icon = Icons.Filled.FactCheck,
+                    icon = Icons.AutoMirrored.Filled.FactCheck,
                     title = "مساهماتي",
                     subtitle = "تابع قرار المشرفين وسبب النتيجة",
                     onClick = {
@@ -496,7 +496,7 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                 // وقتَه عند التفعيل، ثم مقدارُه ووقتُه سطرين تحته.
                 item(key = "quran-ward") {
                     SettingsTile(
-                        icon = Icons.Filled.MenuBook,
+                        icon = Icons.AutoMirrored.Filled.MenuBook,
                         title = "وِرد المصحف اليومي",
                         subtitle = when {
                             quranWardPages <= 0 -> "مقدار يوميّ من المصحف وتذكير في وقت تختاره"

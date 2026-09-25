@@ -120,13 +120,16 @@ def main():
             print("issues ERROR:", iss)
         else:
             print(f"issues: {len(iss)}")
-            for it in iss:
+            for it in sorted(iss, key=lambda x: -int(x.get("errorReportCount") or 0)):
                 print(f"--- [{it.get('type')}] reports={it.get('errorReportCount')} users={it.get('distinctUsers')} "
-                      f"versions={it.get('firstAppVersion',{}).get('versionCode')}..{it.get('lastAppVersion',{}).get('versionCode')}")
-                print("    cause:", it.get("cause"), "| at:", it.get("location"))
+                      f"versions={it.get('firstAppVersion',{}).get('versionCode')}..{it.get('lastAppVersion',{}).get('versionCode')}"
+                      f" | {it.get('location')} | {it.get('cause')}")
                 s = it.get("sampleReports")
                 if isinstance(s, list) and s:
-                    print("    " + "\n    ".join(s[0].splitlines()[:25]))
+                    # سطور التطبيق وحدها: هي موضع الإصلاح، والباقي في الأثر vitals.json
+                    lines = s[0].splitlines()
+                    keep = lines[:2] + [l for l in lines[2:] if "com.ali." in l][:8]
+                    print("      " + "\n      ".join(x.strip() for x in keep))
         rv = r["reviews"]
         print("reviews:", rv if isinstance(rv, dict) else len(rv))
         if isinstance(rv, list):

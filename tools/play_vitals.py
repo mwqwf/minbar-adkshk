@@ -80,14 +80,22 @@ def main():
         r["anr"] = summarize_metric(metric(tok, pkg, "anrRateMetricSet",
                                            ["anrRate", "userPerceivedAnrRate", "distinctUsers"]),
                                     ["anrRate", "userPerceivedAnrRate", "distinctUsers"])
-        issues = req(tok, f"{REP}{pkg}/errorIssues:search?pageSize=50")
+        # بلا نافذةٍ صريحة يقرأ API اليومَ الأخير وحده — فنطلب 30 يوماً
+        now = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)
+        st = now - datetime.timedelta(days=30)
+        iv = {}
+        for k, t in (("startTime", st), ("endTime", now)):
+            iv.update({f"interval.{k}.year": t.year, f"interval.{k}.month": t.month,
+                       f"interval.{k}.day": t.day, f"interval.{k}.hours": t.hour,
+                       f"interval.{k}.timeZone.id": "UTC"})
+        issues = req(tok, f"{REP}{pkg}/errorIssues:search?" + urllib.parse.urlencode(dict(iv, pageSize=50)))
         if "_error" in issues:
             r["issues"] = issues
         else:
             r["issues"] = []
             for it in issues.get("errorIssues", []):
                 name = it["name"].split("/")[-1]
-                q = urllib.parse.urlencode({"filter": f"errorIssueId = {name}", "pageSize": 2})
+                q = urllib.parse.urlencode(dict(iv, filter=f"errorIssueId = {name}", pageSize=2))
                 rep = req(tok, f"{REP}{pkg}/errorReports:search?{q}")
                 it["sampleReports"] = [x.get("reportText", "")[:6000] for x in rep.get("errorReports", [])] \
                     if "_error" not in rep else rep

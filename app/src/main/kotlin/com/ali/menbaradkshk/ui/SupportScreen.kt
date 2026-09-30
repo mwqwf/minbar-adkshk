@@ -16,9 +16,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -233,7 +233,7 @@ private fun SupportEntry(
                                     maxLines = 1,
                                 )
                             },
-                            leadingContent = { Icon(Icons.Filled.Chat, contentDescription = null) },
+                            leadingContent = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) },
                             trailingContent = {
                                 if (repository.isUnread(thread)) {
                                     // نقطة صغيرة لا رقم: المطلوب أن يعرف أنّ
@@ -368,7 +368,7 @@ private fun SupportForm(kind: String, onBack: () -> Unit, onSent: () -> Unit) {
                 },
                 modifier = Modifier.fillMaxWidth().height(60.dp),
             ) {
-                Icon(Icons.Filled.Send, contentDescription = null)
+                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("أرسل", style = MaterialTheme.typography.titleMedium)
             }

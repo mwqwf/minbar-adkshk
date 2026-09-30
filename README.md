@@ -12,14 +12,14 @@
 - نجحت الاختبارات الستة، ومنها اختبار ترحيل بيانات Flutter القديمة.
 - نجح `lintDebug` دون أخطاء.
 - تحقق APK فعليًا باسم `منبر ادكصهك`، والحزمة الإنتاجية
-  `com.ali.menbaradkshk`، و`versionCode=34`.
+  `com.ali.menbaradkshk`، و`versionCode=35`.
 - نسخة التجربة الجاهزة: `minbar-adkshk-debug.apk`.
 
 ## ثوابت الترقية الآمنة
 
 - `applicationId`: `com.ali.menbaradkshk` — لم يتغير.
-- `versionCode`: `34` — أعلى من النسخة المثبتة من Google Play (`3`).
-- `versionName`: `2.7.4`.
+- `versionCode`: `35` — أعلى من النسخة المثبتة من Google Play (`3`).
+- `versionName`: `2.7.5`.
 - `minSdk`: 23، و`targetSdk`/`compileSdk`: 36.
 - مشروع Firebase ومجموعاته ودواله ومسارات Storage لم تتغير.
 - ملف Flutter القديم `FlutterSharedPreferences.xml` يُقرأ ويُنسخ مرة واحدة دون حذفه.
@@ -73,9 +73,11 @@ $env:ANDROID_HOME="$env:LOCALAPPDATA\Android\Sdk"
 
 ## سياسة النشر
 
-لا ترفع النسخة مباشرة إلى Production. اتبع
-[قائمة اختبار الترقية](MIGRATION-CHECKLIST.md) أولًا، ثم ابدأ بنسبة صغيرة من
-المختبرين. احتفظ بنسخة Flutter وبآخر AAB صالح حتى اكتمال المراقبة.
+رفعُ `versionCode` في `app/build.gradle.kts` ودمجُه في `main` يبني الحزمة ويوقّعها
+وينشرها إلى الإنتاج من GitHub Actions (`bundle-with-assets.yml`)، بعد خمسة حرّاس
+لا يُضعَّف أحدها: اختبارات الوحدة، و`jar verified` ببصمة مفتاح الرفع، وأربعة
+معالجات، ولقطة الكتالوج، و400 ملفّ صوت على الأقلّ في حزم الأصول. وكل طلب سحب
+يمرّ قبل ذلك بـ`pr-check`. التفصيل في [دليل الجلسة السحابية](docs/CLOUD-SESSION.md).
 
 ## الترخيص وقواعد الاستخدام
 

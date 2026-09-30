@@ -39,13 +39,13 @@ def _retry(fn, tries=5, wait=4):
             time.sleep(wait)
 
 
-def access_token(sa_path: str) -> str:
+def access_token(sa_path: str, scope: str = "https://www.googleapis.com/auth/androidpublisher") -> str:
     sa = json.load(open(sa_path, encoding="utf-8"))
     now = int(time.time())
     head = _b64(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
     claims = _b64(json.dumps({
         "iss": sa["client_email"],
-        "scope": "https://www.googleapis.com/auth/androidpublisher",
+        "scope": scope,
         "aud": "https://oauth2.googleapis.com/token",
         "iat": now, "exp": now + 3600,
     }).encode())

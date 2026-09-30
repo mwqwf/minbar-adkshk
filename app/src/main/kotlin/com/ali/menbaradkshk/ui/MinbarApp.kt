@@ -28,7 +28,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.HistoryEdu
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
-import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.MicExternalOn
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
@@ -36,7 +36,7 @@ import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LibraryMusic
-import androidx.compose.material.icons.outlined.MenuBook
+import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -93,7 +93,7 @@ private val rootTabs = listOf(
     // «المصحف» حلّت محلّ «تنزيلاتي» في الشريط السفلي: المصحف يُفتح كل يوم
     // فيستحقّ مكاناً دائماً، والتنزيلات تُزار عند الحاجة فانتقلت إلى
     // الإجراءات السريعة في الرئيسية بلا فقدان أيّ وظيفة.
-    RootTab(Route.Quran, "المصحف", Icons.Outlined.MenuBook, Icons.Filled.MenuBook),
+    RootTab(Route.Quran, "المصحف", Icons.AutoMirrored.Outlined.MenuBook, Icons.AutoMirrored.Filled.MenuBook),
 )
 
 /** مفتاح حالة يميّز محتوى المسار، ويتجاهل startAtMs المؤقت لنفس الدرس. */
@@ -388,7 +388,7 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                         }
                         Text(title)
                     },
-                    colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = if (isDarkTheme(vm.store.themeMode())) AppBarBackgroundDark else AppBarBackgroundLight,
                         titleContentColor = AppBarForeground,
                         navigationIconContentColor = AppBarForeground,

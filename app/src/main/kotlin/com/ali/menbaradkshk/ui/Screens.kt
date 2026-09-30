@@ -37,7 +37,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.LocalFireDepartment
@@ -2003,7 +2003,7 @@ fun SearchScreen(vm: AppViewModel, initial: String, playback: PlaybackUiState) {
                                 },
                                 leadingContent = {
                                     Icon(
-                                        Icons.Filled.MenuBook,
+                                        Icons.AutoMirrored.Filled.MenuBook,
                                         contentDescription = null,
                                         tint = Teal,
                                     )

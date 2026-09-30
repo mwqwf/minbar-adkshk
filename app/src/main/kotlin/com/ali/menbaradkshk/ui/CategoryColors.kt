@@ -6,7 +6,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Lightbulb
-import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Mosque
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Star
@@ -27,7 +27,7 @@ private val categoryPalette = listOf(
 )
 
 private val categoryIcons = listOf(
-    Icons.Filled.MenuBook,
+    Icons.AutoMirrored.Filled.MenuBook,
     Icons.Filled.Mosque,
     Icons.Filled.AutoStories,
     Icons.Filled.School,

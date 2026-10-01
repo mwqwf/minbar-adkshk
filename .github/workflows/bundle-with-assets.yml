@@ -64,6 +64,8 @@ jobs:
             echo "⏸️ رقم الإصدار لم يتغيّر — لا بناءَ ولا نشر. (هذا هو المقصود.)"
             echo "go=false" >> "$GITHUB_OUTPUT"
           else
+            # 📝 الدفع المباشر إلى main لا يمرّ بـpr-check، فالحارس هنا أيضاً.
+            python3 tools/check_release_notes.py --base HEAD^
             echo "🚀 رقم الإصدار صار $cur — البناء والنشر إلى الإنتاج."
             echo "go=true" >> "$GITHUB_OUTPUT"
           fi

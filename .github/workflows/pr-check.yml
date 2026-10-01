@@ -30,6 +30,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: حارس التوثيق (README يطابق مصدر الحقيقة)
         run: python3 tools/sync_readme_version.py --check
+      # 📝 الدمج ينشر إلى الإنتاج: رفعُ versionCode بلا موجزٍ جديد في ReleaseNotes يقف هنا.
+      - name: حارس ملاحظات الإصدار
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          python3 tools/check_release_notes.py --base "origin/${{ github.base_ref }}"
       # ⛔ خطوةٌ لكل فحص لا خطوةٌ للثلاثة: حين تفشل واحدة يقول اسمُ الخطوة أيُّها
       #    فشل، بلا تنقيبٍ في سجلٍّ طويل.
       - name: الاختبارات

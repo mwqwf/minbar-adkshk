@@ -17,8 +17,8 @@ package com.ali.menbaradkshk.data
 object ReleaseNotes {
 
     /**
-     * موجز النسخة الحاليّة. **يُحدَّث مع كل رفع لرقم الإصدار** — وحارس البناء
-     * في `app/build.gradle.kts` يمنع نسيانه.
+     * موجز النسخة الحاليّة. **يُحدَّث مع كل رفع لرقم الإصدار** — والحارس
+     * `tools/check_release_notes.py` في `pr-check` يمنع نسيانه.
      */
     const val SUMMARY: String =
         "↔️ أيقونات «أرسل» و«تراجع» و«كتم الصوت» والمصحف صارت تتّجه مع " +

@@ -237,6 +237,9 @@ fun QuranIndexScreen(vm: AppViewModel) {
     Column(Modifier.fillMaxSize()) {
         RiwayaSelector(loaded, riwaya) { vm.setRiwaya(it) }
 
+        // 📖 زرٌّ دائم إلى تطبيق «مصحفك» — يأخذ إلى المتجر مباشرةً (أمر المالك 2026-10-02).
+        if (!searchOpen) MushafakButton(Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+
         // صراحة لا ضمناً: نصّ ورش وقالون رسمُ مصحفهما، لكنّ **ترقيم الآيات**
         // يتبع عدّ حفص. وهذا ليس تنازلاً بل شرط صحّة: ملفّات التلاوة آية-بآية
         // مرقّمة بعدّ حفص، فلولا المحاذاة عليه لأشار التمييز إلى آية غير التي

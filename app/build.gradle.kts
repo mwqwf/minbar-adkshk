@@ -189,8 +189,8 @@ android {
         // واجهتان مهملتان في Material (ألوان الشريط العلوي ومرساة القوائم).
         // فحص Play Vitals بحساب الخدمة (2026-09-25): لا عطلَ مرتبطٌ بـ٣٤ نفسها؛
         // أعطال Firebase كلّها في نسخٍ قبل ٣٠ وقد زالت بزواله.
-        versionCode = 35
-        versionName = "2.7.5"
+        versionCode = 36
+        versionName = "2.8.0"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

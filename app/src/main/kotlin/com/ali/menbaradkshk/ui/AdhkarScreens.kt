@@ -40,6 +40,10 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material.icons.filled.TravelExplore
 import androidx.compose.material.icons.filled.WaterDrop
 import androidx.compose.material.icons.filled.WbTwilight
@@ -73,6 +77,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.ali.menbaradkshk.data.Adhkar
 import com.ali.menbaradkshk.data.AdhkarReminders
 import com.ali.menbaradkshk.data.Dhikr
@@ -268,13 +274,60 @@ fun AdhkarScreen(vm: AppViewModel) {
                 }
             }
         }
-        item(key = "reminders") {
-            ListItem(
-                modifier = Modifier.clickable { vm.open(Route.AdhkarReminders) },
-                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                leadingContent = { Icon(Icons.Filled.Notifications, null, tint = Gold) },
-                headlineContent = { Text("تذكيرات الأذكار") },
-                supportingContent = { Text("الصباح والمساء والنوم والاستيقاظ — بتوقيت جهازك") },
+        // ⭐ **الصباح والمساء والنوم وما بعد الصلاة بنقرةٍ واحدة** — بطاقاتٌ
+        // كبيرة على نمط «مصحفك» (2026-10-02)، و«✓» على ما أُتمّ اليوم.
+        item(key = "quick") {
+            val quick = listOf(
+                Adhkar.MORNING_ID to "أذكار الصباح",
+                Adhkar.EVENING_ID to "أذكار المساء",
+                "sleep" to "أذكار النوم",
+                "prayer" to "بعد الصلاة",
+            )
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                quick.chunked(2).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        row.forEach { (id, title) ->
+                            val items = remember(id) { Adhkar.itemsFor(id) }
+                            val done = remember(revision, id) {
+                                vm.store.adhkarCompleted(id, items.map { it.repeat })
+                            }
+                            AdhkarTile(
+                                title = title,
+                                status = if (items.isNotEmpty() && done >= items.size) "✓ تمّ اليوم"
+                                else "$done من ${items.size}",
+                                icon = iconFor(id),
+                                modifier = Modifier.weight(1f),
+                            ) { vm.open(Route.AdhkarSection(id)) }
+                        }
+                    }
+                }
+                // 📿 المسبحة · ⭐ المفضّلة · 🔔 التذكيرات — أبوابٌ ثلاثة بنقرة.
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    val favCount = remember(revision) { vm.store.adhkarFavorites().size }
+                    AdhkarTile("المسبحة", "عدّادٌ بأهداف", Icons.Filled.TouchApp, Modifier.weight(1f)) {
+                        vm.open(Route.Tasbih())
+                    }
+                    AdhkarTile(
+                        "المفضّلة",
+                        if (favCount == 0) "اختر بالنجمة" else "$favCount",
+                        Icons.Filled.Star,
+                        Modifier.weight(1f),
+                    ) { vm.open(Route.AdhkarFavorites) }
+                    AdhkarTile("التذكيرات", "بتوقيت جهازك", Icons.Filled.Notifications, Modifier.weight(1f)) {
+                        vm.open(Route.AdhkarReminders)
+                    }
+                }
+            }
+        }
+        item(key = "all-title") {
+            Text(
+                "كلّ الأقسام",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
             )
         }
 
@@ -326,6 +379,9 @@ fun AdhkarScreen(vm: AppViewModel) {
             }
         }
 
+        item(key = "mushafak") {
+            MushafakButton(Modifier.padding(horizontal = 14.dp, vertical = 8.dp))
+        }
         item(key = "note") {
             Text(
                 "الأذكار كلّها ثابتة في الصحيحين أو صحّحها أهل العلم، ومذكورٌ تخريج كلّ ذكر معه.",
@@ -364,28 +420,8 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
     // بنقرة واحدة — فيسبقه تأكيد كما في حذف القائمة وحذف البيانات.
     var confirmReset by rememberSaveable { mutableStateOf(false) }
 
-    /// عدُّ ذكرٍ بفهرسه — يستعمله الصفّ العاديّ والشاشة المكبَّرة معاً، فلا
-    /// يفترق سلوك العدّاد بينهما ولا يُنسى تحديث السلسلة في أحدهما.
-    fun count(index: Int) {
-        val current = vm.store.adhkarDone(sectionId, index) ?: 0L
-        val target = items[index].repeat.toLong()
-        if (current >= target) return
-        val next = current + 1
-        vm.store.setAdhkarDone(sectionId, index, next)
-        runCatching {
-            view.performHapticFeedback(
-                if (next >= target) {
-                    android.view.HapticFeedbackConstants.LONG_PRESS
-                } else {
-                    android.view.HapticFeedbackConstants.KEYBOARD_TAP
-                },
-            )
-        }
-        if (next >= target) {
-            val all = vm.store.adhkarCompleted(sectionId, items.map { it.repeat })
-            if (all >= items.size) vm.store.noteAdhkarCompletion()
-        }
-    }
+    /// عدُّ ذكرٍ بفهرسه — انظر [countDhikr]، المشتركة مع المفضّلة والمسبحة.
+    fun count(index: Int) { countDhikr(vm, view, sectionId, index) }
 
     zoomed?.let { index ->
         DhikrZoomDialog(
@@ -478,27 +514,19 @@ fun AdhkarSectionScreen(vm: AppViewModel, sectionId: String) {
                 val done = remember(revision, index) {
                     vm.store.adhkarDone(sectionId, index) ?: 0L
                 }
+                val fav = remember(revision, index) { vm.store.isAdhkarFavorite(sectionId, index) }
                 DhikrCard(
                     dhikr = items[index],
                     done = done,
                     fontSp = fontSp,
                     bold = bold,
+                    favorite = fav,
                     onCopy = { copyToClipboard(context, dhikrText(items[index])) },
                     onTap = { count(index) },
                     onZoom = { zoomed = index },
-                    onShare = {
-                        runCatching {
-                            val send = android.content.Intent(android.content.Intent.ACTION_SEND)
-                                .setType("text/plain")
-                                .putExtra(
-                                    android.content.Intent.EXTRA_TEXT,
-                                    dhikrText(items[index]) + "\n— من تطبيق منبر ادكصهك",
-                                )
-                            context.startActivity(
-                                android.content.Intent.createChooser(send, "مشاركة الذكر"),
-                            )
-                        }
-                    },
+                    onShare = { shareDhikr(context, items[index]) },
+                    onFavorite = { vm.store.toggleAdhkarFavorite(sectionId, index) },
+                    onTasbih = { vm.open(Route.Tasbih(sectionId, index)) },
                 )
             }
         }
@@ -664,6 +692,9 @@ private fun DhikrCard(
     onShare: () -> Unit,
     onCopy: () -> Unit,
     onZoom: () -> Unit,
+    favorite: Boolean = false,
+    onFavorite: () -> Unit = {},
+    onTasbih: () -> Unit = {},
 ) {
     val target = dhikr.repeat.toLong()
     val finished = done >= target
@@ -733,6 +764,26 @@ private fun DhikrCard(
                         )
                     }
                 }
+                // ⭐ المفضّلة: تجمع أذكارك في صفحةٍ واحدة من بيت الأذكار.
+                IconButton(onClick = onFavorite) {
+                    Icon(
+                        if (favorite) Icons.Filled.Star else Icons.Filled.StarBorder,
+                        if (favorite) "إزالة من المفضّلة" else "إضافة إلى المفضّلة",
+                        modifier = Modifier.size(20.dp),
+                        tint = if (favorite) Gold else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                // 📿 مسبحةٌ لهذا الذكر — لِما يُكرَّر ثلاثاً فأكثر.
+                if (dhikr.repeat >= 3 && !finished) {
+                    IconButton(onClick = onTasbih) {
+                        Icon(
+                            Icons.Filled.TouchApp,
+                            "سبّح بهذا الذكر",
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 // 🔍 تكبير هذا الذكر وحده بملء الشاشة — الميزة التي يحتاجها
                 // كبير السنّ: لا يريد تكبير القائمة كلّها، بل أن يرى الذكر
                 // الذي يردّده الآن بأكبر خطّ ممكن ويعدّه وهو مكبَّر.
@@ -760,7 +811,29 @@ private fun DhikrCard(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                CounterBadge(done = done, target = target, finished = finished)
+            }
+            // 🔢 **زرُّ العدّ الكبير** على نمط «مصحفك»: بعرض البطاقة وعليه الباقي
+            // مكتوباً، وبعد التمام «✓ تمّ» معطَّلاً. (والبطاقة كلّها تعدّ أيضاً.)
+            if (finished) {
+                androidx.compose.material3.FilledTonalButton(
+                    onClick = {},
+                    enabled = false,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(top = 6.dp),
+                ) { Text("✓ تمّ", fontSize = 16.sp) }
+            } else {
+                androidx.compose.material3.Button(
+                    onClick = onTap,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(top = 6.dp),
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Teal),
+                ) {
+                    Text(
+                        if (dhikr.repeat <= 1) "قرأتُه"
+                        else "عُدّ  ·  باقٍ ${target - done} من ${dhikr.repeat}",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White,
+                    )
+                }
             }
         }
     }
@@ -895,4 +968,345 @@ private fun timeLabel(hour: Int, minute: Int): String {
     }
     val period = if (hour < 12) "ص" else "م"
     return "%d:%02d %s".format(java.util.Locale.ROOT, h12, minute, period)
+}
+
+// ----------------------------------------------------------------------------
+// 🧩 مشتركاتُ صفحات الأذكار (2026-10-02، على نمط «مصحفك»)
+// ----------------------------------------------------------------------------
+
+/// بطاقةُ بابٍ في بيت الأذكار: أيقونةٌ واسمٌ وسطرُ حالة، والبطاقة كلّها تُنقر.
+@Composable
+private fun AdhkarTile(
+    title: String,
+    status: String,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val accent = brandTintOnSurface(Teal)
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+    ) {
+        Column(
+            Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 14.dp, horizontal = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(
+                Modifier.size(44.dp).background(accent.copy(alpha = .16f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) { Icon(icon, null, tint = accent) }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                status,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+/**
+ * عدُّ ذكرٍ بقسمه وفهرسه — **واحدةٌ** للقسم والمكبَّر والمفضّلة والمسبحة، فلا
+ * يفترق سلوك العدّاد بينها ولا يُنسى تحديث سلسلة المداومة في أحدها.
+ * تُعيد العدد بعد النقرة.
+ */
+internal fun countDhikr(vm: AppViewModel, view: android.view.View, section: String, index: Int): Long {
+    val items = Adhkar.itemsFor(section)
+    val dhikr = items.getOrNull(index) ?: return 0L
+    val current = vm.store.adhkarDone(section, index) ?: 0L
+    val target = dhikr.repeat.toLong()
+    if (current >= target) return current
+    val next = current + 1
+    vm.store.setAdhkarDone(section, index, next)
+    runCatching {
+        view.performHapticFeedback(
+            if (next >= target) {
+                android.view.HapticFeedbackConstants.LONG_PRESS
+            } else {
+                android.view.HapticFeedbackConstants.KEYBOARD_TAP
+            },
+        )
+    }
+    if (next >= target) {
+        val all = vm.store.adhkarCompleted(section, items.map { it.repeat })
+        if (all >= items.size) vm.store.noteAdhkarCompletion()
+    }
+    return next
+}
+
+private fun shareDhikr(context: android.content.Context, dhikr: Dhikr) {
+    runCatching {
+        val send = android.content.Intent(android.content.Intent.ACTION_SEND)
+            .setType("text/plain")
+            .putExtra(
+                android.content.Intent.EXTRA_TEXT,
+                dhikrText(dhikr) + "\n— من تطبيق منبر ادكصهك",
+            )
+        context.startActivity(android.content.Intent.createChooser(send, "مشاركة الذكر"))
+    }
+}
+
+/**
+ * ⭐ «أذكاري المفضّلة»: ما نُجِّم من أيّ قسمٍ في صفحةٍ واحدة، بالعدّاد نفسه.
+ */
+@Composable
+fun AdhkarFavoritesScreen(vm: AppViewModel) {
+    val revision by vm.store.revision.collectAsState()
+    val view = LocalView.current
+    val context = LocalContext.current
+    val entries = remember(revision) {
+        vm.store.adhkarFavorites().mapNotNull { key ->
+            val section = key.substringBeforeLast(':')
+            val index = key.substringAfterLast(':').toIntOrNull() ?: return@mapNotNull null
+            Adhkar.itemsFor(section).getOrNull(index)?.let { Triple(section, index, it) }
+        }
+    }
+    val fontSp = remember(revision) { vm.store.adhkarFontSp() }
+    val bold = remember(revision) { vm.store.adhkarBold() }
+    if (entries.isEmpty()) {
+        Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+            Text(
+                "لا أذكار مفضّلة بعد.\nاضغط النجمة على أيّ ذكرٍ ليظهر هنا.",
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+    LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
+        items(entries, key = { "${it.first}:${it.second}" }) { (section, index, dhikr) ->
+            val done = remember(revision, section, index) { vm.store.adhkarDone(section, index) ?: 0L }
+            DhikrCard(
+                dhikr = dhikr,
+                done = done,
+                fontSp = fontSp,
+                bold = bold,
+                favorite = true,
+                onCopy = { copyToClipboard(context, dhikrText(dhikr)) },
+                onTap = { countDhikr(vm, view, section, index) },
+                onZoom = { vm.open(Route.AdhkarSection(section)) },
+                onShare = { shareDhikr(context, dhikr) },
+                onFavorite = { vm.store.toggleAdhkarFavorite(section, index) },
+                onTasbih = { vm.open(Route.Tasbih(section, index)) },
+            )
+        }
+    }
+}
+
+/** أهدافُ المسبحة الحرّة. */
+private val TASBIH_TARGETS = listOf(33, 99, 100, 1000)
+
+/**
+ * 📿 المسبحة — على نمط «مصحفك»: دائرةٌ كبيرة تُنقر، وأهدافٌ (٣٣·٩٩·١٠٠·١٠٠٠)،
+ * ودوراتٌ، وحصادُ اليوم والمجموع، و«−١» للنقرة الزائدة، والشاشةُ لا تنطفئ.
+ *
+ * **مرتبطةٌ بذكر** حين تُفتح من بطاقته: الهدفُ عددُه، وكلّ نقرةٍ تعدّ للذكر
+ * نفسه في قسمه، وبلوغُه يُتمّه — فلا يعود الذاكر إلى البطاقة ليعدّ ثانيةً.
+ */
+@Composable
+fun TasbihScreen(vm: AppViewModel, section: String?, index: Int) {
+    val view = LocalView.current
+    androidx.compose.runtime.DisposableEffect(view) {
+        view.keepScreenOn = true
+        onDispose { view.keepScreenOn = false }
+    }
+    val linked = remember(section, index) { section?.let { Adhkar.itemsFor(it).getOrNull(index) } }
+    var vibrate by remember { mutableStateOf(vm.store.tasbihVibrate()) }
+    fun buzz(long: Boolean) {
+        if (!vibrate) return
+        runCatching {
+            view.performHapticFeedback(
+                if (long) {
+                    android.view.HapticFeedbackConstants.LONG_PRESS
+                } else {
+                    android.view.HapticFeedbackConstants.KEYBOARD_TAP
+                },
+            )
+        }
+    }
+    var count by remember(section, index) {
+        mutableIntStateOf(
+            if (linked != null && section != null) {
+                val d = (vm.store.adhkarDone(section, index) ?: 0L).toInt()
+                if (d >= linked.repeat) 0 else d
+            } else {
+                vm.store.tasbihCount()
+            },
+        )
+    }
+    var laps by rememberSaveable(section, index) { mutableIntStateOf(0) }
+    var target by remember(section, index) { mutableIntStateOf(linked?.repeat ?: vm.store.tasbihTarget()) }
+    var stats by remember { mutableIntStateOf(0) }
+    var confirmReset by rememberSaveable { mutableStateOf(false) }
+
+    fun tap() {
+        vm.store.addTasbih(1)
+        stats++
+        if (linked != null && section != null) {
+            val before = vm.store.adhkarDone(section, index) ?: 0L
+            if (before < linked.repeat) {
+                // العدّ للذكر نفسه في قسمه (ومعه الاهتزاز وسلسلة المداومة).
+                val n = countDhikr(vm, view, section, index).toInt()
+                if (n >= linked.repeat) {
+                    count = 0
+                    laps += 1
+                } else {
+                    count = n
+                }
+                return
+            }
+        }
+        count += 1
+        if (count >= target) {
+            count = 0
+            laps += 1
+            buzz(true)
+        } else {
+            buzz(false)
+        }
+        if (linked == null) vm.store.setTasbihCount(count)
+    }
+
+    if (confirmReset) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmReset = false },
+            title = { Text("تصفير المسبحة") },
+            text = { Text("تصفير العدّ والدورات؟") },
+            confirmButton = {
+                TextButton(onClick = {
+                    count = 0
+                    laps = 0
+                    if (linked == null) {
+                        vm.store.setTasbihCount(0)
+                    } else if (section != null) {
+                        vm.store.setAdhkarDone(section, index, 0L)
+                    }
+                    confirmReset = false
+                }) { Text("صفّر") }
+            },
+            dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("إلغاء") } },
+        )
+    }
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        if (linked != null) {
+            Text(
+                linked.text,
+                style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 30.sp),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+            )
+            Text(
+                linked.source,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                "سبّح بما شئت، والمسبحة تعدّ لك — اضغط الدائرة.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
+        Spacer(Modifier.height(18.dp))
+        val goal = linked?.repeat ?: target
+        val circleLabel = "المسبحة، $count من $goal"
+        androidx.compose.foundation.layout.BoxWithConstraints(
+            Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center,
+        ) {
+            val diameter = minOf(220.dp, maxWidth * 0.62f)
+            androidx.compose.material3.Surface(
+                onClick = { tap() },
+                shape = CircleShape,
+                color = Teal,
+                modifier = Modifier
+                    .size(diameter)
+                    .semantics { contentDescription = circleLabel },
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("$count", fontSize = 56.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        Text("من $goal", fontSize = 15.sp, color = Color.White.copy(alpha = .85f))
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        if (linked == null) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                TASBIH_TARGETS.forEach { t ->
+                    androidx.compose.material3.FilterChip(
+                        selected = target == t,
+                        onClick = {
+                            target = t
+                            vm.store.setTasbihTarget(t)
+                            count = 0
+                            vm.store.setTasbihCount(0)
+                        },
+                        label = { Text("$t") },
+                    )
+                }
+            }
+        } else {
+            TextButton(onClick = { vm.open(Route.Tasbih()) }) { Text("مسبحة حرّة") }
+        }
+        val today = remember(stats) { vm.store.tasbihToday() }
+        val total = remember(stats) { vm.store.tasbihTotal() }
+        Text(
+            "اليوم $today  ·  الدورات $laps  ·  المجموع $total",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 10.dp),
+        )
+        Row(
+            Modifier.fillMaxWidth().padding(top = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            // ↩️ «−١» صغيرٌ بعيدٌ عن الدائرة: نقرةٌ زائدةٌ تُرفع بلا تصفير العدّ كلّه.
+            TextButton(
+                enabled = count > 0,
+                onClick = {
+                    count -= 1
+                    if (linked == null) {
+                        vm.store.setTasbihCount(count)
+                    } else if (section != null) {
+                        vm.store.setAdhkarDone(section, index, count.toLong())
+                    }
+                    vm.store.addTasbih(-1)
+                    stats++
+                },
+            ) { Text("−١", fontSize = 16.sp) }
+            TextButton(enabled = count > 0 || laps > 0, onClick = { confirmReset = true }) {
+                Text("تصفير")
+            }
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable {
+                    vibrate = !vibrate
+                    vm.store.setTasbihVibrate(vibrate)
+                }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("اهتزازٌ مع كلّ عدّة", Modifier.weight(1f))
+            androidx.compose.material3.Switch(checked = vibrate, onCheckedChange = null)
+        }
+    }
 }

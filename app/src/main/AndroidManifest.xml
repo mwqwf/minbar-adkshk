@@ -239,6 +239,8 @@
     </application>
 
     <queries>
+        <!-- «مصحفك»: لمعرفة تثبيته فيُفتح بدل المتجر ولا يُذكَّر به صاحبه -->
+        <package android:name="com.mushafak.app" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="https" />

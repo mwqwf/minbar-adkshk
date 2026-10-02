@@ -978,6 +978,52 @@ class LocalStore private constructor(context: Context) {
         setIntMap("adhkar_counts", values)
     }
 
+    // ------------------------------------------------------------------
+    // ⭐ مفضّلة الأذكار و📿 المسبحة (2026-10-02، على نمط «مصحفك»)
+    // ------------------------------------------------------------------
+
+    /// مفاتيح الأذكار المفضّلة بصيغة «القسم:الفهرس» — بترتيب إضافتها.
+    fun adhkarFavorites(): List<String> =
+        string("adhkar_favorites", "").split('|').filter { it.isNotBlank() }
+
+    fun isAdhkarFavorite(section: String, index: Int): Boolean =
+        "$section:$index" in adhkarFavorites()
+
+    fun toggleAdhkarFavorite(section: String, index: Int) {
+        val key = "$section:$index"
+        val current = adhkarFavorites()
+        val next = if (key in current) current - key else current + key
+        write { putString("adhkar_favorites", next.joinToString("|")) }
+    }
+
+    /// عدّاد المسبحة الحرّة الحاليّ — يبقى حتى يُصفَّر أو يتمّ الهدف.
+    fun tasbihCount(): Int = long("tasbih_count", 0L).toInt()
+    fun setTasbihCount(value: Int) = writeQuiet { putLong("tasbih_count", value.toLong()) }
+
+    fun tasbihTarget(): Int = long("tasbih_target", 33L).toInt().takeIf { it > 0 } ?: 33
+    fun setTasbihTarget(value: Int) = write { putLong("tasbih_target", value.toLong()) }
+
+    fun tasbihVibrate(): Boolean = bool("tasbih_vibrate", true)
+    fun setTasbihVibrate(value: Boolean) = write { putBoolean("tasbih_vibrate", value) }
+
+    /// حصاد اليوم يُصفَّر بتغيّر اليوم؛ والمجموع لا يُصفَّر أبداً.
+    fun tasbihToday(): Long =
+        if (string("tasbih_day", "") == adhkarDayKey()) long("tasbih_today", 0L) else 0L
+
+    fun tasbihTotal(): Long = long("tasbih_total", 0L)
+
+    /// يضيف [delta] (قد يكون −١ للتراجع) إلى حصاد اليوم والمجموع معاً.
+    fun addTasbih(delta: Int) {
+        val today = adhkarDayKey()
+        val day = (tasbihToday() + delta).coerceAtLeast(0L)
+        val total = (tasbihTotal() + delta).coerceAtLeast(0L)
+        writeQuiet {
+            putString("tasbih_day", today)
+            putLong("tasbih_today", day)
+            putLong("tasbih_total", total)
+        }
+    }
+
     /// عدد الأذكار المكتملة في قسم اليوم — لشريط التقدّم في قائمة الأقسام.
     fun adhkarCompleted(section: String, totals: List<Int>): Int {
         ensureAdhkarDay()

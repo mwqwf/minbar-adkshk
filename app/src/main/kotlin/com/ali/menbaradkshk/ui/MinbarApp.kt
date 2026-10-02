@@ -104,6 +104,8 @@ private fun routeStateKey(route: Route): String = when (route) {
     Route.Adhkar -> "Adhkar"
     is Route.AdhkarSection -> "AdhkarSection:${route.id}"
     Route.AdhkarReminders -> "AdhkarReminders"
+    Route.AdhkarFavorites -> "AdhkarFavorites"
+    is Route.Tasbih -> "Tasbih:${route.section}:${route.index}"
     Route.Downloads -> "Downloads"
     Route.Quran -> "Quran"
     is Route.QuranSurah -> "QuranSurah:${route.number}"
@@ -225,6 +227,25 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                 vm.muteLessonNudge(updateStatus)
             },
         )
+    }
+
+    // 📖 تذكير «مصحفك»: في الرئيسية وحدها، ولا فوق طبقةٍ أخرى. يُقيَّم مرّةً
+    // لكل فتحٍ للتطبيق (محفوظ عبر التدوير)، ويُعلَّم «عُرض» فور ظهوره.
+    val appContext = androidx.compose.ui.platform.LocalContext.current
+    var mushafakChecked by rememberSaveable { mutableStateOf(false) }
+    var mushafakVisible by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(route, overlayShown, nudgeVisible) {
+        if (mushafakChecked || route != Route.Home || overlayShown || nudgeVisible) return@LaunchedEffect
+        // مهلةٌ قصيرة: لا يزاحم التذكيرُ أوّلَ نظرةٍ على الرئيسية.
+        kotlinx.coroutines.delay(2500)
+        mushafakChecked = true
+        if (MushafakPromo.shouldRemind(appContext)) {
+            MushafakPromo.markShown(appContext)
+            mushafakVisible = true
+        }
+    }
+    if (mushafakVisible) {
+        MushafakReminderDialog(onDismiss = { mushafakVisible = false })
     }
 
     // تأكيد التحميل الجماعي — حوار واحد على مستوى التطبيق: كل الشاشات
@@ -557,6 +578,8 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                 Route.Adhkar -> AdhkarScreen(vm)
                 is Route.AdhkarSection -> AdhkarSectionScreen(vm, current.id)
                 Route.AdhkarReminders -> AdhkarRemindersScreen(vm, requestNotifications)
+                Route.AdhkarFavorites -> AdhkarFavoritesScreen(vm)
+                is Route.Tasbih -> TasbihScreen(vm, current.section, current.index)
                 Route.Downloads -> DownloadsScreen(vm)
                 Route.Quran -> QuranIndexScreen(vm)
                 is Route.QuranSurah -> QuranSurahScreen(vm, current.number, current.ayah, playback)
@@ -870,6 +893,8 @@ private fun titleFor(route: Route, vm: AppViewModel, content: ContentState): Str
     Route.Adhkar -> "الأذكار"
     is Route.AdhkarSection -> com.ali.menbaradkshk.data.Adhkar.titleFor(route.id)
     Route.AdhkarReminders -> "تذكيرات الأذكار"
+    Route.AdhkarFavorites -> "أذكاري المفضّلة"
+    is Route.Tasbih -> "المسبحة"
     Route.Downloads -> "تنزيلاتي"
     Route.Quran -> "المصحف الكامل"
     // اسم السورة نفسه عنواناً — أوضح من كلمة «المصحف» المكرَّرة.

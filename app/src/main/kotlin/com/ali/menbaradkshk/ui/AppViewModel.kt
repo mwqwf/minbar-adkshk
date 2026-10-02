@@ -64,6 +64,10 @@ sealed interface Route {
     data object About : Route
     data class AdhkarSection(val id: String) : Route
     data object AdhkarReminders : Route
+    data object AdhkarFavorites : Route
+
+    /// 📿 المسبحة: حرّةٌ بلا قسم، أو مرتبطةٌ بذكرٍ بعينه فيكون هدفُها عددَه.
+    data class Tasbih(val section: String? = null, val index: Int = -1) : Route
 
     /// قراءة سورة بعينها في المصحف؛ `ayah` فهرس مسطّح اختياري للقفز إليه.
     data class QuranSurah(val number: Int, val ayah: Int? = null) : Route

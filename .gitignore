@@ -24,3 +24,4 @@
 /core_pack/src/main/assets/serving/*.ogg
 /rest_pack/src/main/assets/serving/*.ogg
 /asset-packs/manifest.json
+.claude/handoff.md

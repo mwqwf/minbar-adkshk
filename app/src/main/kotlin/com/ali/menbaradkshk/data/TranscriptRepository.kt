@@ -77,6 +77,39 @@ fun transcriptSearchAnchor(words: List<String>): String? =
     (words.filterNot { it in transcriptCommonWords }.ifEmpty { words })
         .maxByOrNull(String::length)
 
+// تقطيع الاستعلام قبل التطبيع: المدى نفسه مع الألف الوصليّة (ٱ) التي يطبّعها
+// [normalizeArabic] إلى ألف قبل التقطيع.
+private val transcriptRawWordSplit = Regex("[^\\u0621-\\u063A\\u0641-\\u064A\\u0671a-z0-9]+")
+private val transcriptRawStrip = Regex("[\\u064B-\\u065F\\u0670\\u06D6-\\u06ED\\u0640]")
+
+/**
+ * 🔎 صورة المرساة التي تُرسَل إلى الخادم.
+ *
+ * ⚠️ بحث `minbar-api` (`/v1/transcripts/search`) هو `LIKE` على **النصّ الخام**،
+ * لا فهرسُ كلماتٍ مطبَّعة كما كان في Firestore. والمرساة مطبَّعة (ة→ه، أ→ا،
+ * ى→ي)، فكان من كتب «الصلاة» يُسأل الخادمُ عن «صلاه» التي لا ترد في متنٍ
+ * أبداً، ومثلها كلّ كلمةٍ فيها تاء مربوطة أو همزة. فنعيد المرساة إلى حروفها
+ * كما كتبها المستخدم (بلا تشكيل ولا تطويل، وبعد قشر أداة التعريف نفسها)،
+ * والتطبيع حرفٌ بحرف فالموضع محفوظ. وإن لم تُوجد فالمرساة كما هي.
+ */
+fun transcriptSearchServerTerm(query: String, anchor: String): String {
+    val plain = java.text.Normalizer
+        .normalize(query.trim().lowercase(java.util.Locale.ROOT), java.text.Normalizer.Form.NFKC)
+        .replace(transcriptRawStrip, "")
+    for (raw in plain.split(transcriptRawWordSplit)) {
+        if (raw.length < TranscriptRepository.MIN_SEARCH_KEYWORD) continue
+        val normalized = normalizeArabic(raw)
+        if (normalized.length != raw.length) continue
+        val prefix = transcriptWordPrefixes.firstOrNull { candidate ->
+            normalized.startsWith(candidate) &&
+                normalized.length - candidate.length >= TranscriptRepository.MIN_SEARCH_KEYWORD
+        }
+        val stem = if (prefix == null) normalized else normalized.substring(prefix.length)
+        if (stem == anchor) return raw.substring(raw.length - stem.length)
+    }
+    return anchor
+}
+
 /** مرفق «النص المشروح» الاختياري داخل مساهمة درس صوتي («شارك درساً»). */
 data class TranscriptExtras(
     val text: String = "",
@@ -356,8 +389,12 @@ class TranscriptRepository private constructor(context: Context) {
     private val mineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mineShared: Flow<List<TranscriptSubmissionItem>> by lazy {
         kotlinx.coroutines.flow.flow {
+            var last = emptyList<TranscriptSubmissionItem>()
             while (true) {
-                emit(runCatching { fetchMine() }.getOrDefault(emptyList()))
+                // ⚠️ انقطاعٌ عابر لا يُفرغ القائمة: كان كلّ فشل استطلاعٍ يُصدر قائمةً فارغة
+                // فتختفي العناصر من الشاشة حتى الاستطلاع التالي؛ الآن تبقى آخر نسخة ناجحة.
+                last = runCatching { fetchMine() }.getOrDefault(last)
+                emit(last)
                 kotlinx.coroutines.delay(30_000L)
             }
         }
@@ -369,7 +406,11 @@ class TranscriptRepository private constructor(context: Context) {
 
     suspend fun deletePending(item: TranscriptSubmissionItem) {
         if (!item.isPending) return
-        MinbarApi.deleteUser(appContext, "/v1/me/transcript-submissions/${item.id}")
+        // ⚠️ على IO: تُنادى من نطاق الواجهة (الخيط الرئيسي)، و`MinbarApi` حاجبٌ
+        // فكان يرمي `NetworkOnMainThreadException` في كل مرّة فيفشل الفعل دائماً.
+        withContext(Dispatchers.IO) {
+            MinbarApi.deleteUser(appContext, "/v1/me/transcript-submissions/${item.id}")
+        }
     }
 
     /** بحث في النصوص المشروحة على الخادم: معرّفات الدروس التي يرد فيها [keyword]. */

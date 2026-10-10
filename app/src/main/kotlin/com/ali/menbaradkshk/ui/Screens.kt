@@ -92,6 +92,7 @@ import com.ali.menbaradkshk.data.ContentState
 import com.ali.menbaradkshk.data.Lesson
 import com.ali.menbaradkshk.data.Subcategory
 import com.ali.menbaradkshk.data.transcriptSearchAnchor
+import com.ali.menbaradkshk.data.transcriptSearchServerTerm
 import com.ali.menbaradkshk.data.transcriptSearchWords
 import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.normalizeArabic
@@ -1864,7 +1865,9 @@ fun SearchScreen(vm: AppViewModel, initial: String, playback: PlaybackUiState) {
                 // ٧٥٠ م.ث لا أقلّ: المهلة القصيرة كانت تستعلم في منتصف الكلمة
                 // فتتقلّب النتائج مع كل حرف يلحق بها.
                 delay(750)
-                transcriptHits = vm.transcripts.searchIndex(transcriptAnchor)
+                transcriptHits = vm.transcripts.searchIndex(
+                    transcriptSearchServerTerm(q, transcriptAnchor),
+                )
                 transcriptAsked = q
             }
             // «سُئل عن هذا الاستعلام بالذات وانتهى»: يميّز «لم يُبحث بعد» عن

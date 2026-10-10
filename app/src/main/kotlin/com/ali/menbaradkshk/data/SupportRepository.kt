@@ -52,6 +52,8 @@ data class SupportMessage(
     val audioPath: String,
     val createdAtMs: Long,
     val pending: Boolean = false,
+    // مفاتيح صور ردّ المطوّر في R2 (اللوحة تُرسل ردوداً بالصورة وحدها).
+    val imagePaths: List<String> = emptyList(),
     val failed: Boolean = false,
 )
 
@@ -86,8 +88,11 @@ class SupportRepository private constructor(context: Context) {
     }
 
     fun myThreads(): Flow<List<SupportThread>> = flow {
+        var last = emptyList<SupportThread>()
         while (true) {
-            emit(runCatching { fetchThreads() }.getOrDefault(emptyList()))
+            // ⚠️ انقطاعٌ عابر لا يُفرغ القائمة: تبقى آخر نسخة ناجحة حتى الاستطلاع التالي.
+            last = runCatching { fetchThreads() }.getOrDefault(last)
+            emit(last)
             delay(THREADS_POLL_MS)
         }
     }.flowOn(Dispatchers.IO)
@@ -111,6 +116,9 @@ class SupportRepository private constructor(context: Context) {
                 emit(emptyList())
                 return@flow
             }
+            // ⚠️ كان فشلُ استطلاعٍ واحد يُصدر قائمةً فارغة فتختفي المحادثة كلّها
+            // من الشاشة كل خمس عشرة ثانية على شبكةٍ متقطّعة؛ الآن تبقى آخر نسخة ناجحة.
+            var last = emptyList<SupportMessage>()
             while (true) {
                 val list = runCatching {
                     val items = MinbarApi.getUser(appContext, "/v1/support/threads/$threadId/messages")
@@ -122,9 +130,14 @@ class SupportRepository private constructor(context: Context) {
                             text = o.optString("text"),
                             audioPath = o.optString("audioPath"),
                             createdAtMs = o.optLong("createdAtMs"),
+                            imagePaths = o.optJSONArray("imagePaths")?.let { paths ->
+                                (0 until paths.length()).map { paths.optString(it) }
+                                    .filter(String::isNotBlank)
+                            }.orEmpty(),
                         )
                     }
-                }.getOrDefault(emptyList())
+                }.getOrDefault(last)
+                last = list
                 emit(list)
                 delay(MESSAGES_POLL_MS)
             }
@@ -167,7 +180,11 @@ class SupportRepository private constructor(context: Context) {
             "${Build.MANUFACTURER} ${Build.MODEL}"
 
     suspend fun deleteThread(threadId: String) {
-        MinbarApi.deleteUser(appContext, "/v1/me/support/threads/$threadId")
+        // ⚠️ على IO: تُنادى من نطاق الواجهة (الخيط الرئيسي)، و`MinbarApi` حاجبٌ
+        // فكان يرمي `NetworkOnMainThreadException` في كل مرّة فيفشل الفعل دائماً.
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            MinbarApi.deleteUser(appContext, "/v1/me/support/threads/$threadId")
+        }
     }
 
     fun markSeen(thread: SupportThread) = store.markSeen(thread.id, thread.lastMessageAtMs)

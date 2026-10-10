@@ -74,7 +74,7 @@ object MinbarApi {
      */
     private fun request(path: String, method: String = "GET", body: String? = null, headers: Map<String, String> = emptyMap()): String {
         var last: IOException? = null
-        val order = if (preferred == 0) listOf(0, 1) else listOf(1, 0)
+        val order = baseOrder(method, headers)
         for (index in order) {
             val base = BASES[index]
             var connection: HttpURLConnection? = null
@@ -86,7 +86,7 @@ object MinbarApi {
                     preferred = index
                     return text
                 }
-                if (code in 400..499) throw ApiException(code, text.take(300))
+                if (code in 400..499) throw ApiException(code, serverError(text))
                 last = ApiException(code, "HTTP $code من $base")
             } catch (e: ApiException) {
                 throw e
@@ -98,6 +98,28 @@ object MinbarApi {
         }
         throw last ?: IOException("تعذّر الاتصال بخادم منبر")
     }
+
+    /**
+     * ترتيب النطاقين لطلبٍ بعينه.
+     *
+     * ⚠️ المرآة (`menbar-site/api/proxy.js`) **قراءةٌ عامّة فقط**: تردّ 405 على كل
+     * ما ليس GET، ولا تمرّر ترويسة `X-Device-Id` فيردّ الخادم 400 على مسارات
+     * المستخدم. ورفضُ 4xx لا يُعاد على النطاق الآخر، فكانت انقطاعةٌ واحدة
+     * للنطاق الأول (تجعل المرآة مفضَّلة لبقيّة الجلسة) تُفشل كل كتابة —
+     * الإرسال والمراسلة والمساهمات — وتُفرغ «مساهماتي» حتى يُعاد تشغيل التطبيق.
+     * فالكتابة وطلبات الهويّة تذهب إلى `minbar-api` وحده.
+     */
+    private fun baseOrder(method: String, headers: Map<String, String>): List<Int> = when {
+        method != "GET" || headers.isNotEmpty() -> listOf(0)
+        preferred == 0 -> listOf(0, 1)
+        else -> listOf(1, 0)
+    }
+
+    /** نصّ الرفض كما كتبه الخادم (`{"error": "…"}`) لا جسم JSON خاماً يُعرض للمستخدم. */
+    private fun serverError(text: String): String =
+        runCatching { JSONObject(text).optString("error") }.getOrNull()
+            ?.takeIf(String::isNotBlank)
+            ?: text.take(300)
 
     private fun getJson(path: String): JSONObject = JSONObject(request(path))
     private fun postJson(path: String, body: JSONObject): JSONObject =
@@ -252,8 +274,8 @@ object MinbarApi {
 
     /**
      * رفع مرفق المستخدم (`PUT /v1/upload/{kind}/{name}`) ببثّ ثابت الطول وتبليغ
-     * النسبة. يعيد `{key, sha256, sizeBytes}`. النطاق الأول ثم البديل عند
-     * الانقطاع (لا عند رفض الخادم).
+     * النسبة. يعيد `{key, sha256, sizeBytes}`. إلى `minbar-api` وحده: المرآة
+     * لا تقبل غير GET (انظر [baseOrder]).
      */
     fun uploadUser(
         context: Context,
@@ -268,8 +290,8 @@ object MinbarApi {
         require(total > 0L) { "تعذّر قراءة الملف." }
         val path = "/v1/upload/$kind/" + encode(name)
         var last: IOException? = null
-        val order = if (preferred == 0) listOf(0, 1) else listOf(1, 0)
-        for (index in order) {
+        // المرآة لا تقبل PUT (انظر [baseOrder]) — الرفع إلى `minbar-api` وحده.
+        for (index in listOf(0)) {
             var connection: HttpURLConnection? = null
             try {
                 connection = (URL(BASES[index] + path).openConnection() as HttpURLConnection).apply {
@@ -303,10 +325,9 @@ object MinbarApi {
                 val code = connection.responseCode
                 val text = readBody(connection)
                 if (code in 200..299) {
-                    preferred = index
                     return JSONObject(text)
                 }
-                if (code in 400..499) throw ApiException(code, text.take(300))
+                if (code in 400..499) throw ApiException(code, serverError(text))
                 last = ApiException(code, "HTTP $code")
             } catch (e: ApiException) {
                 throw e

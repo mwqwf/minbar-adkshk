@@ -146,8 +146,12 @@ class SubmissionRepository private constructor(context: Context) {
     private val mineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mineShared: Flow<List<LessonSubmission>> by lazy {
         flow {
+            var last = emptyList<LessonSubmission>()
             while (true) {
-                emit(runCatching { fetchMine() }.getOrDefault(emptyList()))
+                // ⚠️ انقطاعٌ عابر لا يُفرغ القائمة: كان كلّ فشل استطلاعٍ يُصدر قائمةً فارغة
+                // فتختفي العناصر من الشاشة حتى الاستطلاع التالي؛ الآن تبقى آخر نسخة ناجحة.
+                last = runCatching { fetchMine() }.getOrDefault(last)
+                emit(last)
                 delay(MINE_POLL_MS)
             }
         }
@@ -165,20 +169,32 @@ class SubmissionRepository private constructor(context: Context) {
         if (submission.status != "pending") return
         val trimmed = title.trim()
         require(trimmed.isNotBlank()) { "أدخل عنوان الدرس." }
-        MinbarApi.putUser(
-            appContext, "/v1/me/submissions/${submission.id}",
-            JSONObject().put("title", trimmed).put("note", note?.trim().orEmpty()),
-        )
+        // ⚠️ على IO: تُنادى من نطاق الواجهة (الخيط الرئيسي)، و`MinbarApi` حاجبٌ
+        // فكان يرمي `NetworkOnMainThreadException` في كل مرّة فيفشل الفعل دائماً.
+        withContext(Dispatchers.IO) {
+            MinbarApi.putUser(
+                appContext, "/v1/me/submissions/${submission.id}",
+                JSONObject().put("title", trimmed).put("note", note?.trim().orEmpty()),
+            )
+        }
     }
 
     suspend fun deletePending(submission: LessonSubmission) {
         if (submission.status != "pending") return
-        MinbarApi.deleteUser(appContext, "/v1/me/submissions/${submission.id}")
+        // ⚠️ على IO: تُنادى من نطاق الواجهة (الخيط الرئيسي)، و`MinbarApi` حاجبٌ
+        // فكان يرمي `NetworkOnMainThreadException` في كل مرّة فيفشل الفعل دائماً.
+        withContext(Dispatchers.IO) {
+            MinbarApi.deleteUser(appContext, "/v1/me/submissions/${submission.id}")
+        }
     }
 
     /** حذف كل ما يخصّ هذا الجهاز على الخادم (مساهمات ورسائل ومرفقات). */
     suspend fun deleteCloudIdentityData() {
-        MinbarApi.deleteUser(appContext, "/v1/me")
+        // ⚠️ على IO: «حذف بياناتي» يُنادى من `viewModelScope` (الخيط الرئيسي)،
+        // فكان الحذف السحابيّ يفشل دائماً بـ`NetworkOnMainThreadException`.
+        withContext(Dispatchers.IO) {
+            MinbarApi.deleteUser(appContext, "/v1/me")
+        }
     }
 
     private fun mimeFor(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {

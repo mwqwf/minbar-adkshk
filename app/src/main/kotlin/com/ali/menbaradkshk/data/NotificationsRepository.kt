@@ -31,11 +31,18 @@ class NotificationsRepository(
         const val TAG = "NotificationsRepo"
         const val WINDOW_MS = 30L * 24 * 60 * 60 * 1_000
         const val POLL_MS = 5L * 60 * 1_000
+        const val HOUR_MS = 60L * 60 * 1_000
     }
 
     /// حدّ القصّ الزمني: آخر ثلاثين يوماً ولا شيء قبل تثبيت التطبيق.
-    private fun cutoffMs(): Long =
-        maxOf(System.currentTimeMillis() - WINDOW_MS, installedAtMs())
+    ///
+    /// ⚠️ الحدّ يُقرَّب إلى الساعة: الخادم يخبّئ `/v1/notifications` بعنوان الطلب
+    /// كاملاً، وحدٌّ يتغيّر كلّ ملّي ثانية كان يجعل كلّ استطلاعٍ من كلّ جهاز
+    /// طلباً جديداً يقرأ D1 — فلا يصيب الكاش أبداً.
+    private fun cutoffMs(): Long {
+        val window = System.currentTimeMillis() - WINDOW_MS
+        return maxOf(window - window % HOUR_MS, installedAtMs())
+    }
 
     fun stream(limit: Long = 30): Flow<List<NotificationItem>> = callbackFlow {
         var publicItems = listOf<NotificationItem>()

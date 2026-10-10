@@ -914,12 +914,17 @@ class ContentRepository private constructor(context: Context) {
 
     suspend fun incrementView(lessonId: String) {
         if (lessonId.isBlank() || store.isViewCountedToday(lessonId)) return
-        runCatching { MinbarApi.incrementView(lessonId) }
+        // ⚠️ على IO: المستدعي نطاقُ خدمة التشغيل على الخيط الرئيسي، و`MinbarApi`
+        // حاجبٌ فكان يرمي `NetworkOnMainThreadException` يبتلعه `runCatching` —
+        // فلا تُحسب مشاهدةٌ واحدة لأيّ درس.
+        withContext(Dispatchers.IO) { runCatching { MinbarApi.incrementView(lessonId) } }
             .onSuccess { store.markViewCounted(lessonId) }
     }
 
     suspend fun sendFeedback(lessonId: String, type: String, note: String) {
-        MinbarApi.feedback(lessonId, type, note.trim())
+        // ⚠️ على IO: يُنادى من نطاق شاشة المشغّل (الخيط الرئيسي)، فكان كلّ بلاغ
+        // يفشل بـ`NetworkOnMainThreadException` ويُقال للمستخدم «تحقّق من الاتصال».
+        withContext(Dispatchers.IO) { MinbarApi.feedback(lessonId, type, note.trim()) }
     }
 
     private fun withAudio(): List<Lesson> =

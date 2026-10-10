@@ -204,6 +204,16 @@ private fun SupportBubble(message: SupportMessage) {
             if (message.audioPath.isNotBlank()) {
                 SupportAudioPlayer(message.audioPath, message.pending || message.failed)
             }
+            // ⚠️ ردّ المطوّر بالصورة وحدها كان يظهر فقاعةً فارغة لا تحمل إلا
+            // «المطوّر»: الصور لم تكن تُقرأ من الخادم أصلاً.
+            message.imagePaths.forEach { path ->
+                coil3.compose.AsyncImage(
+                    model = com.ali.menbaradkshk.data.MinbarApi.mediaUrl(path),
+                    contentDescription = "صورة من المطوّر",
+                    contentScale = androidx.compose.ui.layout.ContentScale.FillWidth,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             if (message.failed) {
                 // رفضٌ قاطع من الخادم: نقولها صراحةً مع مخرجٍ بنقرة واحدة.
                 val context2 = LocalContext.current

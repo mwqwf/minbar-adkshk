@@ -129,7 +129,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val notificationsRepository = NotificationsRepository(
         application,
         submissions,
-        hasContributedBefore = { hasContributedBefore() },
+        // ⚠️ ومن راسل المطوّر أيضاً: ردودُه لا تصل إلا من إشعاراتي الخاصة، وكان
+        // من راسل ولم يساهم بدرسٍ لا يُسأل عنها قطّ فلا يعلم بالردّ. (الموافقة
+        // تُحفظ قبل أوّل رسالة، ولا تُرسَل رسالةٌ بدونها.)
+        hasContributedBefore = {
+            hasContributedBefore() ||
+                com.ali.menbaradkshk.data.SupportStore.get(application).consented()
+        },
         installedAtMs = { installedAtMs },
     )
 

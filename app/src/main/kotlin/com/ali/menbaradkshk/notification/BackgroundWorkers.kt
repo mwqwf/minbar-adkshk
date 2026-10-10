@@ -406,7 +406,10 @@ class PulseWorker(
             com.ali.menbaradkshk.data.MinbarApi.pulse()
         }
         if (pulse != null) {
-            if (pulse.notifMs > store.lastSeenNotifMs()) {
+            // ⚠️ النبض لا يتحرّك بقرارات المساهمات ولا بردود المطوّر (لا تُكتب في
+            // جدول الإشعارات العامة)، فكان من ينتظر ردّاً لا يُنبَّه في الخلفية أبداً.
+            // فمن له شأنٌ خاصّ يُسأل عنه في كل نبضة.
+            if (pulse.notifMs > store.lastSeenNotifMs() || hasPrivateFeed(store)) {
                 pollNotifications(store, now)
             }
             if (pulse.contentMs > store.lastPulseContentMs()) {
@@ -492,7 +495,7 @@ class PulseWorker(
                 (items.length() - 1 downTo 0).mapNotNull { items.optJSONObject(it) }
                     .forEach { handle(it, private = false) }
             }
-            if (store.knownSubmissionStatuses().isNotEmpty() || store.submitterName().isNotBlank()) {
+            if (hasPrivateFeed(store)) {
                 runCatching {
                     val items = com.ali.menbaradkshk.data.MinbarApi
                         .getUser(applicationContext, "/v1/me/notifications?since=${baseline + 1}")
@@ -504,6 +507,11 @@ class PulseWorker(
         }
         if (newest > store.lastSeenNotifMs()) store.setLastSeenNotifMs(newest)
     }
+
+    /// نظير `AppViewModel.hasContributedBefore`: ساهم بدرسٍ أو نصّ، أو راسل المطوّر.
+    private fun hasPrivateFeed(store: LocalStore): Boolean =
+        store.knownSubmissionStatuses().isNotEmpty() || store.submitterName().isNotBlank() ||
+            com.ali.menbaradkshk.data.SupportStore.get(applicationContext).consented()
 
     companion object {
         private const val DAY_MS = 24L * 60 * 60 * 1_000

@@ -12,15 +12,15 @@
 - نجحت الاختبارات الستة، ومنها اختبار ترحيل بيانات Flutter القديمة.
 - نجح `lintDebug` دون أخطاء.
 - تحقق APK فعليًا باسم `منبر ادكصهك`، والحزمة الإنتاجية
-  `com.ali.menbaradkshk`، و`versionCode=37`.
+  `com.ali.menbaradkshk`، و`versionCode=38`.
 - نسخة التجربة الجاهزة: `minbar-adkshk-debug.apk`.
 
 ## ثوابت الترقية الآمنة
 
 - `applicationId`: `com.ali.menbaradkshk` — لم يتغير.
-- `versionCode`: `37` — أعلى من النسخة المثبتة من Google Play (`3`).
-- `versionName`: `2.8.1`.
-- `minSdk`: 23، و`targetSdk`/`compileSdk`: 36.
+- `versionCode`: `38` — أعلى من النسخة المثبتة من Google Play (`3`).
+- `versionName`: `2.8.2`.
+- `minSdk`: 24، و`targetSdk`/`compileSdk`: 36.
 - مشروع Firebase ومجموعاته ودواله ومسارات Storage لم تتغير.
 - ملف Flutter القديم `FlutterSharedPreferences.xml` يُقرأ ويُنسخ مرة واحدة دون حذفه.
 - تنزيلات Flutter القديمة تُستعمل من مساراتها الحالية ولا تُنزّل مجددًا.

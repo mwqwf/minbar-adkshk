@@ -47,7 +47,9 @@ android {
 
     defaultConfig {
         applicationId = "com.ali.menbaradkshk"
-        minSdk = 23
+        // 24 (2026-10-10): «الحماية التلقائية» في Play تشترط أندرويد 7 فما فوق، ورفضت نشر
+        // 37/2.8.1 لأنّ حدّه كان 23.
+        minSdk = 24
         targetSdk = 36
         // 10 / 1.3.6: يضمّ النص المشروح ومشاركة الصور/النص، ودمج الصوتيات
         // متعدّدة الصيغ، مع إصلاح حفظ النماذج ودوران الصور وتنظيف كاش الدمج.
@@ -193,8 +195,8 @@ android {
         // والبلاغات وعدّ المشاهدات كانت تفشل دائماً (شبكة على الخيط الرئيسي)، والكتابة
         // تفشل كلّها بعد انقطاعٍ واحد (المرآة قراءةٌ فقط)، وصور ردود المطوّر لا تظهر،
         // والبحث في النص المشروح لا يجد كلمةً فيها ة أو همزة.
-        versionCode = 37
-        versionName = "2.8.1"
+        versionCode = 38
+        versionName = "2.8.2"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

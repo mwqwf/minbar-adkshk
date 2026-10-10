@@ -153,8 +153,18 @@ fun SupportThreadScreen(
                     onClick = {
                         confirmDelete = false
                         scope.launch {
+                            // ⚠️ الفشل لا يُبتلع: كان الرجوع يقع في الحالين، فيظنّ
+                            // صاحب المحادثة أنّها حُذفت وهي باقية عند الخادم.
                             runCatching { repository.deleteThread(thread.id) }
-                            onBack()
+                                .onSuccess { onBack() }
+                                .onFailure { failure ->
+                                    if (failure is kotlinx.coroutines.CancellationException) return@onFailure
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "تعذّر حذف المحادثة — تحقّق من الاتصال وأعد المحاولة.",
+                                        android.widget.Toast.LENGTH_LONG,
+                                    ).show()
+                                }
                         }
                     },
                 ) { Text("احذف") }

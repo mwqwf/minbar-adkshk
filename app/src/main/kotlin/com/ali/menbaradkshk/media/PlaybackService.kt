@@ -153,9 +153,14 @@ class PlaybackService : MediaSessionService() {
                             // تتسابق مع كتابات نبضة storeScope على المفاتيح
                             // نفسها (اقرأ-عدّل-اكتب من خيطين فيضيع تحديث).
                             val id = trackedLessonId
-                            storeScope.launch { store.addRecentPlayed(id) }
-                            com.ali.menbaradkshk.widget.NowPlayingWidget
-                                .refresh(this@PlaybackService)
+                            // ⚠️ تحديث الودجت **بعد** الكتابة لا بجوارها: الودجت
+                            // يرسم «آخر درس» من السجلّ نفسه، وكان البثّ يسبق
+                            // الكتابة المؤجَّلة فيبقى الودجت على الدرس السابق.
+                            storeScope.launch {
+                                store.addRecentPlayed(id)
+                                com.ali.menbaradkshk.widget.NowPlayingWidget
+                                    .refresh(this@PlaybackService)
+                            }
                         }
                     }
 

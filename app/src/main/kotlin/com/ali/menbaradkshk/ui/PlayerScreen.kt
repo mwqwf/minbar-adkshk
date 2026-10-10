@@ -83,7 +83,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -100,6 +99,7 @@ import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.formatDuration
 import com.ali.menbaradkshk.util.lessonShareLink
 import com.ali.menbaradkshk.util.lessonShareText
+import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -112,7 +112,6 @@ fun PlayerScreen(
     playback: PlaybackUiState,
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val revision by vm.store.revision.collectAsState()
     val content by vm.content.state.collectAsState()
 
@@ -241,7 +240,9 @@ fun PlayerScreen(
                                 leadingIcon = { Icon(Icons.Filled.ThumbUp, null) },
                                 onClick = {
                                     feedbackMenu = false
-                                    scope.launch {
+                                    // في نطاق الـViewModel: الرجوع فور النقر كان يُلغي
+                                    // الإرسال ويعرض «تعذّر» على بلاغٍ لم يُمنح فرصته.
+                                    vm.viewModelScope.launch {
                                         runCatching { vm.content.sendFeedback(current.id, "benefited", "") }
                                             .onSuccess { vm.showMessage("شكراً لك — وصلنا تفاعلك.") }
                                             .onFailure { vm.showMessage("تعذّر إرسال البلاغ. تحقق من الاتصال وحاول مجدداً.") }
@@ -947,7 +948,8 @@ fun PlayerScreen(
             confirmButton = {
                 TextButton(onClick = {
                     feedbackFor = null
-                    scope.launch {
+                    // نطاق الـViewModel للعلّة نفسها المذكورة في «استفدت من الدرس».
+                    vm.viewModelScope.launch {
                         runCatching { vm.content.sendFeedback(current.id, type, note.trim()) }
                             .onSuccess { vm.showMessage("شكراً لك — وصلنا تفاعلك.") }
                             .onFailure { vm.showMessage("تعذّر إرسال البلاغ. تحقق من الاتصال وحاول مجدداً.") }

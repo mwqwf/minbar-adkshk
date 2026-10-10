@@ -18,6 +18,7 @@ import com.ali.menbaradkshk.notification.NotificationChannels
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.coroutineScope
@@ -95,6 +96,19 @@ class DownloadQueueProcessor(private val context: Context) {
             return DownloadRunResult.FINISHED
         }
         notify("جارٍ تجهيز التحميل…", onProgressNotification)
+
+        // ⛔ انتظار فهرس الدروس قبل الحكم على أيّ عنصر بأنّه «ساقط»: المستودع
+        // يُحمِّل كاشه على خيطٍ خلفيّ متى أُنشئ من الخيط الرئيسي (وظيفة UIDT
+        // تُنشئنا في onStartJob على الرئيسي، والواجهة تُنشئه عند الإقلاع)،
+        // فكانت الجولة الأولى بعد موت العمليّة ترى فهرساً فارغاً لحظةً فتُخرج
+        // الطابور كلّه عنصراً عنصراً وتعلن «اكتمل التحميل» بلا تحميل واحد.
+        withTimeoutOrNull(CONTENT_WAIT_MS) {
+            content.state.first { it.lessons.isNotEmpty() || !it.loading }
+        }
+        if (content.state.value.lessons.isEmpty()) {
+            // لا فهرس بعدُ (أوّل تشغيل بلا كاش ولا شبكة): الطابور يبقى كما هو.
+            return DownloadRunResult.NEEDS_RETRY
+        }
 
         var failures = 0
         // عناصر مقيَّدة بالواي فاي صادفناها على شبكة محدودة: تبقى في الطابور
@@ -364,6 +378,9 @@ class DownloadQueueProcessor(private val context: Context) {
         /// مهلة انتظار القفل: تكفي لخروج السابق من قراءةٍ جارية، وتبقى أقصر
         /// من أن تُعطّل مسار الإعادة إن كان السابق عالقاً فعلاً.
         private const val LOCK_WAIT_MS = 5_000L
+
+        /// أقصى انتظار لتحميل فهرس الدروس من الكاش قبل معالجة الطابور.
+        private const val CONTENT_WAIT_MS = 15_000L
 
         /// أقصى محاولات قابلة للإعادة للدرس الواحد قبل تصنيفه فاشلاً وتجاوزه.
         private const val MAX_ATTEMPTS_PER_LESSON = 5

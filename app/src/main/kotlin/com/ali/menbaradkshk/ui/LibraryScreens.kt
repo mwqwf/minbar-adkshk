@@ -890,7 +890,7 @@ fun DownloadsScreen(vm: AppViewModel) {
             confirmButton = {
                 TextButton(onClick = {
                     deleteAllDialog = false
-                    scope.launch { vm.downloads.deleteAll() }
+                    scope.launch { vm.downloads.deleteAll(spareQueued = true) }
                 }) { Text("حذف الكل") }
             },
             dismissButton = {

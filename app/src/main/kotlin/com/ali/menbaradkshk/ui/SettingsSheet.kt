@@ -381,10 +381,7 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                             icon = Icons.Filled.Image,
                             title = "مساحة الصور",
                             subtitle = "${formatStorage(imageCacheBytes)} — اضغط للمسح",
-                            onClick = {
-                                vm.clearImageCache()
-                                imageCacheRevision++
-                            },
+                            onClick = { vm.clearImageCache { imageCacheRevision++ } },
                         )
                     }
                     SettingsTile(

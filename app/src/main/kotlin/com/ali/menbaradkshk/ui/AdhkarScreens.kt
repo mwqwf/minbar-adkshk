@@ -1019,7 +1019,15 @@ private fun AdhkarTile(
  * يفترق سلوك العدّاد بينها ولا يُنسى تحديث سلسلة المداومة في أحدها.
  * تُعيد العدد بعد النقرة.
  */
-internal fun countDhikr(vm: AppViewModel, view: android.view.View, section: String, index: Int): Long {
+internal fun countDhikr(
+    vm: AppViewModel,
+    view: android.view.View,
+    section: String,
+    index: Int,
+    // المسبحة لها مفتاح «اهتزازٌ مع كلّ عدّة»، فتمرّر اختيار صاحبها هنا؛ وكان
+    // العدّ المرتبط بذكرٍ يهتزّ دائماً ولو أطفأه.
+    haptic: Boolean = true,
+): Long {
     val items = Adhkar.itemsFor(section)
     val dhikr = items.getOrNull(index) ?: return 0L
     val current = vm.store.adhkarDone(section, index) ?: 0L
@@ -1027,7 +1035,7 @@ internal fun countDhikr(vm: AppViewModel, view: android.view.View, section: Stri
     if (current >= target) return current
     val next = current + 1
     vm.store.setAdhkarDone(section, index, next)
-    runCatching {
+    if (haptic) runCatching {
         view.performHapticFeedback(
             if (next >= target) {
                 android.view.HapticFeedbackConstants.LONG_PRESS
@@ -1156,7 +1164,7 @@ fun TasbihScreen(vm: AppViewModel, section: String?, index: Int) {
             val before = vm.store.adhkarDone(section, index) ?: 0L
             if (before < linked.repeat) {
                 // العدّ للذكر نفسه في قسمه (ومعه الاهتزاز وسلسلة المداومة).
-                val n = countDhikr(vm, view, section, index).toInt()
+                val n = countDhikr(vm, view, section, index, haptic = vibrate).toInt()
                 if (n >= linked.repeat) {
                     count = 0
                     laps += 1
@@ -1284,7 +1292,12 @@ fun TasbihScreen(vm: AppViewModel, section: String?, index: Int) {
                     count -= 1
                     if (linked == null) {
                         vm.store.setTasbihCount(count)
-                    } else if (section != null) {
+                    } else if (section != null &&
+                        (vm.store.adhkarDone(section, index) ?: 0L) < linked.repeat
+                    ) {
+                        // ⚠️ عدُّ الذكر يُمسّ في دورته الأولى وحدها: بعد إتمامه
+                        // يصير العدّاد حرّاً، وكان «−١» فيه يكتب عدَّ الدورة
+                        // الحرّة فوق الذكر المُتَمّ فيمحو إتمامه (٣٣/٣٣ ⇒ ١/٣٣).
                         vm.store.setAdhkarDone(section, index, count.toLong())
                     }
                     vm.store.addTasbih(-1)

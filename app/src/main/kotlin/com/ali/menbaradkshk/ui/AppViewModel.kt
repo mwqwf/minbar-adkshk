@@ -710,6 +710,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _quranIndex.value?.surahs?.firstOrNull { it.number == number }?.let { "سورة ${it.name}" }
             ?: "المصحف"
 
+    /// بناء قائمة التلاوة الجاري — انظر [playQuran].
+    private var quranPlayJob: kotlinx.coroutines.Job? = null
+
     /**
      * 🎧 تشغيل التلاوة من آية بعينها إلى آخر السورة.
      *
@@ -729,6 +732,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 ?.let { "file://$it" }
                 ?: remote
 
+        // ⚠️ نقرتان متتاليتان على آيتين (أو سورتين) كانتا تُطلقان بناءين
+        // متوازيين على مجمّع IO، فقد ينتهي الأقدم بعد الأحدث فيُشغَّل ما نُقر
+        // أوّلاً لا آخراً. الطلب الجديد يُلغي ما قبله.
+        quranPlayJob?.cancel()
+        quranPlayJob = null
         if (!reciter.perAyah) {
             // قارئ بملفّ سورة كاملة: لا تمييز آية بآية، لكنّ التلاوة تعمل.
             playback.playQuran(
@@ -743,7 +751,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             )
             return
         }
-        viewModelScope.launch {
+        quranPlayJob = viewModelScope.launch {
             // بناء القائمة يلمس القرص لكل آية (٢٨٦ نداءً في البقرة) بحثاً عن
             // الملفّ المنزَّل، فلا يجوز أن يقع على خيط الواجهة من نقرة الآية.
             val items = withContext(Dispatchers.IO) {
@@ -1390,10 +1398,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val (uploadUri, uploadName) = if (files.size == 1) {
                     files.single().uri to files.single().name
                 } else {
-                    var total = 0L
-                    for (file in files) {
-                        total += context.contentResolver.openAssetFileDescriptor(file.uri, "r")
-                            ?.use { it.length } ?: 0L
+                    // ⚠️ فتح الواصفات خارج خيط الواجهة: المزوّد قد يكون سحابيّاً
+                    // (Drive مثلاً) فيحجب الفتحُ حتى يجلب الملفّ. والطول المجهول
+                    // (‎-1) لا يُنقص المجموع.
+                    val total = withContext(Dispatchers.IO) {
+                        files.sumOf { file ->
+                            runCatching {
+                                context.contentResolver.openAssetFileDescriptor(file.uri, "r")
+                                    ?.use { it.length } ?: 0L
+                            }.getOrDefault(0L).coerceAtLeast(0L)
+                        }
                     }
                     if (total > SubmissionRepository.MAX_FILE_BYTES) error("file_too_large")
                     _contribution.value = _contribution.value.copy(merging = true)
@@ -1546,9 +1560,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /// العلّة التي أُصلحت في [submitTranscript] بالضبط.
     /// 🖼️ مسح كاش الصور — على خيط الإدخال/الإخراج لا على الواجهة: المسح
     /// يحذف مجلّداً قد يبلغ خمسين ميغابايت، ونداؤه من نقرة كان يجمّد الشاشة.
-    fun clearImageCache() {
+    /// [onDone] يُنادى بعد اكتمال المسح فعلاً — كان العارض يعيد قياس المجلّد
+    /// فور النقرة (والمسح لم ينتهِ بعد) فيبقى الحجم القديم ظاهراً بعد «مُسحت».
+    fun clearImageCache(onDone: () -> Unit = {}) {
         viewModelScope.launch {
             val freed = withContext(Dispatchers.IO) { store.clearImageCache() }
+            onDone()
             showMessage(if (freed) "مُسحت الصور المؤقّتة." else "لا توجد صور مؤقّتة لمسحها.")
         }
     }

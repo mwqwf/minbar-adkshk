@@ -238,7 +238,9 @@ class LocalStore private constructor(context: Context) {
 
     /// يحذف تنزيلات دروس لم تعد موجودة في الفهرس (ملفات يتيمة تستهلك المساحة).
     /// يُستدعى بعد مزامنة ناجحة فقط كي لا تُحذف عند فشل الجلب.
-    fun pruneDownloads(validIds: Set<String>): Int {
+    /// [sparePartialsOf] دروسٌ تُصان جزئيّاتها وحدها وإن لم تكن في [validIds]:
+    /// «حذف الكل» يمرّر ما في طابور التحميل، فلا يُمحى ملفٌّ يُكتب الآن.
+    fun pruneDownloads(validIds: Set<String>, sparePartialsOf: Set<String> = emptySet()): Int {
         // موضع تنظيف الفهرس: هنا (خيط خلفيّ بعد مزامنة) لا في الإقلاع.
         repairDownloadIndex()
         // 🧹 كنس الجزئيات اليتيمة: ملفات `.part` (وبصمات مصدرها `.part.src`)
@@ -249,7 +251,7 @@ class LocalStore private constructor(context: Context) {
         // قاعدة التسمية نفسها المستعملة في DownloadRepository:
         // `<safeId>.<ext>.part` حيث safeId ناتج إبدال غير [A-Za-z0-9_-].
         runCatching {
-            val validPrefixes = validIds.map {
+            val validPrefixes = (validIds + sparePartialsOf).map {
                 it.replace(Regex("[^A-Za-z0-9_-]"), "_") + "."
             }
             File(appContext.filesDir, "lessons").listFiles()?.forEach { file ->
@@ -1438,7 +1440,10 @@ class LocalStore private constructor(context: Context) {
         // ملفات الصوت تُحذف **قبل** محو الفهرس: محو `KEY_DOWNLOADS` وحده كان
         // يُفقد المسارات فتبقى الدروس المنزَّلة (مئات الميغابايتات) في
         // `filesDir/lessons` إلى الأبد بلا أي طريق لحذفها من التطبيق.
-        runCatching { downloads().values.forEach { File(it).delete() } }
+        // ⛔ ملفّات حزم المتجر تُستثنى كما في [pruneDownloads]: Play يملكها.
+        runCatching {
+            downloads().forEach { (id, path) -> if (!isBundledDownload(id)) File(path).delete() }
+        }
         val editor = preferences.edit()
         PERSONAL_KEYS.forEach { editor.remove(it) }
         editor.apply()

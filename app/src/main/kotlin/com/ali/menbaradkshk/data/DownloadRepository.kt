@@ -595,12 +595,28 @@ class DownloadRepository private constructor(context: Context) {
         store.markUserDeletedDownload(lessonId)
     }
 
-    suspend fun deleteAll() {
+    /// [spareQueued]: «حذف الكل» من «تنزيلاتي» يصون جزئيّات ما في طابور
+    /// التحميل — كان يمحو الجزئيّ الذي يُكتب الآن فيفشل تنزيله بعد استهلاك
+    /// بياناته، ويُعيد ما ينتظر في الطابور إلى الصفر. («حذف بياناتي» يمحو كلّ شيء.)
+    suspend fun deleteAll(spareQueued: Boolean = false) {
         // ⚠️ كان يُنادى `delete` لكل درس على حدة: قراءةٌ كاملة للتفضيلات
         // وتحليل JSON وكتابةٌ ونبضة `revision` لكلّ واحد — أي مئات الكتابات
         // وإعادات التركيب لأمرٍ واحد. تمرير مجموعة فارغة يعني «لا صالح يبقى»
         // فتُحذف الملفّات كلّها ويُكتب الفهرس مرّة واحدة.
-        withContext(Dispatchers.IO) { store.pruneDownloads(emptySet()) }
+        withContext(Dispatchers.IO) {
+            // 🎁 دروس حزم المتجر: كان «حذف الكل» يُسقط قيدها من الفهرس وحده،
+            // فلا تُحرَّر مساحتها (وهي داخلة في الحجم الذي يَعِد الحوار بحذفه)،
+            // ثمّ يُعيد البذرُ بعد أوّل مزامنة الدروسَ نفسها إلى «تنزيلاتي» كأنّ
+            // الحذف لم يقع. الطريق الصحيح الوحيد لحذفها إزالة الحزمة عبر Play
+            // (لا حذف ملفّاتها بأيدينا — الحارس `isBundledDownload` قائم).
+            AssetPackSeeder.removeAll(appContext)
+            val spared = if (spareQueued) {
+                store.downloadQueue().toSet() + _progress.value.keys
+            } else {
+                emptySet()
+            }
+            store.pruneDownloads(emptySet(), sparePartialsOf = spared)
+        }
     }
 
     companion object {

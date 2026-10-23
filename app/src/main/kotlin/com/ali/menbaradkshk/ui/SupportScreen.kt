@@ -88,7 +88,12 @@ private sealed interface SupportStep {
 private fun SupportFlow(onClose: () -> Unit, onOpenContribute: () -> Unit) {
     val context = LocalContext.current
     val repository = remember { SupportRepository.get(context) }
-    var step by remember { mutableStateOf<SupportStep>(SupportStep.Entry) }
+    // ⚠️ محفوظةٌ عبر إعادة الإنشاء (التدوير وتغيير حجم خطّ النظام): كانت
+    // `remember` فيعود الحوار إلى بدايته ويضيع نصٌّ كُتب وتسجيلٌ استغرق
+    // دقيقتين — والجمهور الذي يسجّل هو الأقلّ قدرةً على الإعادة.
+    var step by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = supportStepSaver) {
+        mutableStateOf<SupportStep>(SupportStep.Entry)
+    }
     // ⚠️ `remember` على الدفق نفسه: بلاه يُنشأ دفقٌ جديد مع كل إعادة تركيب
     // فيُلغى مستمع Firestore ويُسجَّل غيره في كل نبضة — قراءات زائدة على
     // إنترنت ضعيف بلا فائدة.
@@ -129,6 +134,33 @@ private fun SupportFlow(onClose: () -> Unit, onOpenContribute: () -> Unit) {
 // ─── شاشة الدخول ────────────────────────────────────────────────
 
 private data class SupportOption(val kind: String, val emoji: String, val label: String)
+
+/// حافظ خطوة الحوار: المدخل والاستمارة (بنوعها) و«أُرسل» تُستعاد كما هي؛
+/// والمحادثة المفتوحة تعود إلى المدخل لأنّ كائنها يأتي من الدفق لا من الحالة
+/// — وهي على بعد نقرةٍ هناك، أمّا الاستمارة فنصُّها هو ما يُخشى ضياعه.
+private val supportStepSaver = androidx.compose.runtime.saveable.Saver<SupportStep, List<String>>(
+    save = { step ->
+        when (step) {
+            SupportStep.Entry -> listOf("entry")
+            is SupportStep.Form -> listOf("form", step.kind)
+            is SupportStep.Conversation -> listOf("entry")
+            SupportStep.Sent -> listOf("sent")
+        }
+    },
+    restore = { saved ->
+        when (saved.firstOrNull()) {
+            "form" -> SupportStep.Form(saved.getOrNull(1).orEmpty())
+            "sent" -> SupportStep.Sent
+            else -> SupportStep.Entry
+        }
+    },
+)
+
+/// التسجيل الصوتيّ يُحفظ مساراً: الملفّ باقٍ في الكاش، والمرجع هو ما كان يضيع.
+internal val recordedFileSaver = androidx.compose.runtime.saveable.Saver<File?, String>(
+    save = { it?.absolutePath.orEmpty() },
+    restore = { path -> path.takeIf { it.isNotEmpty() }?.let(::File)?.takeIf { it.isFile } },
+)
 
 private val supportOptions = listOf(
     SupportOption(SupportKind.SUGGESTION, "💡", "عندي اقتراح لتحسين التطبيق"),
@@ -258,15 +290,17 @@ private fun SupportForm(kind: String, onBack: () -> Unit, onSent: () -> Unit) {
     val repository = remember { SupportRepository.get(context) }
     val store = remember { SupportStore.get(context) }
 
-    var text by remember { mutableStateOf("") }
+    var text by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
     // أسئلة «الإشراف» الثلاثة: ثلاثة أسطر قصيرة أسهل على من لا يكتب كثيراً من
     // صندوقٍ واحد يُطلب منه أن يملأه بنفسه.
-    var who by remember { mutableStateOf("") }
-    var relation by remember { mutableStateOf("") }
-    var work by remember { mutableStateOf("") }
-    var recorded by remember { mutableStateOf<File?>(null) }
-    var shareDeviceInfo by remember { mutableStateOf(true) }
-    var askIdentity by remember { mutableStateOf(false) }
+    var who by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
+    var relation by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
+    var work by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
+    var recorded by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = recordedFileSaver) {
+        mutableStateOf<File?>(null)
+    }
+    var shareDeviceInfo by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
+    var askIdentity by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
 
     fun composedText(): String = if (kind == SupportKind.SUPERVISION) {

@@ -11,6 +11,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -132,6 +133,13 @@ class ContentRepository private constructor(context: Context) {
     ) = refreshMutex.withLock { refreshLocked(force, deep) }
 
     private suspend fun refreshLocked(force: Boolean, deep: Boolean) = withContext(Dispatchers.IO) {
+        // ⚠️ انتظار الحمل الأوّل من الكاش: المستودع يُنشأ من الخيط الرئيسي فيحمّل
+        // كاشه على IO، و`AppViewModel.init` ينادي `refresh` فوراً — فكان يرى
+        // `hasCache=false` لحظةً ويتخطّى الخانق والمسبار إلى الكتالوج كاملاً في كلّ
+        // إقلاعٍ بارد (وبلا مسبار يُقبل كتالوجُ CDN ولو كان أقدم ممّا عندنا).
+        kotlinx.coroutines.withTimeoutOrNull(INITIAL_LOAD_WAIT_MS) {
+            _state.first { !it.loading || it.lessons.isNotEmpty() }
+        }
         val now = System.currentTimeMillis()
         val hasCache = _state.value.lessons.isNotEmpty()
         if (!force && now - store.lastSyncMs() < SYNC_INTERVAL_MS && hasCache) {
@@ -949,6 +957,8 @@ class ContentRepository private constructor(context: Context) {
 
     companion object {
         private const val SYNC_INTERVAL_MS = 2 * 60 * 1_000L
+        /// أقصى انتظار لاكتمال الحمل الأوّل من الكاش قبل الحكم على وجوده.
+        private const val INITIAL_LOAD_WAIT_MS = 5_000L
         /// حدّ أدنى بين مسبارين — يبتلع عودات ON_RESUME المتلاحقة.
         private const val PROBE_INTERVAL_MS = 60 * 1_000L
         private const val PREFS = "content_repo_v1"

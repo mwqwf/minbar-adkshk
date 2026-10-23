@@ -1447,6 +1447,9 @@ class LocalStore private constructor(context: Context) {
         val editor = preferences.edit()
         PERSONAL_KEYS.forEach { editor.remove(it) }
         editor.apply()
+        // طابور التنزيل أيضاً: كان يبقى فيُعاد تنزيل كلّ ما فيه (مئات
+        // الميغابايتات) بعد أن طلب المستخدم محو كلّ شيء.
+        clearDownloadQueue()
         val legacyEditor = legacy.edit()
         PERSONAL_KEYS.forEach { legacyEditor.remove("$FLUTTER_PREFIX$it") }
         legacyEditor.apply()

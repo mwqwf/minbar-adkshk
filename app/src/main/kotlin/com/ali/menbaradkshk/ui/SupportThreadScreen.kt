@@ -62,7 +62,9 @@ import com.ali.menbaradkshk.data.SupportRepository
 import com.ali.menbaradkshk.data.SupportThread
 import com.ali.menbaradkshk.util.VoiceRecorder
 import com.ali.menbaradkshk.util.formatDuration
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -377,8 +379,11 @@ private fun SupportAudioPlayer(path: String, pending: Boolean) {
 /// حقل الردّ بعد أن يردّ المطوّر: زرّ الصوت أوّلاً وأكبر، والكتابة بعده.
 @Composable
 private fun SupportComposer(onSend: (String, File?) -> Unit) {
-    var text by remember { mutableStateOf("") }
-    var recorded by remember { mutableStateOf<File?>(null) }
+    // محفوظان عبر التدوير — كما في استمارة «راسِل المطوّر».
+    var text by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
+    var recorded by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = recordedFileSaver) {
+        mutableStateOf<File?>(null)
+    }
 
     Column(
         Modifier.fillMaxWidth().padding(12.dp),
@@ -430,7 +435,9 @@ fun VoiceRecordButton(
 ) {
     val context = LocalContext.current
     val recorder = remember { VoiceRecorder() }
+    val scope = rememberCoroutineScope()
     var recording by remember { mutableStateOf(false) }
+    var stopping by remember { mutableStateOf(false) }
     var failure by remember { mutableStateOf<String?>(null) }
     val elapsed by recorder.elapsedMs.collectAsState()
 
@@ -443,13 +450,20 @@ fun VoiceRecordButton(
     }
 
     fun end() {
+        if (!recording || stopping) return
         recording = false
-        val out = recorder.stop()
-        if (out == null) {
-            failure = "لم نسمع شيئاً — أعد التسجيل واضغط أطول قليلاً."
-        } else {
-            failure = null
-            onRecorded(out)
+        stopping = true
+        // ⚠️ على IO: `stop()` يفكّ ترميز الملفّ (`MediaMetadataRetriever`) للتحقّق
+        // من صلاحيّته، وملفّ دقيقتين كان يجمّد الواجهة عند «أوقف التسجيل».
+        scope.launch {
+            val out = withContext(Dispatchers.IO) { recorder.stop() }
+            stopping = false
+            if (out == null) {
+                failure = "لم نسمع شيئاً — أعد التسجيل واضغط أطول قليلاً."
+            } else {
+                failure = null
+                onRecorded(out)
+            }
         }
     }
 
@@ -479,6 +493,8 @@ fun VoiceRecordButton(
                         permission.launch(Manifest.permission.RECORD_AUDIO)
                     }
                 },
+                // معطّل لحظة التحقّق من التسجيل كي لا تبدأ ضغطةٌ ثانية تسجيلاً فوقه.
+                enabled = !stopping,
                 modifier = Modifier.fillMaxWidth().height(84.dp),
                 shape = RoundedCornerShape(20.dp),
                 colors = if (recording) {

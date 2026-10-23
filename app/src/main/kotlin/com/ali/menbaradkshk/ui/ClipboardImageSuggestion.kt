@@ -87,6 +87,18 @@ fun ClipboardImageSuggestion(
             candidate = null
             return@LaunchedEffect
         }
+        // ⚠️ الوصف أوّلاً لا المحتوى: `primaryClip` على أندرويد ١٢+ يُظهر تنبيه
+        // النظام «منبر لصق من الحافظة» عند كلّ قراءة لمحتوى تطبيقٍ آخر — فكان
+        // يظهر مع كلّ عودةٍ إلى النموذج ولو كانت الحافظة نصّاً من واتساب،
+        // ويبدو التطبيق متلصّصاً. `primaryClipDescription` لا يُطلقه، ويكفي
+        // لاستبعاد ما ليس صورةً ولا رابط محتوى قبل أن نقرأ شيئاً.
+        val description = runCatching { clipboard.primaryClipDescription }.getOrNull()
+        val mayBeImage = description != null &&
+            (description.hasMimeType("image/*") || description.hasMimeType("text/uri-list"))
+        if (!mayBeImage) {
+            candidate = null
+            return@LaunchedEffect
+        }
         val clip = runCatching { clipboard.primaryClip }.getOrNull()
         val item = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)
         val source = item?.uri

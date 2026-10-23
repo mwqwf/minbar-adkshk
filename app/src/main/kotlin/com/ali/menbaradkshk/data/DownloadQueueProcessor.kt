@@ -135,8 +135,11 @@ class DownloadQueueProcessor(private val context: Context) {
                 store.decrementDownloadQueueTotal()
                 continue
             }
-            if (downloads.isDownloaded(id)) {
+            // منزَّلٌ **وصوتُه الحاليّ**: الدرس الذي استُبدل صوته (stale) يبقى
+            // ليُجدَّد — كان يُسقط هنا بلا تنزيل فتموت آليّة «تحديث مكتبتك».
+            if (downloads.isDownloaded(id) && downloads.staleDownloadIds(listOf(lesson)).isEmpty()) {
                 store.removeFromDownloadQueue(id)
+                store.decrementDownloadQueueTotal()
                 continue
             }
             // أُلغي قبل أن يبدأ دوره: يخرج بلا محاولة ولا رسالة فشل.

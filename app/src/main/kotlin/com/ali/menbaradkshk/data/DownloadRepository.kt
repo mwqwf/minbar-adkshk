@@ -167,12 +167,33 @@ class DownloadRepository private constructor(context: Context) {
         }
     }
 
+    /**
+     * ⚠️ محاولةٌ **تقدّم فيها النقل** لا تُحتسب على سقف المحاولات: شبكةٌ تنقطع
+     * كلّ دقيقة (الحال الشائعة لجمهورنا) كانت تُسقط درساً كبيراً من الطابور
+     * بعد خمسة انقطاعات وإشعار «تعذّر» — و٨٠٪ منه على القرص ويكفيه استئناف.
+     * السقف يبقى لما لا يتقدّم أبداً (رابط معطوب على خادم حيّ).
+     */
+    private fun forgiveIfProgressed(lessonId: String, partial: File, startedWithBytes: Long) {
+        if (partial.length() > startedWithBytes) store.clearDownloadAttempts(lessonId)
+    }
+
     private suspend fun downloadLocked(lesson: Lesson): String = withContext(Dispatchers.IO) {
+        var startedWithBytes = 0L
         val uri = Uri.parse(lesson.audioUrl)
         require(uri.scheme.equals("https", ignoreCase = true)) {
             "رابط الصوت غير آمن أو غير صالح."
         }
-        localPath(lesson.id)?.let { return@withContext it }
+        // ⚠️ الموجود يُعاد **إن كان صوتَه نفسه**: كان المسار الموجود يُعاد بلا نظرٍ
+        // إلى البصمة، فدرسٌ استُبدل صوته على الخادم (`staleDownloadIds`) يدخل
+        // طابور «تحديث مكتبتك» ويخرج منه صامتاً بلا بايت — والمستمع على القديم
+        // إلى الأبد، وإشعار «اكتمل التحميل» يكذب كلّ ١٢ ساعة.
+        localPath(lesson.id)?.let { existing ->
+            val fresh = lesson.sha256.isBlank() || store.downloadSha(lesson.id) == lesson.sha256
+            if (fresh) return@withContext existing
+            // لا `delete()` العامّة: تلك توسم الدرس «حذفه المستخدم» فيُحرم من التلقائيّ.
+            if (!store.isBundledDownload(lesson.id)) runCatching { File(existing).delete() }
+            store.removeDownload(lesson.id)
+        }
 
         val directory = File(appContext.filesDir, "lessons").apply { mkdirs() }
         // تطبيع الامتداد: التخزين يعطي أحياناً `.ogx` (Ogg مُتعدِّد) وما شابه،
@@ -233,6 +254,7 @@ class DownloadRepository private constructor(context: Context) {
         try {
             // استئناف التنزيل من حيث توقف: نطلب المدى المتبقي إن وُجد ملف جزئي.
             val resumeFrom = partial.length().takeIf { it > 0L } ?: 0L
+            startedWithBytes = resumeFrom
             connection = (URL(lesson.audioUrl).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 20_000
                 readTimeout = 45_000
@@ -360,8 +382,10 @@ class DownloadRepository private constructor(context: Context) {
             // Throwable أدناه فتحذف الجزئيَّ الذي وعد التعليق أعلاه بإبقائه —
             // أي أن كل انقطاع يُعيد التنزيل من الصفر. يُعاد رميه كما هو
             // (من حذف جزئيّه قبل الرمي — كحالة 416 — حَذَفه صراحةً هناك).
+            forgiveIfProgressed(lesson.id, partial, startedWithBytes)
             throw retryable
         } catch (failure: java.io.IOException) {
+            forgiveIfProgressed(lesson.id, partial, startedWithBytes)
             // ⛔ امتلاء التخزين ليس انقطاع شبكة: كان يُصنَّف «قابلاً للإعادة»
             // فيوقظ الوظيفة بلا نهاية ويعرض «بانتظار عودة الاتصال…» وهي رسالة
             // كاذبة. لا يجوز أن يعود: خطأ دائم يُخرج الدرس من الطابور.

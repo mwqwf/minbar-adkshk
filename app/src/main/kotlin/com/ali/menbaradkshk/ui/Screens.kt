@@ -99,6 +99,8 @@ import com.ali.menbaradkshk.util.normalizeArabic
 import com.ali.menbaradkshk.util.progress
 import com.ali.menbaradkshk.util.arabicCountLabel
 import kotlinx.coroutines.Dispatchers
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -634,7 +636,8 @@ private fun SectionDownloadSuggestion(vm: AppViewModel, state: ContentState) {
             text = {
                 Text(
                     "تستمع كثيراً إلى «${sub.name}» وفيه " +
-                        "${com.ali.menbaradkshk.util.lessonsCountLabel(remaining)} غير منزَّل. " +
+                        "${com.ali.menbaradkshk.util.lessonsCountLabel(remaining)} " +
+                        (if (remaining == 1) "غير منزَّل. " else "غير منزَّلة. ") +
                         "أتريد تنزيله كاملاً للاستماع بلا إنترنت؟ " +
                         "(يبدأ على الواي فاي فقط — لا يستهلك بيانات الجوّال.)",
                     textAlign = TextAlign.Center,
@@ -1307,12 +1310,17 @@ fun CompletionCertificateDialog(
         confirmButton = {
             TextButton(onClick = {
                 onDismiss()
-                shareCompletionCertificate(
-                    context = context,
-                    userName = vm.store.submitterName(),
-                    sectionName = subcategory.name,
-                    lessonsCount = lessonsCount,
-                )
+                // في نطاق الـViewModel لا التركيبة: الحوار يُغلق قبل أن تكتمل
+                // المشاركة، ونطاقه يُلغى معه.
+                val userName = vm.store.submitterName()
+                vm.viewModelScope.launch {
+                    shareCompletionCertificate(
+                        context = context,
+                        userName = userName,
+                        sectionName = subcategory.name,
+                        lessonsCount = lessonsCount,
+                    )
+                }
             }) { Text(if (celebratory) "شارك الإنجاز" else "مشاركة") }
         },
         dismissButton = {
@@ -1330,14 +1338,18 @@ private fun certificateShareText(sectionName: String): String =
         "https://play.google.com/store/apps/details?id=com.ali.menbaradkshk"
 
 /// يرسم صورة الشهادة ويشاركها؛ الفشل في أي خطوة يرتدّ إلى مشاركة النصّ.
-private fun shareCompletionCertificate(
+///
+/// ⚠️ الرسم (١٠٨٠×١٣٥٠) وضغط PNG والكتابة على القرص على IO: كانت كلّها في
+/// `onClick` على خيط الواجهة فتجمّد الشاشة لحظةً على الأجهزة الضعيفة — النمط
+/// نفسه الذي عُولج في `shareLessonPayload`.
+private suspend fun shareCompletionCertificate(
     context: android.content.Context,
     userName: String,
     sectionName: String,
     lessonsCount: Int,
 ) {
     val text = certificateShareText(sectionName)
-    val intent = runCatching {
+    val intent = withContext(Dispatchers.IO) { runCatching {
         val bitmap = drawCertificateBitmap(context, userName, sectionName, lessonsCount)
         val directory = java.io.File(context.cacheDir, "share").apply { mkdirs() }
         val file = java.io.File(directory, "شهادة إتمام.png")
@@ -1361,7 +1373,7 @@ private fun shareCompletionCertificate(
             type = "text/plain"
             putExtra(android.content.Intent.EXTRA_TEXT, text)
         }
-    }
+    } }
     runCatching {
         context.startActivity(android.content.Intent.createChooser(intent, "مشاركة"))
     }

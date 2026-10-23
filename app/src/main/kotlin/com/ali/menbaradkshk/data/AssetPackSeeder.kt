@@ -45,6 +45,13 @@ object AssetPackSeeder {
                         val current = existing[l.id]
                         if (current != null && File(current).isFile && meta.optJSONObject(l.id)?.optString("sha") == sha) return@forEach
                         if (l.id in userDeleted) return@forEach
+                        // تنزيلٌ قديم (قبل قيد البصمة أو ببصمةٍ أخرى) يُستبدل مساره
+                        // بملفّ الحزمة: يُحذف ملفّه وإلّا بقي في `filesDir` يتيماً لا
+                        // يراه «تنزيلاتي» ولا يحذفه شيء — مئات الميغابايتات لمن نزّل
+                        // المكتبة قبل معماريّة «المكتبة الكاملة».
+                        if (current != null && current != f.absolutePath && !store.isBundledDownload(l.id)) {
+                            runCatching { File(current).delete() }
+                        }
                         seeded[l.id] = Triple(f.absolutePath, sha, f.length())
                     }
                 }

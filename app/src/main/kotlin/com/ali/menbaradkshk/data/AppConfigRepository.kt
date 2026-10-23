@@ -278,6 +278,12 @@ class AppConfigRepository private constructor(context: Context) {
         return id
     }
 
+    /// «احذف بياناتي»: هويّةٌ جديدة بعد حذف القديمة على الخادم — إبقاء المعرّف
+    /// كان يُعيد إنشاء الهويّة نفسها بأوّل نداءٍ تالٍ.
+    fun resetInstallId() {
+        prefs.edit().remove(KEY_INSTALL_ID).remove(KEY_DEVICE_REGISTERED).apply()
+    }
+
     companion object {
         /** معرّف حزمة نسخة المتجر — ثابت لا يتبع لاحقة `.dev` في التطوير. */
         const val STORE_PACKAGE = "com.ali.menbaradkshk"

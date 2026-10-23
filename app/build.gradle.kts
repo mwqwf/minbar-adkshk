@@ -195,8 +195,12 @@ android {
         // والبلاغات وعدّ المشاهدات كانت تفشل دائماً (شبكة على الخيط الرئيسي)، والكتابة
         // تفشل كلّها بعد انقطاعٍ واحد (المرآة قراءةٌ فقط)، وصور ردود المطوّر لا تظهر،
         // والبحث في النص المشروح لا يجد كلمةً فيها ة أو همزة.
-        versionCode = 38
-        versionName = "2.8.2"
+        // ٣٩ / ٢.٨.٣ — النصّ المشروح يصل مع الصوت (2026-10-23): لقطة النصوص المعتمدة
+        // تُضمَّن وقت البناء (`refreshTranscriptSnapshot`) فتُقرأ بلا إنترنت من أوّل
+        // تشغيل، ومخزنها صار دائماً تحت `filesDir` (كان في `cacheDir` فيمحوه النظام)،
+        // والدرس المنزَّل يجلب نصّه وصوره معه. ومعه الفحص الشامل الثالث للتطبيق.
+        versionCode = 39
+        versionName = "2.8.3"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -414,8 +418,84 @@ val refreshCatalogSnapshot = tasks.register("refreshCatalogSnapshot") {
         println("لقطة الكتالوج: ${lessons.size} درساً، ${out.length()} بايت")
     }
 }
+// ─── لقطة النصوص المشروحة المضمّنة (النصّ يصل مع الصوت) ──────────────────
+// الصوت كلّه يصل مع التطبيق في حزم المتجر، وكان النصّ المشروح وحده يُجلب عند
+// فتح المشغّل بشبكة. فتُجمع هنا وقت البناء كلُّ النصوص المعتمدة (نداءٌ لكلّ
+// درس في اللقطة أعلاه على `/v1/transcripts/{id}`؛ 404 = لا نصّ) وتُضغط إلى
+// assets/transcripts/snapshot.jz فتُقرأ بلا إنترنت من أوّل تشغيل، والخادم
+// يبقى مصدر الحقيقة لما استجدّ بعد البناء.
+// ⚠️ بخلاف لقطة الكتالوج لا يُفشل تعثّرُها البناء: هي تحسينٌ فوق الجلب الحيّ
+// لا شرطاً له، وحصّة D1 المجانية قد تنفد قبل منتصف الليل. فعند تعثّر أكثر من
+// ٥٪ من النداءات تبقى لقطة المستودع كما هي ويُطبع تحذير. ‎-PskipCatalogSnapshot
+// يتخطّاها أيضاً.
+val refreshTranscriptSnapshot = tasks.register("refreshTranscriptSnapshot") {
+    outputs.upToDateWhen { false }
+    mustRunAfter(refreshCatalogSnapshot)
+    doLast {
+        if (project.hasProperty("skipCatalogSnapshot")) return@doLast
+        val catalogFile = layout.projectDirectory.file("src/main/assets/catalog/snapshot.jz").asFile
+        val out = layout.projectDirectory.file("src/main/assets/transcripts/snapshot.jz").asFile
+        out.parentFile.mkdirs()
+        val catalogText = java.util.zip.GZIPInputStream(catalogFile.inputStream())
+            .bufferedReader().use { it.readText() }
+        @Suppress("UNCHECKED_CAST")
+        val lessons = (groovy.json.JsonSlurper().parseText(catalogText) as Map<String, Any?>)["lessons"] as List<Map<String, Any?>>
+        val ids = lessons.mapNotNull { (it["id"] as? String)?.takeIf(String::isNotBlank) }.distinct()
+        val api = "https://minbar-api.mushafak.workers.dev/v1/transcripts/"
+        val found = java.util.concurrent.ConcurrentHashMap<String, Any?>()
+        val failed = java.util.concurrent.atomic.AtomicInteger(0)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(8)
+        try {
+            ids.map { id ->
+                pool.submit(Runnable {
+                    var done = false
+                    for (attempt in 1..3) {
+                        try {
+                            val connection = URL(api + java.net.URLEncoder.encode(id, "UTF-8"))
+                                .openConnection() as java.net.HttpURLConnection
+                            connection.connectTimeout = 20000
+                            connection.readTimeout = 60000
+                            connection.setRequestProperty("User-Agent", "Mozilla/5.0 minbar-transcripts")
+                            connection.setRequestProperty("Accept", "application/json")
+                            val code = connection.responseCode
+                            if (code == 404) { done = true; connection.disconnect(); break }
+                            if (code in 200..299) {
+                                val text = connection.inputStream.bufferedReader().use { it.readText() }
+                                val document = groovy.json.JsonSlurper().parseText(text) as Map<*, *>
+                                // الوثيقة كما يردّها الخادم حرفياً — والتطبيق يحلّلها بالدالّة
+                                // نفسها التي تحلّل ردّ الشبكة (`TranscriptRepository.parseDocument`).
+                                found[id] = document
+                                done = true; connection.disconnect(); break
+                            }
+                            connection.disconnect()
+                            if (code in 400..499) { done = true; break }
+                        } catch (ignored: Exception) {
+                        }
+                        Thread.sleep(500L * attempt)
+                    }
+                    if (!done) failed.incrementAndGet()
+                })
+            }.forEach { it.get() }
+        } finally {
+            pool.shutdown()
+        }
+        val tolerated = (ids.size * 5) / 100
+        if (ids.isEmpty() || failed.get() > tolerated) {
+            println("⚠️ لقطة النصوص: تعثّر ${failed.get()} من ${ids.size} نداءً — تبقى لقطة المستودع كما هي.")
+            if (!out.isFile) {
+                GZIPOutputStream(out.outputStream()).use { it.write("""{"items":{}}""".toByteArray()) }
+            }
+            return@doLast
+        }
+        val payload = groovy.json.JsonOutput.toJson(
+            mapOf("generatedAt" to System.currentTimeMillis(), "lessons" to ids.size, "items" to found.toSortedMap()),
+        )
+        GZIPOutputStream(out.outputStream()).use { it.write(payload.toByteArray()) }
+        println("لقطة النصوص: ${found.size} نصّاً من ${ids.size} درساً (تعثّر ${failed.get()})، ${out.length()} بايت")
+    }
+}
 tasks.matching { it.name == "preReleaseBuild" }.configureEach {
-    dependsOn(refreshCatalogSnapshot)
+    dependsOn(refreshCatalogSnapshot, refreshTranscriptSnapshot)
 }
 
 tasks.matching { it.name == "extractReleaseNativeSymbolTables" }.configureEach {

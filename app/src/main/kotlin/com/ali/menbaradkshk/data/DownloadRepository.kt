@@ -593,6 +593,8 @@ class DownloadRepository private constructor(context: Context) {
         store.removeDownload(lessonId)
         // حذفٌ بيد المستخدم إشارة سلبية دائمة للتنزيل التلقائي وحده.
         store.markUserDeletedDownload(lessonId)
+        // صور النصّ المشروح نزلت مع الدرس فتذهب معه (النصّ نفسه يبقى، فهو صغير).
+        TranscriptRepository.get(appContext).dropImages(lessonId)
     }
 
     /// [spareQueued]: «حذف الكل» من «تنزيلاتي» يصون جزئيّات ما في طابور
@@ -616,6 +618,7 @@ class DownloadRepository private constructor(context: Context) {
                 emptySet()
             }
             store.pruneDownloads(emptySet(), sparePartialsOf = spared)
+            TranscriptRepository.get(appContext).dropAllImages()
         }
     }
 

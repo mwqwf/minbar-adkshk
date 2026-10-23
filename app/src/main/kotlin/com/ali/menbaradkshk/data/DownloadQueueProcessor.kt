@@ -39,6 +39,7 @@ class DownloadQueueProcessor(private val context: Context) {
     private val store = LocalStore.get(context)
     private val downloads = DownloadRepository.get(context)
     private val content = ContentRepository.get(context)
+    private val transcripts = TranscriptRepository.get(context)
 
     /// [onProgressNotification] يسمح لمُشغّل UIDT بتمرير الإشعار إلى النظام.
     ///
@@ -196,6 +197,10 @@ class DownloadQueueProcessor(private val context: Context) {
                 }
                 store.removeFromDownloadQueue(id)
                 store.clearDownloadAttempts(id)
+                // 📖 النصّ المشروح ينزل مع الصوت: طلبٌ واحد صغير بعد اكتمال
+                // الدرس، يُحفظ دائماً فيُقرأ بلا إنترنت كما يُسمع. فشلُه لا
+                // يمسّ التنزيل (يبتلع كلّ شيء إلا الإلغاء).
+                transcripts.prefetch(id)
             } catch (paused: DownloadPausedException) {
                 // الدرس يبقى في رأس الطابور وملفّه الجزئي محفوظ.
                 publishPaused(lesson.displayTitle)

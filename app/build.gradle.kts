@@ -1,5 +1,12 @@
+import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.util.Properties
+import java.util.TreeMap
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 
 plugins {
@@ -442,23 +449,23 @@ val refreshTranscriptSnapshot = tasks.register("refreshTranscriptSnapshot") {
         val catalogFile = layout.projectDirectory.file("src/main/assets/catalog/snapshot.jz").asFile
         val out = layout.projectDirectory.file("src/main/assets/transcripts/snapshot.jz").asFile
         out.parentFile.mkdirs()
-        val catalogText = java.util.zip.GZIPInputStream(catalogFile.inputStream())
+        val catalogText = GZIPInputStream(catalogFile.inputStream())
             .bufferedReader().use { it.readText() }
         @Suppress("UNCHECKED_CAST")
         val lessons = (groovy.json.JsonSlurper().parseText(catalogText) as Map<String, Any?>)["lessons"] as List<Map<String, Any?>>
         val ids = lessons.mapNotNull { (it["id"] as? String)?.takeIf(String::isNotBlank) }.distinct()
         val api = "https://minbar-api.mushafak.workers.dev/v1/transcripts/"
-        val found = java.util.concurrent.ConcurrentHashMap<String, Any?>()
-        val failed = java.util.concurrent.atomic.AtomicInteger(0)
-        val pool = java.util.concurrent.Executors.newFixedThreadPool(8)
+        val found = ConcurrentHashMap<String, Any?>()
+        val failed = AtomicInteger(0)
+        val pool = Executors.newFixedThreadPool(8)
         try {
-            ids.map { id ->
+            val jobs = ids.map { id ->
                 pool.submit(Runnable {
                     var done = false
                     for (attempt in 1..3) {
                         try {
-                            val connection = URL(api + java.net.URLEncoder.encode(id, "UTF-8"))
-                                .openConnection() as java.net.HttpURLConnection
+                            val connection = URL(api + URLEncoder.encode(id, "UTF-8"))
+                                .openConnection() as HttpURLConnection
                             connection.connectTimeout = 20000
                             connection.readTimeout = 60000
                             connection.setRequestProperty("User-Agent", "Mozilla/5.0 minbar-transcripts")
@@ -481,7 +488,8 @@ val refreshTranscriptSnapshot = tasks.register("refreshTranscriptSnapshot") {
                     }
                     if (!done) failed.incrementAndGet()
                 })
-            }.forEach { it.get() }
+            }
+            jobs.forEach { it.get() }
         } finally {
             pool.shutdown()
         }
@@ -494,7 +502,7 @@ val refreshTranscriptSnapshot = tasks.register("refreshTranscriptSnapshot") {
             return@doLast
         }
         val payload = groovy.json.JsonOutput.toJson(
-            mapOf("generatedAt" to System.currentTimeMillis(), "lessons" to ids.size, "items" to found.toSortedMap()),
+            mapOf("generatedAt" to System.currentTimeMillis(), "lessons" to ids.size, "items" to TreeMap<String, Any?>(found)),
         )
         GZIPOutputStream(out.outputStream()).use { it.write(payload.toByteArray()) }
         println("لقطة النصوص: ${found.size} نصّاً من ${ids.size} درساً (تعثّر ${failed.get()})، ${out.length()} بايت")

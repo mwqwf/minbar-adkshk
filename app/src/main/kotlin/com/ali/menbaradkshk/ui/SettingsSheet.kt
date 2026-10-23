@@ -148,7 +148,8 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
 
     // «راسِل المطوّر»: ميزة قائمة بذاتها تُفتح فوق الإعدادات بلا مسار تنقّل
     // خاصّ بها. والنقطة تظهر متى كان للمستخدم ردٌّ لم يقرأه.
-    var supportOpen by remember { mutableStateOf(false) }
+    // محفوظ: التدوير كان يُغلق «راسِل المطوّر» ويُضيع ما كُتب وسُجّل فيه.
+    var supportOpen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     val settingsOpen by vm.showSettings.collectAsState()
     val supportUnread = rememberSupportUnread(active = settingsOpen)
 

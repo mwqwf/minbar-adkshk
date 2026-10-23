@@ -104,7 +104,17 @@ class PlaybackService : MediaSessionService() {
             addListener(
                 object : Player.Listener {
                     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                        trackedLessonId = mediaItem?.mediaId.orEmpty()
+                        val newId = mediaItem?.mediaId.orEmpty()
+                        // ⚠️ استبدال الرابط بالمرآة (`tryMirrorFallback`) يُطلق هذا
+                        // الحدث بسبب `PLAYLIST_CHANGED` للدرس **نفسه**: تصفيرُ
+                        // العدّاد هنا كان يحتسب الدرس مرّتين في «الأكثر استماعاً»
+                        // و«حصادك» لكلّ من يصيبه الحجب. العنصر نفسه ⇒ لا شيء يتغيّر.
+                        if (newId == trackedLessonId && newId.isNotBlank() &&
+                            reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED
+                        ) {
+                            return
+                        }
+                        trackedLessonId = newId
                         lastTrackedPositionMs = currentPosition.coerceAtLeast(0L)
                         // درس جديد ⇒ عدّاد الاستماع يبدأ من الصفر، والاحتساب
                         // يُلغى إن غادر المستخدم قبل اكتمال المدّة المطلوبة.

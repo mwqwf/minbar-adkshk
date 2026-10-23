@@ -26,6 +26,13 @@ class SupportStore private constructor(context: Context) {
 
     // ─── الهويّة والإقرار (يُسألان مرّة واحدة) ───────────────────
 
+    /// «احذف بياناتي»: الاسم والإقرار والصندوق الصادر وعلامات القراءة كلّها —
+    /// كان الصندوق ينجو فيُرسل رسالةً معلّقة بعد الحذف فتعود محادثةٌ باسمه.
+    fun clearAll() {
+        synchronized(outboxLock) { prefs.edit().clear().apply() }
+        _outboxRevision.update { it + 1L }
+    }
+
     /** الاسم الذي اختاره المستخدم، أو «مستخدم» إن تركه فارغاً. */
     fun displayName(): String = prefs.getString(KEY_NAME, "").orEmpty()
         .trim().ifBlank { DEFAULT_NAME }

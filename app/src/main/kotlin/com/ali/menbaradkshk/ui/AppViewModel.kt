@@ -1543,7 +1543,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     suspend fun deleteMyData() {
+        val app = getApplication<android.app.Application>()
+        // ما كان مجدولاً يُوقَف أوّلاً كي لا يستيقظ بعد الحذف فيُرسل أو يُنزّل.
+        androidx.work.WorkManager.getInstance(app).cancelUniqueWork("support_outbox")
+        com.ali.menbaradkshk.data.DownloadScheduler.cancelScheduled(app)
+        downloads.clearAllCancels()
         submissions.deleteCloudIdentityData()
+        // الصندوق الصادر والاسم والإقرار، ثمّ هويّةٌ جديدة: بلا هذا كانت رسالةٌ
+        // معلّقة تُرسَل بعد الحذف بالمعرّف نفسه فتعود الهويّة إلى الخادم.
+        com.ali.menbaradkshk.data.SupportStore.get(app).clearAll()
+        com.ali.menbaradkshk.data.AppConfigRepository.get(app).resetInstallId()
         downloads.deleteAll()
         store.clearPersonalData()
         // تفضيلات ContentRepository الشخصيّة (السجلّ المخفي وطوابعه وترتيب

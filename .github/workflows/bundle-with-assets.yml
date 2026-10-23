@@ -128,6 +128,8 @@ jobs:
           n=$(grep -oE 'lib/[a-z0-9_-]+/' /tmp/list.txt | sort -u | wc -l)
           [ "$n" -ge 4 ] || { echo "⛔ المعالجات $n < 4 — توافق الأجهزة ناقص"; exit 1; }
           grep -q 'assets/catalog/snapshot.jz' /tmp/list.txt || { echo '⛔ لقطة الكتالوج غائبة — أول تشغيل بلا إنترنت سيخلو من المكتبة'; exit 1; }
+          grep -q 'assets/transcripts/snapshot.jz' /tmp/list.txt || { echo '⛔ لقطة النصوص المشروحة غائبة — النصّ لا يصل مع الصوت'; exit 1; }
+          echo "النصوص المشروحة المضمّنة: $(python3 -c "import gzip,json,sys;print(len(json.load(gzip.open('app/src/main/assets/transcripts/snapshot.jz'))['items']))" 2>/dev/null || echo '؟')"
           a=$(grep -c 'serving/.*\.ogg' /tmp/list.txt)
           [ "$a" -ge 400 ] || { echo "⛔ ملفّات الصوت $a — الحزم ناقصة"; exit 1; }
       - name: محو المفتاح من العدّاء

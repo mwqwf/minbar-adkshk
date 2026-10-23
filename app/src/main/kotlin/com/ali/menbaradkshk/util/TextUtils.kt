@@ -71,6 +71,9 @@ fun lessonShareText(
  */
 fun arabicCountLabel(count: Int, one: String, two: String, few: String, many: String): String =
     when {
+        // الصفر نفيٌ لا عدد: «لا دروس» لا «0 درساً» (كانت تظهر لكلّ مثبّتٍ جديد
+        // في الإعدادات و«تنزيلاتي»).
+        count <= 0 -> "لا $few"
         count == 1 -> one
         count == 2 -> two
         count in 3..10 -> "$count $few"
@@ -140,7 +143,8 @@ fun progress(positionMs: Long, durationMs: Long): Float {
  */
 fun listenCountLabel(views: Long): String? = when {
     views <= 0L -> null
-    views < 1_000L -> "استُمع $views مرّة"
+    // المثنّى «مرّتين» وجمع القلّة «مرّات» — لا «استُمع 2 مرّة».
+    views < 1_000L -> "استُمع " + arabicCountLabel(views.toInt(), "مرّة واحدة", "مرّتين", "مرّات", "مرّة")
     views < 1_000_000L -> "استُمع ${"%.1f".format(Locale.US, views / 1_000.0).removeSuffix(".0")} ألف مرّة"
     else -> "استُمع ${"%.1f".format(Locale.US, views / 1_000_000.0).removeSuffix(".0")} مليون مرّة"
 }

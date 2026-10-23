@@ -204,7 +204,7 @@ fun QuranIndexScreen(vm: AppViewModel) {
                 Text(
                     // الحجم مذكور صراحةً: من يدفع ثمن الميغابايت يحتاج الرقم
                     // قبل أن يضغط.
-                    "أتريد تنزيل المصحف كاملاً للقراءة بلا إنترنت؟ (٦٠٤ صفحات، نحو ٥١ م.ب)",
+                    "أتريد تنزيل المصحف كاملاً للقراءة بلا إنترنت؟ (٦٠٤ صفحة، نحو ٥١ م.ب)",
                     textAlign = TextAlign.Center,
                 )
             },
@@ -1329,8 +1329,16 @@ fun QuranSurahScreen(
     }
 
     // فتح على آية بعينها (من الفهرس أو من «تابع القراءة»).
+    //
+    // ⚠️ مرّةً واحدة لكلّ فتح، لا مع كلّ تركيب: `startAyah` باقٍ في المسار، فكان
+    // تدوير الشاشة (أو العودة من المشغّل) يُعيد القارئ من الآية ٢٠٠ إلى آية
+    // الفتح ٥٠، ثمّ يكتب مؤثّرُ الحفظ أدناه ٥٠ فوق موضعه الحقيقيّ. العلامة
+    // محفوظة عبر إعادة الإنشاء (`rememberSaveable`) كنظيرتها في المشغّل.
+    var handledStart by rememberSaveable(surahNumber) { mutableStateOf(Int.MIN_VALUE) }
     LaunchedEffect(startAyah, surahNumber) {
         val target = startAyah?.minus(surah.start)?.coerceIn(0, surah.ayahs - 1) ?: return@LaunchedEffect
+        if (handledStart == startAyah) return@LaunchedEffect
+        handledStart = startAyah ?: return@LaunchedEffect
         runCatching { listState.scrollToItem(target + headerOffset) }
     }
 
@@ -1416,8 +1424,11 @@ fun QuranSurahScreen(
     // فتحٌ جديد على آية بعينها داخل السورة نفسها (الجزء ٢ ثم الجزء ٣ مثلاً)
     // يُعيد ضبط الصفحة: بلا ذلك تبقى صفحة الفتح الأوّل لأنّ الشاشة لم تُركَّب
     // من جديد.
+    // وبالحارس نفسه: لا يُعاد ضبط الصفحة عند التدوير إلى صفحة الفتح الأولى.
+    var handledPageStart by rememberSaveable(surahNumber) { mutableStateOf(Int.MIN_VALUE) }
     LaunchedEffect(startAyah, pageStarts) {
-        if (startAyah != null && pageStarts.isNotEmpty()) {
+        if (startAyah != null && pageStarts.isNotEmpty() && handledPageStart != startAyah) {
+            handledPageStart = startAyah
             currentPage = com.ali.menbaradkshk.data.MushafGeometry
                 .pageOfAyah(pageStarts, startAyah)
         }

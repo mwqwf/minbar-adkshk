@@ -111,7 +111,7 @@ fun TranscriptSection(vm: AppViewModel, lesson: Lesson) {
                 contentAlignment = Alignment.Center,
             ) {
                 AsyncImage(
-                    model = viewingImage,
+                    model = remember(viewingImage) { vm.transcripts.imageModel(viewingImage) },
                     contentDescription = "صورة صفحة الكتاب",
                     contentScale = ContentScale.FillWidth,
                     modifier = Modifier.fillMaxWidth(),
@@ -218,8 +218,11 @@ fun TranscriptSection(vm: AppViewModel, lesson: Lesson) {
                         Spacer(Modifier.height(10.dp))
                         t.imageUrls.forEachIndexed { i, url ->
                             if (i > 0) Spacer(Modifier.height(8.dp))
+                            // الصفحة المنزَّلة مع الدرس تُقرأ من القرص بلا إنترنت،
+                            // وإلا فالرابط عبر كاش الصور المعتاد.
+                            val model = remember(url) { vm.transcripts.imageModel(url) }
                             AsyncImage(
-                                model = url,
+                                model = model,
                                 contentDescription = "صفحة الكتاب ${i + 1}",
                                 contentScale = ContentScale.FillWidth,
                                 modifier = Modifier

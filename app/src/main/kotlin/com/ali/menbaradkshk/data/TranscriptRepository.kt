@@ -14,7 +14,11 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.UUID
+import java.util.zip.GZIPInputStream
 import java.util.concurrent.ConcurrentHashMap
 
 /** النص المشروح المعتمد لدرس (المتن/المقطع الذي تشرحه الصوتية). */
@@ -158,7 +162,7 @@ class TranscriptRepository private constructor(context: Context) {
     // وهو الطبقة الأولى فوق كاش القرص أدناه لا بديلاً عنه.
     private val cache = ConcurrentHashMap<String, Pair<Long, LessonTranscript?>>()
 
-    // 💾 كاش قرصي مستقلّ بالمستودع: الدرس المنزَّل كان يعمل بلا نت ونصّه لا،
+    // 💾 مخزن قرصي دائم بالمستودع: الدرس المنزَّل كان يعمل بلا نت ونصّه لا،
     // لأن الكاش كان في الذاكرة فقط ويضيع بموت العملية — فيظهر «جارٍ التحميل»
     // ثم دعوة المساهمة كأن الدرس بلا نص أصلاً.
     //
@@ -167,13 +171,18 @@ class TranscriptRepository private constructor(context: Context) {
     // كان الكاش كلّه في تفضيلاتٍ واحدة: مئتا مدخل × عشرين ألف حرف ≈ أربعة
     // ميغابايت. و`SharedPreferences` تُحمّل ملفّها **كاملاً في الذاكرة** وتبقيه
     // مقيماً طول عمر العمليّة، وكلّ `apply()` يُعيد كتابة الملفّ كلّه على
-    // القرص، و`pruneDisk` كان ينسخ `all` (الأربعة ميغابايت) مع كل كتابة. أي
-    // أربعة ميغابايت مهدورة دائماً على أجهزةٍ ذاكرتها ضيّقة، وكتابةُ ملفٍّ
-    // كامل لأجل مدخلٍ واحد.
+    // القرص. أي أربعة ميغابايت مهدورة دائماً على أجهزةٍ ذاكرتها ضيّقة.
     //
-    // والملفّات تحت `cacheDir` لا `filesDir`: هذا كاشٌ يصحّ للنظام أن يمحوه
-    // عند ضيق المساحة — وهو ما يوافق قاعدة «لا يضرّ جهاز المستخدم».
-    private val diskDir = File(appContext.cacheDir, CACHE_DIR)
+    // 📌 **تحت `filesDir` لا `cacheDir`** (منذ ٣٩/٢.٨.٣): النصّ المشروح جزءٌ من
+    // الدرس المنزَّل لا زائرٌ عابر — فالمستمع الذي نزّل درساً ليسمعه في
+    // الطريق يريد متنه معه. وكان النظام يمحو `cacheDir` عند ضيق المساحة
+    // فيختفي النصّ من درسٍ منزَّل بلا أن يعلم أحد. والحجم مقدور: المكتبة
+    // كلّها (~٥٠٠ درس × ≤٢٠ ألف حرف) أقلّ من عشرة ميغابايت في أسوأ الأحوال.
+    private val diskDir = File(appContext.filesDir, STORE_DIR)
+
+    /// صور صفحات الكتاب المنزَّلة مع الدرس — بجوار النصوص لا في كاش الصور
+    /// (ذاك يُخلي الأقدم عند امتلائه، فتضيع صفحةٌ نزّلها المستخدم عمداً).
+    private val imagesDir = File(diskDir, IMAGES_DIR)
 
     init {
         // ترحيل الكاش القديم = حذفه: محتواه يُعاد جلبه عند أوّل فتح، ولا
@@ -182,7 +191,40 @@ class TranscriptRepository private constructor(context: Context) {
             File(File(appContext.applicationInfo.dataDir, "shared_prefs"), "$CACHE_FILE.xml")
                 .delete()
         }
+        // أمّا ملفّات `cacheDir/transcripts` (الإصدارات ٣٦–٣٨) فتُنقل لا تُحذف:
+        // نقلُ ملفٍّ على القسم نفسه رخيص، وما فيها نصوصٌ جُلبت فعلاً.
+        runCatching {
+            val legacy = File(appContext.cacheDir, STORE_DIR)
+            if (legacy.isDirectory) {
+                diskDir.mkdirs()
+                legacy.listFiles()?.forEach { file ->
+                    if (file.isFile) {
+                        val target = File(diskDir, file.name)
+                        if (!target.exists()) file.renameTo(target) else file.delete()
+                    }
+                }
+                legacy.delete()
+            }
+        }
     }
+
+    /**
+     * 📦 لقطة النصوص المضمّنة وقت البناء (`assets/transcripts/snapshot.jz`):
+     * كلّ نصٍّ معتمد لحظة البناء يصل **مع التطبيق** كما يصل الصوت مع حزم
+     * المتجر، فيُقرأ بلا إنترنت من أوّل تشغيل. تُفكّ مرّةً عند أوّل حاجة
+     * (أوّل جلبٍ بلا اتصال) لا عند الإقلاع، وغيابُها ليس خطأً (بناءٌ بلا شبكة).
+     *
+     * الخادم يبقى مصدرَ الحقيقة: اللقطة تُقرأ حين يتعذّر الخادم ولا نسخةَ
+     * على القرص، فنصٌّ عُدّل بعد البناء يصل من الخادم عند أوّل اتصال.
+     */
+    private val bundled: Map<String, JSONObject> by lazy { readBundledSnapshot() }
+
+    private fun readBundledSnapshot(): Map<String, JSONObject> = runCatching {
+        appContext.assets.open(BUNDLED_ASSET).use { stream ->
+            val text = GZIPInputStream(stream).bufferedReader().use { it.readText() }
+            parseBundledSnapshot(text)
+        }
+    }.getOrDefault(emptyMap())
 
     // نتائج فهرس البحث لكلمة واحدة، في الذاكرة فقط: البحث زائرٌ عابر ولا
     // يستحق قرصاً، لكن حذف حرفٍ وإعادته لا يصحّ أن يُعيد الاستعلام.
@@ -207,31 +249,25 @@ class TranscriptRepository private constructor(context: Context) {
             }
             val transcript = try {
                 // النص من `minbar-api` (`/v1/transcripts/{id}`): 404 = لا نصّ لهذا الدرس.
-                val document = MinbarApi.transcript(lessonId)
-                if (document == null) {
-                    null
-                } else {
-                    val images = document.optJSONArray("images")
-                    LessonTranscript(
-                        lessonId = lessonId,
-                        text = document.optString("text"),
-                        bookTitle = document.optString("bookTitle"),
-                        sourceRef = document.optString("sourceRef"),
-                        imageUrls = (0 until (images?.length() ?: 0))
-                            .mapNotNull { index ->
-                                val item = images?.opt(index)
-                                (if (item is org.json.JSONObject) item.optString("url") else item?.toString())
-                                    ?.takeIf { it.isNotBlank() }
-                            },
-                        contributorName = document.optString("contributorName"),
-                    )
-                }
+                MinbarApi.transcript(lessonId)?.let { parseDocument(lessonId, it) }
             } catch (failure: Throwable) {
+                if (failure is kotlinx.coroutines.CancellationException) throw failure
                 // بلا اتصال: آخر نسخة محفوظة — ولو انتهت صلاحيتها — خيرٌ من لا شيء.
+                val stale = cache[lessonId] ?: readDisk(lessonId)?.also { cache[lessonId] = it }
+                if (stale?.second != null) return@withContext stale.second
+                // ثمّ اللقطة المضمّنة مع التطبيق: نصٌّ كان معتمداً لحظة البناء.
+                // وهي مقدَّمة على «لا نصّ» قديمٍ على القرص: من فتح الدرس قبل اعتماد
+                // نصّه ثمّ حدّث التطبيق يجد النصّ في النسخة الجديدة. تُذكر في
+                // الذاكرة بختمٍ صفريّ فتبقى «منتهية» ويُسأل الخادم عنها عند أوّل
+                // اتصال، ولا تُكتب على القرص كأنّها جُلبت.
+                bundled[lessonId]?.let { document ->
+                    val fromBundle = parseDocument(lessonId, document)
+                    cache[lessonId] = 0L to fromBundle
+                    return@withContext fromBundle
+                }
+                if (stale != null) return@withContext null
                 // وإن لم تكن هناك نسخة أصلاً لا نبتلع الفشل، كي تميّز الواجهة بين
                 // «لا نص لهذا الدرس» و«لم يُجلب بعد».
-                val stale = cache[lessonId] ?: readDisk(lessonId)?.also { cache[lessonId] = it }
-                if (stale != null) return@withContext stale.second
                 throw failure
             }
             val now = System.currentTimeMillis()
@@ -239,6 +275,100 @@ class TranscriptRepository private constructor(context: Context) {
             writeDisk(lessonId, transcript, now)
             transcript
         }
+    }
+
+    /**
+     * 📥 **النصّ ينزل مع الصوت.** يُنادى بعد اكتمال تنزيل درسٍ (يدويّاً أو
+     * تلقائياً): يجلب نصّه مرّةً إن لم يكن على القرص ويحفظه دائماً، وينزّل صور
+     * صفحاته إن وُجدت — فيُقرأ الدرس المنزَّل بمتنه بلا إنترنت كما يُسمع.
+     *
+     * لا يرمي شيئاً غير الإلغاء: فشلُ النصّ لا يُفشل تنزيلاً اكتمل، والنصّ
+     * يُطلب ثانيةً عند فتح المشغّل.
+     */
+    suspend fun prefetch(lessonId: String) {
+        if (lessonId.isBlank()) return
+        withContext(Dispatchers.IO) {
+            val transcript = try {
+                readDisk(lessonId)?.second ?: fetch(lessonId)
+            } catch (failure: Throwable) {
+                if (failure is kotlinx.coroutines.CancellationException) throw failure
+                null
+            } ?: return@withContext
+            persistImages(transcript)
+        }
+    }
+
+    /**
+     * ما يُعرض للصورة: الملفّ المنزَّل إن وُجد وإلا الرابط (فيمرّ بكاش الصور
+     * المعتاد). يُستدعى من التركيب فلا يُكلّف غير `stat` واحدة.
+     */
+    fun imageModel(url: String): Any = imageFile(url).takeIf { it.isFile } ?: url
+
+    private fun imageFile(url: String): File = File(imagesDir, "${digest(url)}.img")
+
+    /// ينزّل صور النصّ التي لم تُنزَّل بعد. كلُّ صورة على حدة: فشلُ واحدة لا يمنع البقيّة.
+    private fun persistImages(transcript: LessonTranscript) {
+        if (transcript.imageUrls.isEmpty()) return
+        imagesDir.mkdirs()
+        transcript.imageUrls.forEach { url ->
+            val target = imageFile(url)
+            if (target.isFile && target.length() > 0L) return@forEach
+            runCatching { downloadImage(url, target) }
+                .onFailure {
+                    com.ali.menbaradkshk.util.DiagLog.log(appContext, "tx", "${transcript.lessonId} img: ${it.message}")
+                }
+        }
+    }
+
+    private fun downloadImage(url: String, target: File) {
+        require(url.startsWith("https://", ignoreCase = true)) { "رابط الصورة غير آمن." }
+        val partial = File(target.path + ".part")
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000
+            readTimeout = 30_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "MinbarAdkassahk/${com.ali.menbaradkshk.BuildConfig.VERSION_NAME}")
+        }
+        try {
+            check(connection.responseCode in 200..299) { "HTTP ${connection.responseCode}" }
+            check(connection.contentType.orEmpty().startsWith("image/", ignoreCase = true)) { "ليس صورة" }
+            var received = 0L
+            connection.inputStream.use { input ->
+                FileOutputStream(partial).use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        received += count
+                        check(received <= MAX_IMAGE_BYTES) { "الصورة أكبر من الحدّ" }
+                        output.write(buffer, 0, count)
+                    }
+                    output.fd.sync()
+                }
+            }
+            check(received > 0L) { "صورة فارغة" }
+            if (!partial.renameTo(target)) {
+                partial.copyTo(target, overwrite = true)
+                partial.delete()
+            }
+        } catch (failure: Throwable) {
+            partial.delete()
+            throw failure
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    /// يحذف صور نصّ الدرس المنزَّلة (عند حذف تنزيله) — النصّ نفسه يبقى، فهو صغير.
+    fun dropImages(lessonId: String) {
+        runCatching {
+            readDisk(lessonId)?.second?.imageUrls?.forEach { imageFile(it).delete() }
+        }
+    }
+
+    /// يحذف كلّ الصور المنزَّلة (مع «حذف الكل»).
+    fun dropAllImages() {
+        runCatching { imagesDir.listFiles()?.forEach { it.delete() } }
     }
 
     /**
@@ -253,12 +383,11 @@ class TranscriptRepository private constructor(context: Context) {
     }
 
     /// اسم ملفّ آمن ومستقرّ للمعرّف (المعرّفات قد تحمل ما لا يصلح في اسم ملفّ).
-    private fun entryFile(lessonId: String): File {
-        val digest = java.security.MessageDigest.getInstance("SHA-1")
-            .digest(lessonId.toByteArray())
-            .joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
-        return File(diskDir, "$digest.json")
-    }
+    private fun entryFile(lessonId: String): File = File(diskDir, "${digest(lessonId)}.json")
+
+    private fun digest(value: String): String = java.security.MessageDigest.getInstance("SHA-1")
+        .digest(value.toByteArray())
+        .joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
 
     /** قراءة مدخل القرص كما هو (بلا فحص صلاحية) أو null إن غاب أو تلف. */
     private fun readDisk(lessonId: String): Pair<Long, LessonTranscript?>? {
@@ -312,7 +441,7 @@ class TranscriptRepository private constructor(context: Context) {
      */
     private fun pruneDisk() {
         runCatching {
-            val files = diskDir.listFiles()?.filter { it.isFile } ?: return
+            val files = diskDir.listFiles()?.filter { it.isFile && it.name.endsWith(".json") } ?: return
             if (files.size <= MAX_DISK_ENTRIES) return
             files.sortedBy { it.lastModified() }
                 .take(files.size - MAX_DISK_ENTRIES)
@@ -448,9 +577,14 @@ class TranscriptRepository private constructor(context: Context) {
         private const val MAX_SEARCH_CACHE = 24
         private const val TEXT_TTL_MS = 7L * 24 * 60 * 60 * 1000L
         private const val EMPTY_TTL_MS = 24L * 60 * 60 * 1000L
-        private const val MAX_DISK_ENTRIES = 200
-        /// مجلَّد الكاش الجديد (ملفّ لكل درس) تحت `cacheDir`.
-        private const val CACHE_DIR = "transcripts"
+        /// سقف المدخلات على القرص: أكبر من المكتبة كلّها، فلا يُسقط التقليم
+        /// نصّ درسٍ منزَّل — السقف حارسٌ من التضخّم الشاذّ لا من الاستعمال.
+        private const val MAX_DISK_ENTRIES = 1_000
+        /// مجلَّد المخزن (ملفّ لكل درس) تحت `filesDir`؛ وكان تحت `cacheDir` قبل ٣٩.
+        private const val STORE_DIR = "transcripts"
+        private const val IMAGES_DIR = "img"
+        /// لقطة النصوص المضمّنة وقت البناء — يكتبها `refreshTranscriptSnapshot` في `app/build.gradle.kts`.
+        const val BUNDLED_ASSET = "transcripts/snapshot.jz"
 
         /// اسم تفضيلات الكاش القديم — يُحذف مرّةً في [init] لا غير.
         private const val CACHE_FILE = "minbar_transcript_cache"
@@ -459,6 +593,39 @@ class TranscriptRepository private constructor(context: Context) {
         @Volatile private var instance: TranscriptRepository? = null
         fun get(context: Context): TranscriptRepository = instance ?: synchronized(this) {
             instance ?: TranscriptRepository(context).also { instance = it }
+        }
+
+        /**
+         * وثيقة النصّ كما يردّها الخادم (`/v1/transcripts/{id}`) — والمصدر
+         * نفسه للّقطة المضمّنة، فالتحليل واحد لا يفترق. `images` قد تكون
+         * روابط خاماً أو كائنات `{url}`.
+         */
+        fun parseDocument(lessonId: String, document: JSONObject): LessonTranscript {
+            val images = document.optJSONArray("images")
+            return LessonTranscript(
+                lessonId = lessonId,
+                text = document.optString("text"),
+                bookTitle = document.optString("bookTitle"),
+                sourceRef = document.optString("sourceRef"),
+                imageUrls = (0 until (images?.length() ?: 0))
+                    .mapNotNull { index ->
+                        val item = images?.opt(index)
+                        (if (item is JSONObject) item.optString("url") else item?.toString())
+                            ?.takeIf { it.isNotBlank() }
+                    },
+                contributorName = document.optString("contributorName"),
+            )
+        }
+
+        /** اللقطة المضمّنة: `{"items": {lessonId: <وثيقة الخادم>}}` ⇒ خريطة بالمعرّف. */
+        fun parseBundledSnapshot(text: String): Map<String, JSONObject> {
+            val items = JSONObject(text).optJSONObject("items") ?: return emptyMap()
+            val map = HashMap<String, JSONObject>(items.length())
+            for (key in items.keys()) {
+                val document = items.optJSONObject(key) ?: continue
+                if (key.isNotBlank()) map[key] = document
+            }
+            return map
         }
     }
 }

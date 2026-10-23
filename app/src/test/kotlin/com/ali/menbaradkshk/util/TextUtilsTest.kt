@@ -32,4 +32,20 @@ class TextUtilsTest {
             lessonShareLink(lesson, 42L),
         )
     }
+
+    @Test
+    fun arabicCountLabelTreatsZeroAsNegationAndListensAsDual() {
+        // الصفر نفيٌ لا عدد — كانت الإعدادات تعرض «0 درساً» لكلّ مثبّتٍ جديد.
+        assertEquals("لا دروس", lessonsCountLabel(0))
+        assertEquals("درسٌ واحد", lessonsCountLabel(1))
+        assertEquals("درسان", lessonsCountLabel(2))
+        assertEquals("5 دروس", lessonsCountLabel(5))
+        assertEquals("11 درساً", lessonsCountLabel(11))
+        assertEquals(null, listenCountLabel(0L))
+        assertEquals("استُمع مرّة واحدة", listenCountLabel(1L))
+        assertEquals("استُمع مرّتين", listenCountLabel(2L))
+        assertEquals("استُمع 5 مرّات", listenCountLabel(5L))
+        assertEquals("استُمع 40 مرّة", listenCountLabel(40L))
+        assertEquals("استُمع 12.3 ألف مرّة", listenCountLabel(12_300L))
+    }
 }

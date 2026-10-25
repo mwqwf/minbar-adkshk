@@ -187,12 +187,12 @@ class DownloadRepository private constructor(context: Context) {
         // إلى البصمة، فدرسٌ استُبدل صوته على الخادم (`staleDownloadIds`) يدخل
         // طابور «تحديث مكتبتك» ويخرج منه صامتاً بلا بايت — والمستمع على القديم
         // إلى الأبد، وإشعار «اكتمل التحميل» يكذب كلّ ١٢ ساعة.
+        // ⚠️ والقديم **يبقى حتى يكتمل البديل**: حذفُه هنا (كما في ٣٩) كان يترك
+        // المستخدم بلا صوتٍ أصلاً إن انقطع الواي فاي بعد ٥٪ — فالملفّ القديم
+        // كاملٌ وصالح، وإنّما استُبدل على الخادم. الإزالة في `completePartial`.
         localPath(lesson.id)?.let { existing ->
             val fresh = lesson.sha256.isBlank() || store.downloadSha(lesson.id) == lesson.sha256
             if (fresh) return@withContext existing
-            // لا `delete()` العامّة: تلك توسم الدرس «حذفه المستخدم» فيُحرم من التلقائيّ.
-            if (!store.isBundledDownload(lesson.id)) runCatching { File(existing).delete() }
-            store.removeDownload(lesson.id)
         }
 
         val directory = File(appContext.filesDir, "lessons").apply { mkdirs() }
@@ -446,6 +446,13 @@ class DownloadRepository private constructor(context: Context) {
             throw RetryableDownloadException(
                 java.io.IOException("بصمة الملف لا تطابق هوية المحتوى المعلنة."),
             )
+        }
+        // الصوت القديم (stale) يُزال الآن فقط، وقد اكتمل البديل وتحقّقت بصمته.
+        // لا `delete()` العامّة: تلك توسم الدرس «حذفه المستخدم» فيُحرم من التلقائيّ.
+        store.localAudioPath(lesson.id)?.let { previous ->
+            if (previous != target.absolutePath && !store.isBundledDownload(lesson.id)) {
+                runCatching { File(previous).delete() }
+            }
         }
         if (target.exists()) target.delete()
         if (!partial.renameTo(target)) {

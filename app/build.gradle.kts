@@ -218,6 +218,9 @@ android {
         // إعادة فتح الجزء نفسه لم تكن تنتقل إلى أوّله؛ والتسجيل الجاري في «راسِل المطوّر»
         // يصمد للتدوير؛ وأوّل تبديل إلى المصوَّر يفتح الصفحة المقروءة؛ وعدّ المسبحة المرتبطة
         // وعرض تنزيل المصحف يصمدان للتدوير؛ و«غير منزَّلين» و«٠ د» بدل «لا دقائق».
+        // وفي البيانات: ارتدادٌ ثانٍ من ٣٩ — تجديد الدرس القديم كان يحذف صوته الصالح قبل
+        // تنزيل البديل؛ والتنزيل التلقائي كان يَسِم اليدويّ المجدَّد «تلقائياً» فيُخلى؛
+        // واستطلاع النبض كان يعيد طلب الإشعارات كلّ نبضة بلا كاش؛ و429 في لقطة النصوص.
         versionCode = 40
         versionName = "2.8.4"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
@@ -487,7 +490,9 @@ val refreshTranscriptSnapshot = tasks.register("refreshTranscriptSnapshot") {
                                 done = true; connection.disconnect(); break
                             }
                             connection.disconnect()
-                            if (code in 400..499) { done = true; break }
+                            // 429 (حدّ المعدّل) ليس «لا نصّ»: يدخل مسار المحاولة ثمّ `failed`،
+                            // وإلّا بُنيت لقطةٌ ناقصة والسجلّ يقول «تعثّر 0».
+                            if (code in 400..499 && code != 429) { done = true; break }
                         } catch (ignored: Exception) {
                         }
                         Thread.sleep(500L * attempt)

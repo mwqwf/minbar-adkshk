@@ -204,8 +204,11 @@ class AutoDownloadWorker(
         val queuedNow = store.downloadQueue().toSet()
         val ids = planned.map { it.id }.filter { it !in queuedNow }
         if (ids.isEmpty()) return Result.success()
-        // ما نزّله المحرك يُعلَّم «تلقائياً» فيُخلى عند ضيق المساحة أولاً.
-        store.markAutoQueued(ids)
+        // ما نزّله المحرك يُعلَّم «تلقائياً» فيُخلى عند ضيق المساحة أولاً —
+        // إلا ما نزّله المستخدم بيده ويُجدَّد صوته الآن: اليدويّ محصَّن دائماً،
+        // ووسمه هنا كان يقلبه مرشَّحاً للإخلاء بعد التجديد.
+        val manual = ids.filter { store.downloadMeta(it)?.optString("src") == "manual" }.toSet()
+        store.markAutoQueued(ids - manual)
         // علم إلغاء قديم لدرس ألغاه المستخدم يدويّاً كان يُسقط إدراجه هنا
         // بصمت — والتحميل التلقائي لا واجهة له تُظهر ما سقط.
         ids.forEach { downloads.clearCancel(it) }
@@ -436,6 +439,11 @@ class PulseWorker(
         fun handle(item: org.json.JSONObject, private: Boolean) {
             val createdAt = item.optLong("createdAtMs", 0L)
             if (createdAt <= baseline) return
+            // الحدّ يتقدّم بكلّ عنصرٍ **وصل**، مقبولاً كان أو مُسقَطاً: كان لا يتقدّم
+            // إلا بعد المرشّحات، فجهازٌ أطفأ الإشعارات (أو لا يتابع القسم) يعيد
+            // الطلب نفسه في كلّ نبضة إلى أن يصل عنصرٌ يقبله — قراءة D1 كلّ نصف
+            // ساعة بلا نتيجة على كلّ الأجهزة.
+            newest = maxOf(newest, createdAt)
             val data = buildMap {
                 put("type", item.optString("type"))
                 put("route", item.optString("route"))
@@ -455,7 +463,6 @@ class PulseWorker(
                 NotificationPoster.invalidateTranscriptCache(applicationContext, data)
                 if (!enabled) return
             }
-            newest = maxOf(newest, createdAt)
             if (posted >= MAX_POSTED_PER_RUN) return
             posted++
             val title = item.optString("title")
@@ -488,9 +495,13 @@ class PulseWorker(
             }
         }
 
+        // الحدّ مقرَّباً إلى الساعة كي يصيب الطلبُ كاشَ الخادم (كما تفعل
+        // `NotificationsRepository.cutoffMs`): `now - DAY_MS` بالمللي ثانية كان
+        // يجعل كلّ طلبٍ عنواناً جديداً لا يُصيب شيئاً.
+        val since = (baseline + 1).let { it - it % HOUR_MS }
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             runCatching {
-                val items = com.ali.menbaradkshk.data.MinbarApi.notifications(baseline + 1, LIMIT)
+                val items = com.ali.menbaradkshk.data.MinbarApi.notifications(since, LIMIT)
                 // الأقدم أولاً كي يظهر ترتيب الوصول طبيعياً في شريط النظام.
                 (items.length() - 1 downTo 0).mapNotNull { items.optJSONObject(it) }
                     .forEach { handle(it, private = false) }
@@ -498,7 +509,7 @@ class PulseWorker(
             if (hasPrivateFeed(store)) {
                 runCatching {
                     val items = com.ali.menbaradkshk.data.MinbarApi
-                        .getUser(applicationContext, "/v1/me/notifications?since=${baseline + 1}")
+                        .getUser(applicationContext, "/v1/me/notifications?since=$since")
                         .optJSONArray("items") ?: org.json.JSONArray()
                     (items.length() - 1 downTo 0).mapNotNull { items.optJSONObject(it) }
                         .forEach { handle(it, private = true) }
@@ -515,6 +526,7 @@ class PulseWorker(
 
     companion object {
         private const val DAY_MS = 24L * 60 * 60 * 1_000
+        private const val HOUR_MS = 60L * 60 * 1_000
         private const val LIMIT = 30
         /// سقف الإشعارات في الدورة الواحدة — شريط النظام ليس صندوق بريد.
         private const val MAX_POSTED_PER_RUN = 5

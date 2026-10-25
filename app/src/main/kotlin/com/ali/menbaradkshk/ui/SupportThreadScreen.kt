@@ -434,14 +434,16 @@ fun VoiceRecordButton(
     onCleared: () -> Unit,
 ) {
     val context = LocalContext.current
-    val recorder = remember { VoiceRecorder() }
+    // المفرد لا نسخة لكلّ تركيبة: تسجيلٌ جارٍ يصمد للتدوير ويُعاد ربط الزرّ به.
+    val recorder = remember { VoiceRecorder.shared }
     val scope = rememberCoroutineScope()
-    var recording by remember { mutableStateOf(false) }
+    var recording by remember { mutableStateOf(recorder.isRecording) }
     var stopping by remember { mutableStateOf(false) }
     var failure by remember { mutableStateOf<String?>(null) }
     val elapsed by recorder.elapsedMs.collectAsState()
 
-    DisposableEffect(Unit) { onDispose { recorder.release() } }
+    // لا يُحرَّر وهو يسجّل: التركيبة تذهب بالتدوير وتعود، والتسجيل مستمرّ.
+    DisposableEffect(Unit) { onDispose { if (!recorder.isRecording) recorder.release() } }
 
     fun begin() {
         failure = runCatching { recorder.start(context) }

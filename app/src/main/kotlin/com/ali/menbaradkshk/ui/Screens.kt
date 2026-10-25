@@ -637,7 +637,13 @@ private fun SectionDownloadSuggestion(vm: AppViewModel, state: ContentState) {
                 Text(
                     "تستمع كثيراً إلى «${sub.name}» وفيه " +
                         "${com.ali.menbaradkshk.util.lessonsCountLabel(remaining)} " +
-                        (if (remaining == 1) "غير منزَّل. " else "غير منزَّلة. ") +
+                        // الصفة تتبع المعدود: المثنّى «منزَّلين»، وجمع القلّة «منزَّلة»،
+                        // وما فوق العشرة تمييزه مفرد فالصفة مفردة «منزَّل».
+                        (when (remaining) {
+                            2 -> "غير منزَّلين. "
+                            in 3..10 -> "غير منزَّلة. "
+                            else -> "غير منزَّل. "
+                        }) +
                         "أتريد تنزيله كاملاً للاستماع بلا إنترنت؟ " +
                         "(يبدأ على الواي فاي فقط — لا يستهلك بيانات الجوّال.)",
                     textAlign = TextAlign.Center,

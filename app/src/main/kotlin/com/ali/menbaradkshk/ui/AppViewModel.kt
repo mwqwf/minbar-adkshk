@@ -70,7 +70,17 @@ sealed interface Route {
     data class Tasbih(val section: String? = null, val index: Int = -1) : Route
 
     /// قراءة سورة بعينها في المصحف؛ `ayah` فهرس مسطّح اختياري للقفز إليه.
-    data class QuranSurah(val number: Int, val ayah: Int? = null) : Route
+    /**
+     * [openId] يميّز كلّ «فتح»: حارسا القفز في شاشة السورة محفوظان في حالة
+     * الشاشة (`SaveableStateHolder` بمفتاح السورة وحدها)، فبلا رمزٍ جديد لكلّ
+     * فتحٍ كانت إعادةُ فتح الجزء نفسه بعد قراءةٍ طويلة لا تنتقل إلى أوّله.
+     * والرمز يبقى هو نفسه عند التدوير والعودة من المشغّل (المسار يُستعاد كما هو).
+     */
+    data class QuranSurah(
+        val number: Int,
+        val ayah: Int? = null,
+        val openId: Long = System.currentTimeMillis(),
+    ) : Route
 }
 
 /// صورة/نص وصلا من تطبيق خارجي عبر «المشاركة» لميزة «ساهم بالنص».

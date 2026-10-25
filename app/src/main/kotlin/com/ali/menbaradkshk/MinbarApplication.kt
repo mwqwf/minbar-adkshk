@@ -30,6 +30,8 @@ class MinbarApplication : Application(), Configuration.Provider, SingletonImageL
 
     /// Coil 3 لا يُنشئ كاشاً قرصياً افتراضياً إطلاقاً، فكانت كل صورة تُنزَّل من
     /// جديد بعد كل إقلاع. المفاتيح روابط Storage الحاملة لـ`token` فالإبطال ذاتي.
+    @Volatile private var imageLoaderCreated = false
+
     override fun newImageLoader(context: Context): ImageLoader =
         ImageLoader.Builder(context)
             .diskCache {
@@ -47,17 +49,31 @@ class MinbarApplication : Application(), Configuration.Provider, SingletonImageL
                 MemoryCache.Builder().maxSizePercent(context, 0.15).build()
             }
             .build()
+            .also { imageLoaderCreated = true }
 
     override fun onCreate() {
         super.onCreate()
         instanceOrNull = this
-        LocalStore.get(this)
         createNotificationChannels()
-        BackgroundScheduler.scheduleAll(this)
-        // استئناف طابور التحميل إن بقيت فيه دروس من جلسة سابقة.
-        if (LocalStore.get(this).downloadQueue().isNotEmpty()) {
-            com.ali.menbaradkshk.data.DownloadScheduler.enqueue(this)
-        }
+        // 🔥 التسخين في الخلفية لا على الخيط الرئيسي (Play Vitals 2026-10-25):
+        // - جدولة العمّال تمرّ بتهيئة WorkManager وقراءة التفضيلات، ورُصد لها ANR
+        //   داخل `onCreate` (`BackgroundScheduler.scheduleContinue`).
+        // - كاش الوسائط (`SimpleCache`) يقرأ فهرسه وقاعدته من القرص، وكان يُنشأ
+        //   أوّل مرّة داخل `PlaybackService.onCreate` على الخيط الرئيسي، فرُصد
+        //   ANR هناك وانهيار `ForegroundServiceDidNotStartInTime` حين تُطلَق
+        //   الخدمة من زرّ السمّاعة/الودجت بعد موت العمليّة وتتأخّر عن مهلة
+        //   النظام. التسخين هنا يجعل إنشاءها لاحقاً مجرّد قراءة مرجعٍ جاهز.
+        Thread({
+            runCatching { LocalStore.get(this) }
+            runCatching { mediaCache(this) }
+            runCatching { BackgroundScheduler.scheduleAll(this) }
+            // استئناف طابور التحميل إن بقيت فيه دروس من جلسة سابقة.
+            runCatching {
+                if (LocalStore.get(this).downloadQueue().isNotEmpty()) {
+                    com.ali.menbaradkshk.data.DownloadScheduler.enqueue(this)
+                }
+            }
+        }, "minbar-warmup").start()
     }
 
     /**
@@ -69,6 +85,10 @@ class MinbarApplication : Application(), Configuration.Provider, SingletonImageL
      */
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
+        // ⚠️ لا يُنشأ محمّل الصور هنا إن لم يكن قد أُنشئ: `SingletonImageLoader.get`
+        // يبنيه (مسح ServiceLoader + كاش القرص) على الخيط الرئيسي، ورُصد له ANR
+        // من `onTrimMemory` نفسه. ما لم يُبنَ فلا ذاكرة له تُفرَّغ أصلاً.
+        if (!imageLoaderCreated) return
         val imageCache = runCatching { SingletonImageLoader.get(this).memoryCache }.getOrNull()
         if (level >= TRIM_MEMORY_UI_HIDDEN) {
             runCatching { imageCache?.clear() }

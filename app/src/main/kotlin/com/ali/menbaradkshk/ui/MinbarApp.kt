@@ -582,7 +582,7 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                 is Route.Tasbih -> TasbihScreen(vm, current.section, current.index)
                 Route.Downloads -> DownloadsScreen(vm)
                 Route.Quran -> QuranIndexScreen(vm)
-                is Route.QuranSurah -> QuranSurahScreen(vm, current.number, current.ayah, playback)
+                is Route.QuranSurah -> QuranSurahScreen(vm, current.number, current.ayah, playback, openId = current.openId)
                 Route.Favorites -> MyListsScreen(vm, playback, initialTab = 0)
                 is Route.Category -> CategoryScreen(vm, current.id, content)
                 is Route.Subcategory -> LessonsScreen(vm, current.id, playback)

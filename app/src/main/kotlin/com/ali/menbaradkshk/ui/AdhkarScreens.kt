@@ -1142,7 +1142,9 @@ fun TasbihScreen(vm: AppViewModel, section: String?, index: Int) {
             )
         }
     }
-    var count by remember(section, index) {
+    // محفوظ: الدورة الثانية فما بعدها لا تُكتب في المخزن مع كلّ نقرة، فكان
+    // التدوير يُصفّرها بينما تبقى `laps` محفوظة.
+    var count by rememberSaveable(section, index) {
         mutableIntStateOf(
             if (linked != null && section != null) {
                 val d = (vm.store.adhkarDone(section, index) ?: 0L).toInt()

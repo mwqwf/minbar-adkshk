@@ -207,6 +207,13 @@ class VoiceRecorder {
     }
 
     companion object {
+        /**
+         * مسجّلٌ واحد للعمليّة: الواجهة تمسكه بـ`remember` فكان التدوير يُسقط
+         * التركيبة فيُحرَّر المسجّل وتُتلف ٩٠ ثانية من الكلام صامتاً. المفرد يبقى
+         * حيّاً عبر إعادة الإنشاء، والواجهة تعيد ربط زرّها بحالته `isRecording`.
+         */
+        val shared: VoiceRecorder by lazy { VoiceRecorder() }
+
         private const val TAG = "VoiceRecorder"
         private const val SAMPLE_INTERVAL_MS = 100L
         private const val MAX_AMPLITUDE = 32_767

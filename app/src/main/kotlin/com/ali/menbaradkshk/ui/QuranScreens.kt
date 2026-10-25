@@ -171,7 +171,8 @@ fun QuranIndexScreen(vm: AppViewModel) {
     // الثانية فصاعداً فقط (⛔ لا عند أوّل فتح للتطبيق ولا أوّل زيارة للمصحف)،
     // وفقط إن لم تكن صور المصحف منزَّلة كاملةً. «نعم» يسلك مسار زرّ
     // «بلا إنترنت» القائم نفسه (downloadMushafPages).
-    var offlineOffer by remember { mutableStateOf(false) }
+    // محفوظ: كان التدوير أثناء ظهوره يُخفيه إلى الأبد (عُلّم «عُرض» قبل الجواب).
+    var offlineOffer by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         val previousVisits = vm.store.quranVisitCount()
         vm.store.incrementQuranVisit()
@@ -1269,6 +1270,8 @@ fun QuranSurahScreen(
     surahNumber: Int,
     startAyah: Int?,
     playback: PlaybackUiState,
+    /// رمز هذا الفتح (انظر `Route.QuranSurah.openId`) — به يُعاد التمرير لكلّ فتحٍ جديد.
+    openId: Long = 0L,
 ) {
     val index by vm.quranIndex.collectAsState()
     val text by vm.quranText.collectAsState()
@@ -1334,7 +1337,10 @@ fun QuranSurahScreen(
     // تدوير الشاشة (أو العودة من المشغّل) يُعيد القارئ من الآية ٢٠٠ إلى آية
     // الفتح ٥٠، ثمّ يكتب مؤثّرُ الحفظ أدناه ٥٠ فوق موضعه الحقيقيّ. العلامة
     // محفوظة عبر إعادة الإنشاء (`rememberSaveable`) كنظيرتها في المشغّل.
-    var handledStart by rememberSaveable(surahNumber) { mutableStateOf(Int.MIN_VALUE) }
+    // ⚠️ بمفتاح `openId` أيضاً: حالة الشاشة تُحفظ بمفتاح السورة وحدها وتُستعاد
+    // عند كلّ عودة، فكان فتحُ الجزء نفسه ثانيةً بعد قراءةٍ طويلة يجد الحارس
+    // مطابقاً فلا ينتقل إلى أوّله (ارتدادٌ وقع في ٣٩).
+    var handledStart by rememberSaveable(surahNumber, openId) { mutableStateOf(Int.MIN_VALUE) }
     LaunchedEffect(startAyah, surahNumber) {
         val target = startAyah?.minus(surah.start)?.coerceIn(0, surah.ayahs - 1) ?: return@LaunchedEffect
         if (handledStart == startAyah) return@LaunchedEffect
@@ -1425,7 +1431,7 @@ fun QuranSurahScreen(
     // يُعيد ضبط الصفحة: بلا ذلك تبقى صفحة الفتح الأوّل لأنّ الشاشة لم تُركَّب
     // من جديد.
     // وبالحارس نفسه: لا يُعاد ضبط الصفحة عند التدوير إلى صفحة الفتح الأولى.
-    var handledPageStart by rememberSaveable(surahNumber) { mutableStateOf(Int.MIN_VALUE) }
+    var handledPageStart by rememberSaveable(surahNumber, openId) { mutableStateOf(Int.MIN_VALUE) }
     LaunchedEffect(startAyah, pageStarts) {
         if (startAyah != null && pageStarts.isNotEmpty() && handledPageStart != startAyah) {
             handledPageStart = startAyah
@@ -1536,11 +1542,18 @@ fun QuranSurahScreen(
                     val visible = surah.start +
                         (listState.firstVisibleItemIndex - headerOffset).coerceAtLeast(0)
                     val anchor = if (activeFlatAyah >= 0) activeFlatAyah else visible
-                    currentPage = if (pageStarts.isNotEmpty()) {
-                        com.ali.menbaradkshk.data.MushafGeometry.pageOfAyah(pageStarts, anchor)
+                    // بدايات الصفحات من الفهرس المحمَّل (`wardPageStarts`) لا من
+                    // `pageStarts` التي لا تُملأ إلا بعد `loadMushaf()`: في أوّل تبديلٍ
+                    // في الجلسة كانت فارغةً فتُكتب الصفحة ٠ ثمّ يُعيد المؤثّر أعلاه
+                    // الصفحة إلى آية الفتح لا الآية المقروءة.
+                    val starts = if (pageStarts.isNotEmpty()) pageStarts else wardPageStarts
+                    currentPage = if (starts.isNotEmpty()) {
+                        com.ali.menbaradkshk.data.MushafGeometry.pageOfAyah(starts, anchor)
                     } else {
                         0 // يُحسب عند العرض حين تجهز بدايات الصفحات
                     }
+                    // الصفحة حُسبت من الموضع الحيّ: لا يُعيدها مؤثّر `startAyah`.
+                    handledPageStart = startAyah ?: Int.MIN_VALUE
                     vm.setQuranImageMode(true)
                 } else {
                     val first = com.ali.menbaradkshk.data.MushafGeometry

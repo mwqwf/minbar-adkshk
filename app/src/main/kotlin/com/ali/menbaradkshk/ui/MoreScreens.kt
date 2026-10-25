@@ -404,6 +404,8 @@ private const val MOMENTS_PREVIEW = 20
 private fun fmtSeconds(seconds: Long): String {
     val h = seconds / 3600
     val m = (seconds % 3600) / 60
+    // الصفر رقماً لا نفياً: «لا دقائق» تصحّ وحدها لا بعد «إجمالي».
+    if (h == 0L && m == 0L) return "٠ د"
     // صيغة العدد العربيّة للدقائق المفردة: «دقيقتان»/«٧ دقائق» لا «2 دقيقة».
     return if (h > 0) "$h س $m د" else com.ali.menbaradkshk.util.minutesCountLabel(m.toInt())
 }

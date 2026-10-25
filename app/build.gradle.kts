@@ -212,8 +212,14 @@ android {
         // وشاشة السورة تقفز إلى آية الفتح عند التدوير فتتلف «تابع القراءة»، و«راسِل
         // المطوّر» يضيع بالتدوير، وقراءة الحافظة تُظهر تنبيه النظام، والشهادة والمسجّل
         // على الخيط الرئيسي، و«0 درساً» و«استُمع 2 مرّة» و«٦٠٤ صفحات» و«دروس غير منزَّل».
-        versionCode = 39
-        versionName = "2.8.3"
+        // ٤٠ / ٢.٨.٤ — الفحص الرابع (2026-10-25) وأعطال Play Vitals: تسخين كاش الوسائط
+        // وجدولة العمّال في الخلفية (ANR في `PlaybackService.onCreate` و`Application.onCreate`
+        // وانهيار `ForegroundServiceDidNotStartInTime`)، وحراسة `onTrimMemory`؛ وارتدادٌ من ٣٩:
+        // إعادة فتح الجزء نفسه لم تكن تنتقل إلى أوّله؛ والتسجيل الجاري في «راسِل المطوّر»
+        // يصمد للتدوير؛ وأوّل تبديل إلى المصوَّر يفتح الصفحة المقروءة؛ وعدّ المسبحة المرتبطة
+        // وعرض تنزيل المصحف يصمدان للتدوير؛ و«غير منزَّلين» و«٠ د» بدل «لا دقائق».
+        versionCode = 40
+        versionName = "2.8.4"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

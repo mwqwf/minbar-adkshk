@@ -11,7 +11,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], manifest = Config.NONE)
+@Config(sdk = [35], manifest = Config.NONE)
 class ModeratorShareIntentTest {
     private val own = "com.ali.menbaradkshk"
     private val source = Uri.parse("content://recorder.example/recording")

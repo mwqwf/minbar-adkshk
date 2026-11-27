@@ -14,7 +14,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], manifest = Config.NONE)
+@Config(sdk = [35], manifest = Config.NONE)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class TranscriptDraftImagePixelsTest {
     @Test fun actualBitmapCodecProducesAllowedFreshBaseline() {

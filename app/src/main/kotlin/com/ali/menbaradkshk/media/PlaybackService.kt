@@ -32,6 +32,8 @@ import kotlinx.coroutines.launch
 
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 class PlaybackService : MediaSessionService() {
+    private lateinit var loudness: LessonLoudnessApplier
+    private val pauseForPrivateReview: () -> Unit = { if (::player.isInitialized) player.pause() }
     private lateinit var player: ExoPlayer
     private lateinit var mediaSession: MediaSession
     private lateinit var store: LocalStore
@@ -96,14 +98,25 @@ class PlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .setMediaSourceFactory(
-                DefaultMediaSourceFactory(DefaultDataSource.Factory(this, networkSources)),
+                DefaultMediaSourceFactory(
+                    PlayPackAudioSource.factory(DefaultDataSource.Factory(this, networkSources), store::playableAudio),
+                ),
             )
             .build()
+        loudness = LessonLoudnessApplier(player)
+        OrdinaryAudioPause.register(pauseForPrivateReview)
+        loudness.onAudioSession(player.audioSessionId)
         player.apply {
             setPlaybackSpeed(store.playbackSpeed().toFloat())
             addListener(
                 object : Player.Listener {
+                    override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                        loudness.onAudioSession(audioSessionId)
+                    }
+
                     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                        // علوّ الدرس يُضبط لكلّ عنصر (ويُصفَّر لما لا علوّ له) قبل أيّ خروج مبكّر.
+                        loudness.applyFor(mediaItem)
                         val newId = mediaItem?.mediaId.orEmpty()
                         // ⚠️ استبدال الرابط بالمرآة (`tryMirrorFallback`) يُطلق هذا
                         // الحدث بسبب `PLAYLIST_CHANGED` للدرس **نفسه**: تصفيرُ
@@ -114,6 +127,7 @@ class PlaybackService : MediaSessionService() {
                         ) {
                             return
                         }
+                        com.ali.menbaradkshk.widget.NowPlayingWidget.setActiveMedia(this@PlaybackService, newId)
                         trackedLessonId = newId
                         lastTrackedPositionMs = currentPosition.coerceAtLeast(0L)
                         // درس جديد ⇒ عدّاد الاستماع يبدأ من الصفر، والاحتساب
@@ -171,6 +185,8 @@ class PlaybackService : MediaSessionService() {
                                 com.ali.menbaradkshk.widget.NowPlayingWidget
                                     .refresh(this@PlaybackService)
                             }
+                        } else {
+                            com.ali.menbaradkshk.widget.NowPlayingWidget.refresh(this@PlaybackService)
                         }
                     }
 
@@ -204,7 +220,12 @@ class PlaybackService : MediaSessionService() {
                             this@PlaybackService, "play",
                             "$trackedLessonId ${error.errorCodeName}",
                         )
-                        if (isRecoverableIoError(error) && !tryMirrorFallback()) tryOfflineFallback()
+                        val isInvalidPack = error.errorCode ==
+                            androidx.media3.common.PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND &&
+                            PlayPackAudioSource.handles(currentMediaItem?.localConfiguration?.uri)
+                        if ((isRecoverableIoError(error) || isInvalidPack) && !tryMirrorFallback()) {
+                            tryOfflineFallback()
+                        }
                     }
 
                     override fun onPlaybackStateChanged(playbackState: Int) {
@@ -347,12 +368,11 @@ class PlaybackService : MediaSessionService() {
         val config = item.localConfiguration ?: return false
         val uri = config.uri.toString()
         if (!uri.startsWith("http", ignoreCase = true)) return false
-        if (com.ali.menbaradkshk.data.MinbarApi.isMirrorUrl(uri)) return false
-        val sha = config.customCacheKey.orEmpty()
-        if (sha.isBlank()) return false
+        val fallback = com.ali.menbaradkshk.data.MinbarApi
+            .legacyAudioFallbackUrl(uri, config.customCacheKey.orEmpty()) ?: return false
         val position = player.currentPosition.coerceAtLeast(0L)
         val rebuilt = item.buildUpon()
-            .setUri(android.net.Uri.parse(com.ali.menbaradkshk.data.MinbarApi.audioMirrorUrl(sha)))
+            .setUri(android.net.Uri.parse(fallback))
             .build()
         player.replaceMediaItem(index, rebuilt)
         player.seekTo(index, position)
@@ -388,23 +408,17 @@ class PlaybackService : MediaSessionService() {
         if (count == 0) return false
         val failedId = player.currentMediaItem?.mediaId.orEmpty()
         if (failedId.isNotBlank() && !isLesson(failedId)) return false
-        val downloads = com.ali.menbaradkshk.data.DownloadRepository.get(this)
-        val items = (0 until count).map { player.getMediaItemAt(it) }
-        val offline = items.filter { downloads.isDownloaded(it.mediaId) }
+        val lookup = store.playableAudioSnapshot()
+        val offline = (0 until count).mapNotNull { index ->
+            val item = player.getMediaItemAt(index)
+            val local = lookup(item.mediaId) ?: return@mapNotNull null
+            index to item.buildUpon().setUri(PlayPackAudioSource.uri(item.mediaId, local)).build()
+        }
         if (offline.isEmpty()) return false
         val failedIndex = player.currentMediaItemIndex.coerceIn(0, count - 1)
-        val fallbackId = items.drop(failedIndex)
-            .firstOrNull { downloads.isDownloaded(it.mediaId) }?.mediaId
-            ?: offline.first().mediaId
-        val rebuilt = offline.map { item ->
-            store.localAudioPath(item.mediaId)
-                ?.let { path ->
-                    item.buildUpon()
-                        .setUri(android.net.Uri.fromFile(java.io.File(path)))
-                        .build()
-                }
-                ?: item
-        }
+        val fallbackId = (offline.firstOrNull { (index, _) -> index >= failedIndex }
+            ?: offline.first()).second.mediaId
+        val rebuilt = offline.map { it.second }
         val startIndex = rebuilt.indexOfFirst { it.mediaId == fallbackId }.coerceAtLeast(0)
         offlineFallbackAtMs = now
         // خبرُ نجاةٍ للواجهة إن كانت حيّة — القناة مشتركة فلا تضيع لو ماتت.
@@ -463,6 +477,18 @@ class PlaybackService : MediaSessionService() {
 
     /// استئناف التشغيل بعد موت العملية (زر التشغيل في الودجت/السماعة).
     private val resumptionCallback = object : MediaSession.Callback {
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ): MediaSession.ConnectionResult =
+            if (PlaybackControllerAccess.canConnect(
+                    android.os.Process.myUid(), controller.uid, controller.isTrusted,
+                )) {
+                super.onConnect(session, controller)
+            } else {
+                MediaSession.ConnectionResult.reject()
+            }
+
         override fun onPlaybackResumption(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
@@ -476,19 +502,21 @@ class PlaybackService : MediaSessionService() {
             val future = SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
             storeScope.launch {
                 runCatching {
-                    val lessonId = store.recentPlayedIds().firstOrNull().orEmpty()
-                    val lesson = store.lessons().firstOrNull { it.id == lessonId }
-                    val local = lessonId.takeIf(String::isNotBlank)?.let(store::localAudioPath)
-                    if (lesson == null || (local == null && lesson.audioUrl.isBlank())) {
+                    val target = store.coldLessonResumeTarget()
+                    if (target == null) {
                         future.setException(
                             UnsupportedOperationException("لا يوجد درس سابق للاستئناف"),
                         )
                     } else {
+                        val audio = store.playableAudio(target.lesson.id)?.takeIf {
+                            it.playSha == null || target.lesson.sha256.isBlank() || it.playSha == target.lesson.sha256
+                        }
+                        check(audio != null || target.lesson.audioUrl.isNotBlank()) { "ملف الدرس غير متاح الآن" }
                         future.set(
                             MediaSession.MediaItemsWithStartPosition(
-                                listOf(PlaybackController.mediaItemFor(lesson, local)),
+                                listOf(PlaybackController.mediaItemFor(target.lesson, audio)),
                                 0,
-                                store.position(lessonId),
+                                target.positionMs,
                             ),
                         )
                     }
@@ -498,7 +526,16 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
+        // Media3 passes an unverified placeholder here on a cold hardware media-button event.
+        // Returning a session for lookup is not connection approval: onConnect always rechecks.
+        return if (PlaybackControllerAccess.canReturnSession(
+                android.os.Process.myUid(),
+                controllerInfo.uid,
+                controllerInfo.isTrusted,
+                controllerInfo.isPackageNameVerified,
+            )) mediaSession else null
+    }
 
     /// لقطة موضعٍ تُلتقط من المشغّل (خيط رئيسي) لتُكتب لاحقاً في خيط آخر.
     private data class PositionSnapshot(val id: String, val position: Long, val duration: Long)
@@ -534,6 +571,8 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        OrdinaryAudioPause.unregister(pauseForPrivateReview)
+        if (::loudness.isInitialized) loudness.release()
         // إلغاء التسجيل قبل كل شيء: تبديلٌ يصل بعد release() يلمس مشغّلاً محرَّراً.
         if (SkipSilenceState.onChanged === skipSilenceApplier) SkipSilenceState.onChanged = null
         persistPosition()
@@ -549,6 +588,7 @@ class PlaybackService : MediaSessionService() {
         // قبله. وإغلاق الخيط واجبٌ وإلا بقي حيّاً بعد موت الخدمة.
         storeScope.cancel()
         storeExecutor.shutdown()
+        com.ali.menbaradkshk.widget.NowPlayingWidget.clearActiveMedia(this)
         super.onDestroy()
     }
 

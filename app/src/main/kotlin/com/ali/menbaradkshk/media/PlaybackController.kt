@@ -10,7 +10,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
-import com.ali.menbaradkshk.data.DownloadRepository
+import com.ali.menbaradkshk.data.LocalAudio
 import com.ali.menbaradkshk.data.Lesson
 import com.ali.menbaradkshk.data.LocalStore
 import com.google.common.util.concurrent.ListenableFuture
@@ -25,7 +25,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.io.File
 
 data class PlaybackUiState(
     val connected: Boolean = false,
@@ -148,7 +147,6 @@ object SkipSilenceState {
 class PlaybackController(context: Context) {
     private val appContext = context.applicationContext
     private val store = LocalStore.get(context)
-    private val downloads = DownloadRepository.get(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _state = MutableStateFlow(
         PlaybackUiState(
@@ -273,19 +271,22 @@ class PlaybackController(context: Context) {
             toggle()
             return
         }
-        // الفحص قبل بناء القائمة: ifEmpty تُعيد الدرس نفسه فتُخفي غياب الصوت.
-        if (lesson.audioUrl.isBlank() && !downloads.isDownloaded(lesson.id)) {
+        val lookup = store.playableAudioSnapshot()
+        val local = HashMap<String, LocalAudio?>()
+        fun localOf(item: Lesson): LocalAudio? {
+            if (!local.containsKey(item.id)) {
+                local[item.id] = lookup(item.id)?.takeIf {
+                    it.playSha == null || item.sha256.isBlank() || item.sha256 == it.playSha
+                }
+            }
+            return local[item.id]
+        }
+        // نرفض الدرس دون مصدر قبل الترشيح، ونأخذ لقطة واحدة لمسارات الحزمتين.
+        if (lesson.audioUrl.isBlank() && localOf(lesson) == null) {
             _state.value = _state.value.copy(error = "هذا الدرس لا يحتوي ملفاً صوتياً.")
             return
         }
-        // الدرس المطلوب يتصدّر القائمة دائماً إن رشّحه المرشّح خارجها، كي لا
-        // يسقط الفهرس إلى 0 فيُشغَّل درس آخر بموضع الدرس المطلوب.
-        // ⚠️ لقطة واحدة لفهرس التنزيلات: كان كل عنصر في القائمة يقرأ الفهرس
-        // ويحلّله من جديد (مرّة للترشيح ومرّة لبناء العنصر) على الخيط الرئيسي،
-        // ومحطّات الإذاعة تمرّر آلاف الدروس ⇒ آلاف التحليلات في ضغطة واحدة.
-        val localPaths = downloads.all()
-        fun localPathOf(id: String): String? = localPaths[id]?.takeIf { File(it).isFile }
-        val filtered = queue.filter { it.audioUrl.isNotBlank() || localPathOf(it.id) != null }
+        val filtered = queue.filter { it.audioUrl.isNotBlank() || localOf(it) != null }
         val playable = if (filtered.any { it.id == lesson.id }) filtered else listOf(lesson) + filtered
         val index = playable.indexOfFirst { it.id == lesson.id }.coerceAtLeast(0)
         // نستأنف من الموضع المحفوظ فقط إن تجاوز 3 ثوانٍ (نمط الأصل).
@@ -296,7 +297,7 @@ class PlaybackController(context: Context) {
         lastQueue = queue
         // محاولة جديدة ⇒ خطأ المحاولة السابقة لم يعد يمثّل الحالة.
         _state.value = _state.value.copy(error = null)
-        player.setMediaItems(playable.map { mediaItemFor(it, localPathOf(it.id)) }, index, position)
+        player.setMediaItems(playable.map { mediaItemFor(it, localOf(it)) }, index, position)
         player.prepare()
         player.play()
     }
@@ -579,8 +580,8 @@ class PlaybackController(context: Context) {
         // ⚠️ `setCustomCacheKey` واجهةٌ غير مستقرّة في media3، فيلزمها إقرارٌ
         // صريح كما في PlaybackService وMinbarApplication. إقرارٌ لا تغييرَ سلوك.
         @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
-        fun mediaItemFor(lesson: Lesson, localPath: String?): MediaItem {
-            val uri = if (localPath != null) Uri.fromFile(File(localPath)) else Uri.parse(lesson.audioUrl)
+        internal fun mediaItemFor(lesson: Lesson, local: LocalAudio?): MediaItem {
+            val uri = if (local != null) PlayPackAudioSource.uri(lesson.id, local) else Uri.parse(lesson.audioUrl)
             return MediaItem.Builder()
                 .setMediaId(lesson.id)
                 .setUri(uri)
@@ -588,12 +589,13 @@ class PlaybackController(context: Context) {
                 // المتطابقة تتشارك الكاش مهما تبدّل المضيف أو تكرر الدرس، وتغيّر
                 // الصوت (بصمة جديدة) يعزل كاشه تلقائياً. بلا بصمة يبقى الافتراضي
                 // (الرابط نصاً) — سلوك النسخ السابقة حرفياً.
-                .setCustomCacheKey(lesson.sha256.takeIf { it.isNotBlank() && localPath == null })
+                .setCustomCacheKey(lesson.sha256.takeIf { it.isNotBlank() && local == null })
                 .setMediaMetadata(
                     MediaMetadata.Builder()
                         .setTitle(lesson.displayTitle)
                         .setArtist(lesson.speaker.ifBlank { "منبر ادكصهك" })
                         .setIsPlayable(true)
+                        .setExtras(LessonLoudness.extrasFor(lesson.gainDb))
                         .build(),
                 )
                 .build()

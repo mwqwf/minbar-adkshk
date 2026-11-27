@@ -1,7 +1,9 @@
 package com.ali.menbaradkshk.ui
 
 import android.content.Intent
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.SwapVert
@@ -57,10 +60,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -139,15 +146,17 @@ fun AudioItem(
 
     val active = playback.mediaId == lesson.id && lesson.id.isNotBlank()
     val playing = active && playback.playing
-    // ⚠️ القراءتان أدناه تفكّان خريطة JSON كاملةً من التفضيلات في كل نداء،
-    // فلا يجوز تركهما بلا `remember`: بلا لفّ كان كل صفّ مرئيّ يعيد التحليل
-    // مع كل إعادة تركيب. ولا يشترك هذا الصفّ في تدفّق تقدّم التنزيل أصلاً —
-    // فالتدفّق ينبض مع كل حزمة قراءة، وزرّ التحميل وحده يحتاجه ويشترك فيه.
+    // يخزّن LocalStore القيم المفسَّرة حسب النص الخام، وتجنّب remember
+    // حتى إعادة قراءتها عند كل نبضة. تغيّر الدرس النشِط يعيد قراءة الموضع
+    // لأن تحديثات موضع التشغيل العادية صامتة ولا ترفع revision.
+    // تقدّم التنزيل يشترك فيه زرّ التحميل وحده.
     val durMs = remember(revision, lesson.id, lesson.durationMs) {
         lesson.durationMs.takeIf { it > 0L } ?: vm.store.duration(lesson.id)
     }
     val favorite = remember(revision, lesson.id) { vm.store.isFavorite(lesson.id) }
-    val savedPos = remember(revision, lesson.id) { vm.store.position(lesson.id) }
+    val savedPos = remember(revision, lesson.id, active) { vm.store.position(lesson.id) }
+    val completed = remember(revision, lesson.id) { vm.store.isCompleted(lesson.id) }
+    val listenedLabel = listeningRowStatus(completed, savedPos, active)
     val savedProgress = if (durMs > 0L) {
         (savedPos.toFloat() / durMs).coerceIn(0f, 1f)
     } else {
@@ -268,6 +277,25 @@ fun AudioItem(
                     }
                 }
             }
+            if (listenedLabel != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Icon(
+                        if (completed) Icons.Filled.Check else Icons.Filled.Headphones,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Text(
+                        listenedLabel,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             if (liveProgress > 0.02f) {
                 Spacer(Modifier.height(8.dp))
                 ClassicLinearProgress(
@@ -314,52 +342,58 @@ fun AudioCard(
     val sectionName = vm.content.state.collectAsState().value
         .subcategoryById[lesson.subcategoryId]?.name
     val title = remember(lesson.id, lesson.title, sectionName) { sectionAwareTitle(vm, lesson) }
+    val enlarged = LocalDensity.current.fontScale > 1.25f
+    val shape = RoundedCornerShape(18.dp)
     Column(
         modifier = Modifier
-            .width(150.dp)
-            .clickable { vm.openPlayer(lesson, playlist) },
+            .width(if (enlarged) 188.dp else 154.dp)
+            .clip(shape)
+            .clickable(role = Role.Button, onClickLabel = "افتح الدرس") { vm.openPlayer(lesson, playlist) },
     ) {
         Box(
-            modifier = Modifier
-                .height(96.dp)
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
-                .background(Brush.linearGradient(listOf(accent, Slate))),
+            modifier = Modifier.fillMaxWidth()
+                .clip(shape)
+                .background(ArchivePlayerInk)
+                .border(1.dp, ArchiveAmber.copy(alpha = if (active) 0.64f else 0.23f), shape),
         ) {
-            // التدرّج الداكن من الأسفل يضمن قراءة العنوان مهما فتح لون القسم.
-            Box(
-                Modifier
-                    .matchParentSize()
-                    .background(
-                        Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC000000))),
-                    ),
-            )
-            // المدّة انتقلت إلى الأعلى: أسفل البطاقة صار للعنوان.
-            if (durMs > 0L) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(6.dp)
-                        .background(Color(0x8A000000), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
-                ) {
-                    Text(
-                        formatDuration(durMs),
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelSmall,
-                    )
+            // A static engraved bookplate: category colour marks the card, never its text background.
+            Canvas(Modifier.matchParentSize()) {
+                val center = Offset(size.width * 0.17f, size.height * 0.12f)
+                for (i in 1..3) {
+                    drawCircle(ArchiveAmber.copy(alpha = 0.13f), radius = size.width * (0.19f + i * 0.065f),
+                        center = center, style = Stroke(width = 0.75.dp.toPx()))
                 }
             }
-            Text(
-                title,
-                color = Color.White,
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 8.dp, end = 8.dp, bottom = 6.dp),
-            )
+            Column(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 112.dp)
+                    .padding(horizontal = 10.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Box(Modifier.size(29.dp).background(ArchiveAmber, RoundedCornerShape(9.dp)),
+                        contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = ArchivePlayerInk,
+                            modifier = Modifier.size(18.dp))
+                    }
+                    if (durMs > 0L) {
+                        Text(formatDuration(durMs), color = ArchiveAmber,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.weight(1f))
+                    } else {
+                        Spacer(Modifier.weight(1f))
+                    }
+                    Box(Modifier.size(6.dp).background(accent, CircleShape))
+                }
+                Text(
+                    title,
+                    color = ArchiveIvory,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
         if (showProgress && liveProgress > 0f) {
             Spacer(Modifier.height(4.dp))
@@ -371,7 +405,7 @@ fun AudioCard(
     }
 }
 
-/// بطاقة قسم في «المكتبة» — تدرّج لون القسم وأيقونته واسمه.
+/// بطاقة قسم في «المكتبة» — علامة فهرس مذهّبة على سطح مقروء في السمتين.
 @Composable
 fun SectionCard(
     categoryId: String,
@@ -379,40 +413,31 @@ fun SectionCard(
     subtitle: String? = null,
     onClick: () -> Unit,
 ) {
-    val color = colorForCategory(categoryId)
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(Brush.linearGradient(listOf(color, Slate)))
-            .clickable(onClick = onClick)
-            .padding(16.dp),
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(18.dp)
+    Row(
+        modifier = Modifier.fillMaxWidth().clip(shape).background(colors.surface)
+            .border(1.dp, colors.outlineVariant, shape)
+            .clickable(role = Role.Button, onClickLabel = "افتح القسم", onClick = onClick)
+            .heightIn(min = 76.dp)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                iconForCategory(categoryId),
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(30.dp),
-            )
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    name,
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (!subtitle.isNullOrBlank()) {
-                    Text(
-                        subtitle,
-                        color = Color.White.copy(alpha = 0.8f),
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
+        Box(Modifier.size(43.dp).background(colors.secondaryContainer, RoundedCornerShape(13.dp)),
+            contentAlignment = Alignment.Center) {
+            Icon(iconForCategory(categoryId), contentDescription = null, tint = colors.onSecondaryContainer,
+                modifier = Modifier.size(22.dp))
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(name, color = colors.onSurface, style = MaterialTheme.typography.titleMedium,
+                maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (!subtitle.isNullOrBlank()) {
+                Text(subtitle, color = colors.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
             }
         }
+        Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = colors.onSurfaceVariant,
+            modifier = Modifier.size(18.dp))
     }
 }
 
@@ -817,8 +842,9 @@ private class BulkDownloadEstimate(val megabytes: Long, val unknown: Int)
  * مختلَق.
  */
 private fun bulkDownloadEstimate(vm: AppViewModel, count: Int): BulkDownloadEstimate {
+    val lookup = vm.store.playableAudioSnapshot()
     val pending = vm.pendingBulkDownload.value?.lessons.orEmpty()
-        .filter { it.audioUrl.isNotBlank() && !vm.downloads.isDownloaded(it.id) }
+        .filter { it.audioUrl.isNotBlank() && lookup(it.id) == null }
     if (pending.isEmpty()) return BulkDownloadEstimate(0L, count)
     val durations = vm.store.durations()
     var seconds = 0L

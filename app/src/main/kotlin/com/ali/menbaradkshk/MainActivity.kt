@@ -21,6 +21,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.ali.menbaradkshk.data.LibraryPackDelivery
 import com.ali.menbaradkshk.notification.BackgroundScheduler
 import com.ali.menbaradkshk.notification.NotificationPoster
 import com.ali.menbaradkshk.ui.AppViewModel
@@ -49,6 +50,7 @@ class MainActivity : ComponentActivity() {
         lifecycle.addObserver(
             LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
+                    LibraryPackDelivery.foreground(applicationContext, this@MainActivity)
                     viewModel.refresh(true)
                     // فحص التحديث مع كل عودة إلى التطبيق لا مرّة واحدة عند
                     // إنشاء الـViewModel: التطبيق قد يبقى في الذاكرة أياماً،
@@ -58,13 +60,14 @@ class MainActivity : ComponentActivity() {
                     // 💓 نبضة فوريّة إن مضى ربع ساعة على آخرها — بدل دفع FCM الذي
                     // أُزيل مع Firebase (ملفٌ واحد ≤ 1 ك.ب من CDN، وبقيد اتصال).
                     BackgroundScheduler.pulseIfStale(applicationContext)
+                } else if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_DESTROY) {
+                    LibraryPackDelivery.background(applicationContext, this@MainActivity)
                 }
             },
         )
         // إعادة إنشاء النشاط (تدوير الشاشة) تعيد النيّة نفسها — لا تُلتقط مرّتين.
         if (savedInstanceState == null) {
             viewModel.handleDeepLink(deepLinkFrom(intent))
-            captureShare(intent)
             requestNotificationPermissionOnce()
         }
         setContent {
@@ -82,8 +85,8 @@ class MainActivity : ComponentActivity() {
             val dark = isDarkTheme(themeMode)
             LaunchedEffect(dark) {
                 val bars = WindowCompat.getInsetsController(window, window.decorView)
-                // الشريط العلوي داكن في السمتين ⇒ أيقوناته فاتحة دائماً.
-                bars.isAppearanceLightStatusBars = false
+                // «محراب الفجر»: الشريط العلوي فاتح نهاراً وداكن ليلاً ⇒ الأيقونات تتبعه.
+                bars.isAppearanceLightStatusBars = !dark
                 // شريط التنقّل يتبع سطح التطبيق: أيقونات داكنة على سطح فاتح.
                 bars.isAppearanceLightNavigationBars = !dark
             }
@@ -159,7 +162,6 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         viewModel.handleDeepLink(deepLinkFrom(intent))
-        captureShare(intent)
     }
 
     /**
@@ -184,10 +186,9 @@ class MainActivity : ComponentActivity() {
         // الخلفية): النقر يجب أن ينتهي في المتجر لا في الرئيسية. نقفز إليه
         // هنا ولا نُبقي وجهةً داخل التطبيق — والرابط يبقى مخفياً.
         if (NotificationPoster.isUpdate(payload)) {
-            com.ali.menbaradkshk.util.StoreRedirectActivity.open(
-                this,
-                payload["storeUrl"].orEmpty(),
-            )
+            // MainActivity is exported. An intent extra cannot choose a browser target.
+            // Only the internal PendingIntent and trusted app-config flow can supply their own URL.
+            com.ali.menbaradkshk.util.StoreRedirectActivity.open(this)
             return null
         }
         // بشرى اعتماد النص المشروح تفتح الدرس — فيجب أن يسقط كاش «لا نصّ»
@@ -195,64 +196,6 @@ class MainActivity : ComponentActivity() {
         NotificationPoster.invalidateTranscriptCache(this, payload)
         val destination = NotificationPoster.destinationFor(payload) ?: return null
         return runCatching { Uri.parse(destination) }.getOrNull()
-    }
-
-    /// «مشاركة إلى منبر»: صوتيات ← «شارك درساً»، وصور/نص ← «ساهم بالنص»
-    /// (باختيار الدرس). حمولة تطبيق آخر قد تكون تالفة — لا تُسقط التطبيق.
-    private fun captureShare(intent: Intent?) {
-        if (intent == null) return
-        val action = intent.action
-        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
-        val type = intent.type.orEmpty()
-        val uris: List<Uri> = runCatching { sharedStreamUris(intent) }.getOrDefault(emptyList())
-        when {
-            type.startsWith("audio/") && uris.isNotEmpty() -> {
-                // تُستهلك النيّة فوراً كي لا تتكرّر الملفات إن عاد النشاط إليها.
-                runCatching { intent.removeExtra(Intent.EXTRA_STREAM) }
-                viewModel.receiveSharedAudio(uris)
-            }
-
-            type.startsWith("image/") && uris.isNotEmpty() -> {
-                runCatching { intent.removeExtra(Intent.EXTRA_STREAM) }
-                viewModel.receiveSharedTranscript(text = "", imageUris = uris)
-            }
-
-            type.startsWith("text/") -> {
-                val text = runCatching {
-                    intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
-                }.getOrDefault("")
-                if (text.isNotBlank()) {
-                    runCatching { intent.removeExtra(Intent.EXTRA_TEXT) }
-                    viewModel.receiveSharedTranscript(text = text, imageUris = emptyList())
-                }
-            }
-        }
-    }
-
-    private fun sharedStreamUris(intent: Intent): List<Uri> {
-        return when (intent.action) {
-            Intent.ACTION_SEND -> {
-                val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-                }
-                listOfNotNull(uri)
-            }
-
-            Intent.ACTION_SEND_MULTIPLE -> {
-                val list = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
-                }
-                list.orEmpty().filterNotNull()
-            }
-
-            else -> emptyList()
-        }
     }
 
     private fun requestNotificationPermission() {

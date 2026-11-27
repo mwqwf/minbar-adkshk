@@ -17,6 +17,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
+import java.io.InputStream
+import java.security.MessageDigest
+import java.util.zip.GZIPInputStream
 import kotlin.math.max
 import kotlin.random.Random
 
@@ -28,6 +31,7 @@ data class ContentState(
     val syncing: Boolean = false,
     val offline: Boolean = false,
     val error: String? = null,
+    internal val bundledUpgrade: Boolean = false,
 ) {
     // فهارس مبنيّة مرّة واحدة لكل حالة لا عند كل قراءة: كانت `get()` تُعيد
     // بناء الخريطة كاملة في كل استدعاء، وهي تُقرأ داخل قوائم الواجهة لكل عنصر
@@ -38,10 +42,50 @@ data class ContentState(
     val subcategoryById: Map<String, Subcategory> by lazy {
         subcategories.associateBy(Subcategory::id)
     }
+
+    /**
+     * Some legacy lessons carry only a subcategory. Its published parent provides
+     * browse, saved-only and bulk-download grouping when the lesson's category is blank.
+     * Keep the persisted server models unchanged for deltas and bundle lineage.
+     */
+    internal fun withResolvedLessonParents(): ContentState {
+        if (lessons.none { it.categoryId.isBlank() && it.subcategoryId.isNotBlank() }) return this
+        val categoryCounts = categories.groupingBy(Category::id).eachCount()
+        val parents = subcategories.groupBy(Subcategory::id).mapNotNull { (id, rows) ->
+            val parent = rows.singleOrNull()?.categoryId
+            if (id.isBlank() || parent.isNullOrBlank() || categoryCounts[parent] != 1) null
+            else id to parent
+        }.toMap()
+        if (parents.isEmpty()) return this
+        var resolved = false
+        val projected = lessons.map { lesson ->
+            val parent = if (lesson.categoryId.isBlank()) parents[lesson.subcategoryId] else null
+            if (parent == null) lesson else lesson.copy(categoryId = parent).also { resolved = true }
+        }
+        return if (resolved) copy(lessons = projected) else this
+    }
 }
 
-class ContentRepository private constructor(context: Context) {
-    private val appContext = context.applicationContext
+internal class CatalogBootIo(
+    val asset: (String) -> InputStream,
+    val online: suspend () -> JSONObject,
+    val probe: suspend () -> JSONObject,
+    val seed: suspend (List<Lesson>) -> Unit,
+) {
+    companion object {
+        fun device(app: Context) = CatalogBootIo(
+            asset = app.assets::open,
+            online = { MinbarApi.catalog() },
+            probe = { MinbarApi.probe() },
+            seed = { AssetPackSeeder.seed(app, it) },
+        )
+    }
+}
+
+class ContentRepository internal constructor(
+    context: Context,
+    private val bootIo: CatalogBootIo = CatalogBootIo.device(context.applicationContext),
+) {
     private val store = LocalStore.get(context)
     /// تفضيلات خاصّة بالمستودع وحده (علامات المسبار، إخفاء عناصر السجل،
     /// ترتيب قوائم التشغيل) — لا تُخلط بمخزن التطبيق العام.
@@ -55,6 +99,7 @@ class ContentRepository private constructor(context: Context) {
     // (رُصد على المحاكي 2026-09-12). صار الحمل على IO حين يُنادى من الخيط
     // الرئيسي، ومتزامناً حين يناديه عامل خلفي (فيبقى مضمون الاكتمال له).
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val refreshMutex = kotlinx.coroutines.sync.Mutex()
     private val _state = MutableStateFlow(ContentState(loading = true))
     val state: StateFlow<ContentState> = _state.asStateFlow()
 
@@ -66,7 +111,7 @@ class ContentRepository private constructor(context: Context) {
             // تجعل المكتبة كلّها قابلة للتصفّح فوراً وبلا إنترنت إطلاقاً
             // (عناوين/أقسام/شيوخ/مدد) — والدروس تنتظر أول اتصال. تُقرأ
             // مرة واحدة في العمر هنا؛ وأي فشل يُعيد الشاشة الفارغة القديمة.
-            val seeded = readBundledSnapshot(appContext)
+            val seeded = readBundledSnapshot()
             ContentState(
                 categories = seeded?.categories.orEmpty(),
                 subcategories = seeded?.subcategories.orEmpty(),
@@ -75,18 +120,31 @@ class ContentRepository private constructor(context: Context) {
                 offline = seeded != null,
             )
         } else {
-            ContentState(
-                categories = cachedCategories,
-                subcategories = store.subcategories(),
-                lessons = mergeDurations(cachedLessons),
-                loading = false,
-            )
+            val cachedSubcategories = store.subcategories()
+            val successor = bundledSuccessor(cachedCategories, cachedSubcategories, cachedLessons)
+            if (successor != null) {
+                // Preview only until an authoritative online refresh. Keep the persisted catalog,
+                // delta anchors, manual files and deletion markers exactly as they were.
+                ContentState(successor.categories, successor.subcategories, mergeDurations(successor.lessons),
+                    loading = false, offline = true, bundledUpgrade = true)
+            } else {
+                ContentState(cachedCategories, cachedSubcategories, mergeDurations(cachedLessons), loading = false)
+            }
         }
     }
 
     /// يضع الحالة الأولى فقط إن لم تسبقها مزامنة (لا تدوس بياناتٍ أحدث).
     private fun publishInitial(initial: ContentState) {
-        _state.compareAndSet(_state.value.takeIf { it.loading && it.lessons.isEmpty() } ?: return, initial)
+        val published = _state.compareAndSet(_state.value.takeIf { it.loading && it.lessons.isEmpty() } ?: return,
+            initial.withResolvedLessonParents())
+        if (published && initial.bundledUpgrade) {
+            scope.launch {
+                refreshMutex.withLock {
+                    val current = state.value
+                    if (current.bundledUpgrade) runCatching { bootIo.seed(current.lessons) }
+                }
+            }
+        }
     }
 
     init {
@@ -122,8 +180,6 @@ class ContentRepository private constructor(context: Context) {
     /// جلبين كاملين متوازيين — يكتب المتأخّرُ الأقدمَ فوق الأحدث ويُضاعف
     /// استهلاك البيانات. المتأخّر ينتظر انتهاء الأوّل ثم يقرّر بنفسه (وغالباً
     /// يخرج فوراً: المسبار/الخانق يريانه غير لازم).
-    private val refreshMutex = kotlinx.coroutines.sync.Mutex()
-
     /// أقدم لحظة يضمن الخادم أن سجلّ الحذف يغطّيها (تصل مع وثيقة البصمة).
     @Volatile private var serverDeltaFloorMs: Long = 0L
 
@@ -142,17 +198,22 @@ class ContentRepository private constructor(context: Context) {
         }
         val now = System.currentTimeMillis()
         val hasCache = _state.value.lessons.isNotEmpty()
-        if (!force && now - store.lastSyncMs() < SYNC_INTERVAL_MS && hasCache) {
+        val previewingSuccessor = _state.value.bundledUpgrade
+        if (!force && !previewingSuccessor && now - store.lastSyncMs() < SYNC_INTERVAL_MS && hasCache) {
             return@withContext
         }
         // علامات الخادم كما رآها المسبار: تُحفظ حرفياً بعد أي جلب كامل بدل
         // علاماتٍ محسوبة من استعلاماتنا — كانت المحسوبة تخالف بصمة الخادم
         // حتماً فتفتح حلقة جلب كامل دائمة (لغم 2026-08-29).
-        var probedServer: ProbeMarks? = null
+        // A saved delta base does not describe the successor currently on screen.
+        // Reconcile only against a fresh authoritative probe, not an arbitrary CDN body.
+        var probedServer: ProbeMarks? = if (previewingSuccessor) probe() else null
         // المسبار لا يُستعمل إلا مع كاش موجود وعلامات محفوظة من مزامنة سابقة؛
         // وأوّل تشغيل يجلب كل شيء كالمعتاد.
-        if (!deep && hasCache) {
-            val stored = storedMarks()
+        if (!previewingSuccessor && !deep && hasCache) {
+            // كاشٌ كُتب بمُسلسِلٍ أقدم (قبل حقل `gainDb`) لا يُصلحه المسبار: العلامات
+            // مطابقة للخادم فلا دلتا، فيبقى الحقل مفقوداً أبداً. جلبٌ كامل مرّة واحدة.
+            val stored = storedMarks()?.takeIf { prefs.getInt(KEY_CACHE_FIELDS, 0) >= CACHE_FIELDS_VERSION }
             if (stored != null) {
                 // حدّ أدنى بين مسبارين: عودات متلاحقة لا تُكلّف شيئاً.
                 if (now - lastProbeMs() < PROBE_INTERVAL_MS) return@withContext
@@ -192,9 +253,11 @@ class ContentRepository private constructor(context: Context) {
             // كان **يرتدّ** بالأجهزة إلى بيانات بائدة تدوس الأحدث (وقع فعلياً
             // في اختبار القبول ليلة الهجرة). اللقطة تُقبل فقط إن كانت بعمر
             // علامات الخادم أو أحدث وبعدد دروسه نفسه، وإلا فFirestore.
+            if (previewingSuccessor && probedServer == null) throw java.io.IOException("No authoritative catalog probe")
             fetchCatalogSnapshot()?.takeIf { snapshot ->
                 val server = probedServer
-                server == null || (
+                if (previewingSuccessor) snapshot.marks() == server
+                else server == null || (
                     snapshot.maxUpdatedMs >= server.maxUpdatedMs &&
                         snapshot.lessons.size == server.lessons
                     )
@@ -233,14 +296,14 @@ class ContentRepository private constructor(context: Context) {
             // تنظيف الملفات اليتيمة لدروس أُزيلت من الخادم.
             store.pruneDownloads(lessons.map(Lesson::id).toSet())
             // 🎁 حزم أصول Play: ما وصل منها يُسجَّل منزَّلاً قبل أن يطلبه المحرّك من R2.
-            runCatching { AssetPackSeeder.seed(appContext, lessons) }
+            runCatching { bootIo.seed(lessons) }
             _state.value = ContentState(
                 categories = categories,
                 subcategories = subcategories,
                 lessons = mergeDurations(lessons),
                 loading = false,
                 syncing = false,
-            )
+            ).withResolvedLessonParents()
         }.onFailure { failure ->
             // ❗ runCatching يلتقط الإلغاء أيضاً: مغادرة التطبيق أثناء المزامنة
             // كانت تُسجَّل «فشلاً» في المستودع المفرد الباقي بعد الشاشة، فتبقى
@@ -253,6 +316,7 @@ class ContentRepository private constructor(context: Context) {
                 offline = true,
                 error = when {
                     cached.lessons.isEmpty() -> "تعذّر الاتصال ولا توجد بيانات محفوظة بعد."
+                    cached.bundledUpgrade -> "أنت تستعرض كتالوج الإصدار المضمّن بلا اتصال."
                     // ⚠️ لم تكتمل مزامنة كاملة قط (أول تثبيت وصلت منه صفحة
                     // دروس ثم انقطع): لا شيء حُفظ على القرص (الحفظ في
                     // onSuccess وحده)، فادّعاء «نسخة محفوظة» كاذب ويطمئن
@@ -274,7 +338,7 @@ class ContentRepository private constructor(context: Context) {
      * اليوم (قرار 2026-09-10: حصّته المجانية استُنفدت في يومٍ واحد).
      */
     private suspend fun fetchCatalogSnapshot(): Snapshot? = runCatching {
-        parseCatalog(MinbarApi.catalog())
+        parseCatalog(bootIo.online())
     }.getOrNull()
 
     /// يحوّل JSON الكتالوج (واجهة الموقع أو اللقطة المضمّنة) إلى Snapshot،
@@ -333,7 +397,8 @@ class ContentRepository private constructor(context: Context) {
                     }
                 }
             }
-            if (lessons.size != lessonsJson.length()) return null
+            if (categories.size != categoriesJson.length() || subcategories.size != subcategoriesJson.length() ||
+                lessons.size != lessonsJson.length()) return null
             return Snapshot(
                 categories = categories,
                 subcategories = subcategories,
@@ -347,13 +412,56 @@ class ContentRepository private constructor(context: Context) {
     /// لقطة الكتالوج المضمّنة وقت البناء (assets/catalog/snapshot.jz —
     /// ‏JSON مضغوط gzip بامتداد محايد كي لا يفكّه AGP). فشلها ليس خطأً:
     /// نسخ قديمة من الحزمة قد لا تحملها.
-    private fun readBundledSnapshot(context: Context): Snapshot? = runCatching {
-        context.assets.open("catalog/snapshot.jz").use { stream ->
-            val text = java.util.zip.GZIPInputStream(stream)
-                .bufferedReader().use { it.readText() }
-            parseCatalog(JSONObject(text))
+    private fun readBundledSnapshot(): Snapshot? = runCatching {
+        bootIo.asset(BUNDLED_CATALOG).use { stream ->
+            GZIPInputStream(stream).bufferedReader().use { parseCatalog(JSONObject(it.readText())) }
         }
     }.getOrNull()
+
+    /**
+     * Only an explicit signed-package relationship can replace a warm browse view offline.
+     * Byte pins bind both archive sides; full saved marks plus exact normalized models rule out
+     * stale, partial, modified or newer cached views. Ordinary builds carry no such relationship.
+     */
+    private fun bundledSuccessor(
+        categories: List<Category>, subcategories: List<Subcategory>, lessons: List<Lesson>,
+    ): Snapshot? {
+        val marks = storedMarks() ?: return null
+        return runCatching {
+            val proof = bootIo.asset(CATALOG_LINEAGE).bufferedReader().use { JSONObject(it.readText()) }
+            if (proof.optString("format") != "minbar-catalog-successor-v1") return@runCatching null
+            val previousHash = proof.optString("predecessorSha256")
+            val nextHash = proof.optString("successorSha256")
+            if (previousHash == nextHash || !isServingAudioSha(previousHash) ||
+                !isServingAudioSha(nextHash)) return@runCatching null
+            val previous = readPinnedSnapshot(PREDECESSOR_CATALOG, previousHash) ?: return@runCatching null
+            if (marks != previous.marks() ||
+                categories.sortedBy(Category::id) != previous.categories.sortedBy(Category::id) ||
+                subcategories.sortedBy(Subcategory::id) != previous.subcategories.sortedBy(Subcategory::id) ||
+                lessons.sortedBy(Lesson::id) != previous.lessons.sortedBy(Lesson::id)) return@runCatching null
+            val next = readPinnedSnapshot(BUNDLED_CATALOG, nextHash) ?: return@runCatching null
+            if (next.maxUpdatedMs < previous.maxUpdatedMs ||
+                next.categoriesUpdatedMs < previous.categoriesUpdatedMs ||
+                next.subcategoriesUpdatedMs < previous.subcategoriesUpdatedMs ||
+                next.marks() == previous.marks()) return@runCatching null
+            next
+        }.getOrNull()
+    }
+
+    private fun readPinnedSnapshot(name: String, expected: String): Snapshot? {
+        val bytes = bootIo.asset(name).use { it.readBytes() }
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        if (digest != expected) return null
+        val snapshot = GZIPInputStream(bytes.inputStream()).bufferedReader().use {
+            parseCatalog(JSONObject(it.readText()))
+        } ?: return null
+        fun <T> valid(items: List<T>, id: (T) -> String): Boolean =
+            items.map(id).let { ids -> ids.none(String::isBlank) && ids.toSet().size == ids.size }
+        return snapshot.takeIf {
+            it.categories.isNotEmpty() && valid(it.categories, Category::id) &&
+                valid(it.subcategories, Subcategory::id) && valid(it.lessons, Lesson::id)
+        }
+    }
 
     /**
      * 🎁 بصمات الدروس التي تحملها حزم المتجر — أي التي كانت في الكتالوج لحظة
@@ -362,9 +470,10 @@ class ContentRepository private constructor(context: Context) {
      *
      * فارغةٌ حين لا لقطة (نسخةٌ قديمة أو بناءٌ بلا أصول) — وحينها لا يؤجَّل شيء.
      */
+    @Suppress("UNUSED_PARAMETER")
     fun bundledShas(context: Context): Set<String> = bundledShasCache ?: synchronized(this) {
         bundledShasCache ?: (
-            readBundledSnapshot(context)
+            readBundledSnapshot()
                 ?.lessons
                 ?.mapNotNullTo(HashSet()) { it.sha256.takeIf(String::isNotBlank) }
                 ?: emptySet()
@@ -373,6 +482,10 @@ class ContentRepository private constructor(context: Context) {
 
     @Volatile
     private var bundledShasCache: Set<String>? = null
+
+    fun seedInstalledLibraryPacks() {
+        scope.launch { bootIo.seed(state.value.lessons) }
+    }
 
     fun refreshPersonalization() {
         _state.value = _state.value.copy(lessons = mergeDurations(_state.value.lessons))
@@ -390,7 +503,10 @@ class ContentRepository private constructor(context: Context) {
         val maxUpdatedMs: Long,
         val categoriesUpdatedMs: Long = 0L,
         val subcategoriesUpdatedMs: Long = 0L,
-    )
+    ) {
+        fun marks() = ProbeMarks(categories.size, subcategories.size, lessons.size,
+            maxUpdatedMs, categoriesUpdatedMs, subcategoriesUpdatedMs)
+    }
 
     /// بصمة حالة الخادم: أعداد المجموعات الثلاث + أحدث طابع تعديل في كلٍّ منها.
     ///
@@ -413,7 +529,7 @@ class ContentRepository private constructor(context: Context) {
      * المخزَّنة حين يسقط الخادم فتتساوى العلامات ويُظنّ «لا جديد» أياماً.
      */
     private suspend fun probe(): ProbeMarks? = runCatching {
-        val json = MinbarApi.probe()
+        val json = bootIo.probe()
         json.optLong("deltaFloorMs", 0L).takeIf { it > 0L }?.let { serverDeltaFloorMs = it }
         ProbeMarks(
             categories = json.getInt("categoriesCount"),
@@ -423,7 +539,7 @@ class ContentRepository private constructor(context: Context) {
             categoriesUpdatedMs = json.getLong("categoriesUpdatedAtMs"),
             subcategoriesUpdatedMs = json.getLong("subcategoriesUpdatedAtMs"),
         )
-    }.getOrNull()
+    }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }.getOrNull()
 
     // ------------------------------------------------------------------
     // المزامنة التفاضليّة: ما تغيّر وحده لا المكتبة كلّها
@@ -541,14 +657,14 @@ class ContentRepository private constructor(context: Context) {
             setDeleteMark(now - DELETE_MARK_BACKOFF_MS)
             store.pruneDownloads(lessons.map(Lesson::id).toSet())
             // 🎁 حزم أصول Play: ما وصل منها يُسجَّل منزَّلاً قبل أن يطلبه المحرّك من R2.
-            runCatching { AssetPackSeeder.seed(appContext, lessons) }
+            runCatching { bootIo.seed(lessons) }
             _state.value = ContentState(
                 categories = categories,
                 subcategories = subcategories,
                 lessons = mergeDurations(lessons),
                 loading = false,
                 syncing = false,
-            )
+            ).withResolvedLessonParents()
             true
         }
     }.getOrDefault(false)
@@ -599,6 +715,7 @@ class ContentRepository private constructor(context: Context) {
     }
 
     private fun saveMarks(marks: ProbeMarks) = prefs.edit()
+        .putInt(KEY_CACHE_FIELDS, CACHE_FIELDS_VERSION)
         .putInt(KEY_MARK_CATEGORIES, marks.categories)
         .putInt(KEY_MARK_SUBCATEGORIES, marks.subcategories)
         .putInt(KEY_MARK_LESSONS, marks.lessons)
@@ -613,9 +730,7 @@ class ContentRepository private constructor(context: Context) {
         prefs.edit().putLong(KEY_LAST_PROBE, value).apply()
 
     fun lessonsForSubcategory(subcategoryId: String): List<Lesson> =
-        _state.value.lessons
-            .filter { it.subcategoryId == subcategoryId }
-            .sortedBy(Lesson::createdAtMs)
+        orderedSubcategoryLessons(_state.value.lessons.filter { it.subcategoryId == subcategoryId }, subcategoryId)
 
     fun subcategoriesForCategory(categoryId: String): List<Subcategory> =
         _state.value.subcategories
@@ -956,6 +1071,9 @@ class ContentRepository private constructor(context: Context) {
     }
 
     companion object {
+        private const val BUNDLED_CATALOG = "catalog/snapshot.jz"
+        private const val CATALOG_LINEAGE = "catalog/upgrade-lineage.json"
+        private const val PREDECESSOR_CATALOG = "catalog/upgrade-predecessor.jz"
         private const val SYNC_INTERVAL_MS = 2 * 60 * 1_000L
         /// أقصى انتظار لاكتمال الحمل الأوّل من الكاش قبل الحكم على وجوده.
         private const val INITIAL_LOAD_WAIT_MS = 5_000L
@@ -970,6 +1088,9 @@ class ContentRepository private constructor(context: Context) {
         private const val KEY_MARK_SUBCATEGORIES = "mark_subcategories"
         private const val KEY_MARK_LESSONS = "mark_lessons"
         private const val KEY_MARK_UPDATED = "mark_updated_ms"
+        /** إصدار حقول الدرس في الكاش؛ 2 = يحمل `gainDb`. رفعه يفرض جلباً كاملاً واحداً. */
+        private const val KEY_CACHE_FIELDS = "cache_fields_version"
+        internal const val CACHE_FIELDS_VERSION = 2
         private const val KEY_MARK_CATEGORIES_UPDATED = "mark_categories_updated_ms"
         private const val KEY_MARK_SUBCATEGORIES_UPDATED = "mark_subcategories_updated_ms"
         private const val KEY_LAST_PROBE = "last_probe_ms"

@@ -1,6 +1,7 @@
 package com.ali.menbaradkshk.ui
 
 import android.app.Application
+import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -10,16 +11,14 @@ import com.ali.menbaradkshk.data.DownloadRepository
 import com.ali.menbaradkshk.data.LocalStore
 import com.ali.menbaradkshk.data.NotificationItem
 import com.ali.menbaradkshk.data.NotificationsRepository
-import com.ali.menbaradkshk.data.SubmissionDraft
 import com.ali.menbaradkshk.data.SubmissionRepository
-import com.ali.menbaradkshk.data.TranscriptDraft
 import com.ali.menbaradkshk.data.TranscriptRepository
 import com.ali.menbaradkshk.media.PlaybackController
 import com.ali.menbaradkshk.notification.BackgroundScheduler
-import com.ali.menbaradkshk.util.AudioMerger
-import com.ali.menbaradkshk.util.AudioTranscodeMerger
 import com.ali.menbaradkshk.util.Mp3FormatException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -57,11 +56,9 @@ sealed interface Route {
     data object Radio : Route
     data object Car : Route
     data object Stats : Route
-    data object Contribute : Route
-    data object ContributeTranscript : Route
-    data object MySubmissions : Route
     data object Notifications : Route
     data object About : Route
+    data object Admin : Route
     data class AdhkarSection(val id: String) : Route
     data object AdhkarReminders : Route
     data object AdhkarFavorites : Route
@@ -83,42 +80,6 @@ sealed interface Route {
     ) : Route
 }
 
-/// صورة/نص وصلا من تطبيق خارجي عبر «المشاركة» لميزة «ساهم بالنص».
-data class SharedTranscriptState(
-    val preparing: Boolean = false,
-    val text: String = "",
-    val images: List<Uri> = emptyList(),
-    val error: String = "",
-)
-
-/// ملفات صوتية وصلت من تطبيق خارجي عبر «المشاركة»، بانتظار شاشة المساهمة.
-data class SharedAudioState(
-    val preparing: Boolean = false,
-    val files: List<PickedFile> = emptyList(),
-    val error: String = "",
-    /// عدد الملفات التي شاركها المستخدم فعلياً قبل قصّها على حدّ الدمج —
-    /// يبقى محفوظاً كي لا يظنّ أن درسه وصل كاملاً حين يتجاوز الحدّ.
-    val originalCount: Int = 0,
-)
-
-/// حالة رفع المساهمة — تعيش في الـViewModel كي لا يلغيها تدوير الشاشة.
-data class ContributionState(
-    val submitting: Boolean = false,
-    val merging: Boolean = false,
-    val progress: Int = 0,
-    val error: String = "",
-    val done: Boolean = false,
-)
-
-/** حالة رفع مساهمة النص — في الـViewModel كي يواصل الرفع بعد تدوير الشاشة. */
-data class TranscriptContributionState(
-    val lessonId: String = "",
-    val submitting: Boolean = false,
-    val progress: Int = 0,
-    val error: String = "",
-    val done: Boolean = false,
-)
-
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     val store = LocalStore.get(application)
 
@@ -134,34 +95,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val submissions = SubmissionRepository.get(application)
     val transcripts = TranscriptRepository.get(application)
     val playback = PlaybackController(application)
-    /// مستمع «قرارات مساهماتي» لا يُفتح أصلاً لمن لم يساهم قطّ — وهم أغلبية
-    /// المستخدمين. يوفّر ذلك قراءة أوّليّة كاملة عند كل عودة إلى التطبيق.
     private val notificationsRepository = NotificationsRepository(
         application,
-        submissions,
-        // ⚠️ ومن راسل المطوّر أيضاً: ردودُه لا تصل إلا من إشعاراتي الخاصة، وكان
-        // من راسل ولم يساهم بدرسٍ لا يُسأل عنها قطّ فلا يعلم بالردّ. (الموافقة
-        // تُحفظ قبل أوّل رسالة، ولا تُرسَل رسالةٌ بدونها.)
-        hasContributedBefore = {
-            hasContributedBefore() ||
-                com.ali.menbaradkshk.data.SupportStore.get(application).consented()
-        },
+        hasSupportHistory = { com.ali.menbaradkshk.data.SupportStore.get(application).consented() },
         installedAtMs = { installedAtMs },
     )
-
-    /// «هل ساهم هذا المستخدم من قبل؟» — مؤشّر محلّي رخيص يحكم كل ما يخصّ
-    /// المساهمات (مستمع القرارات وزرّ «مساهماتي»)، فيسقط عن أغلبية
-    /// المستخدمين بلا قراءة واحدة من الشبكة. مصدر حقيقة واحد لا معياران.
-    fun hasContributedBefore(): Boolean =
-        store.knownSubmissionStatuses().isNotEmpty() || store.submitterName().isNotBlank()
-
-    /// يسجّل مساهمة أُرسلت للتوّ في الخريطة المحلّية — الاسم اختياريّ فلا
-    /// يصلح وحده مؤشّراً على المساهمة، ومن ساهم بلا اسم كان يبقى في نظر
-    /// التطبيق «لم يساهم قطّ» فتسقط عنه قرارات مساهماته.
-    fun rememberSubmission(id: String, status: String = "pending") {
-        if (id.isBlank()) return
-        store.setKnownSubmissionStatuses(store.knownSubmissionStatuses() + (id to status))
-    }
 
     private val backStack = mutableListOf<Route>()
     private val _route = MutableStateFlow<Route>(Route.Home)
@@ -210,31 +148,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _notificationsSeenBefore = MutableStateFlow(0L)
     val notificationsSeenBefore: StateFlow<Long> = _notificationsSeenBefore.asStateFlow()
 
-    /// حالة شاشة «شارك درساً» (دمج/رفع/خطأ/نجاح).
-    private val _contribution = MutableStateFlow(ContributionState())
-    val contribution: StateFlow<ContributionState> = _contribution.asStateFlow()
-
-    private val _transcriptContribution = MutableStateFlow(TranscriptContributionState())
-    val transcriptContribution: StateFlow<TranscriptContributionState> =
-        _transcriptContribution.asStateFlow()
-
-    /// الدرس المختار في شاشة «ساهم بالنص» ما دامت مفتوحة (وفراغٌ إن أُغلقت).
-    /// ⚠️ يلزم لتمييز الرفع الذي يخصّ الشاشة المفتوحة عن رفعٍ بدأ من ورقة درسٍ
-    /// آخر: بدونه كان حبسُ زرّ الرجوع يشمل الحالتين.
-    private val _contributeScreenLessonId = MutableStateFlow("")
-    val contributeScreenLessonId: StateFlow<String> = _contributeScreenLessonId.asStateFlow()
-
-    fun setContributeScreenLesson(lessonId: String) {
-        _contributeScreenLessonId.value = lessonId
-    }
-
-    /// ملفات «المشاركة الخارجية» بانتظار أن تستهلكها شاشة المساهمة.
-    private val _sharedAudio = MutableStateFlow(SharedAudioState())
-    val sharedAudio: StateFlow<SharedAudioState> = _sharedAudio.asStateFlow()
-
-    private val _sharedTranscript = MutableStateFlow(SharedTranscriptState())
-    val sharedTranscript: StateFlow<SharedTranscriptState> = _sharedTranscript.asStateFlow()
-
     /// ورقة الإعدادات السفلية (زر ⋮ في الشريط العلوي — نمط الأصل).
     private val _showSettings = MutableStateFlow(false)
     val showSettings: StateFlow<Boolean> = _showSettings.asStateFlow()
@@ -253,7 +166,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         lessons: List<com.ali.menbaradkshk.data.Lesson>,
         wifiOnly: Boolean = false,
     ) {
-        val pending = lessons.filter { it.audioUrl.isNotBlank() && !downloads.isDownloaded(it.id) }
+        val lookup = store.playableAudioSnapshot()
+        val pending = lessons.filter { it.audioUrl.isNotBlank() && lookup(it.id) == null }
         if (pending.isEmpty()) {
             showMessage("كل دروس هذا القسم محمّلة بالفعل.")
             return
@@ -304,7 +218,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /// واحدة كانت تُنزّل عشرات الدروس على بيانات الجوّال بلا سؤال.
     /// (تحميل درس مفرد يبقى مباشراً: التأكيد عليه ضجيج.)
     fun requestBulkDownload(label: String, lessons: List<com.ali.menbaradkshk.data.Lesson>) {
-        val count = lessons.count { it.audioUrl.isNotBlank() && !downloads.isDownloaded(it.id) }
+        val lookup = store.playableAudioSnapshot()
+        val count = lessons.count { it.audioUrl.isNotBlank() && lookup(it.id) == null }
         if (count == 0) {
             showMessage("كل دروس هذا القسم محمّلة بالفعل.")
             return
@@ -347,6 +262,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // الدرس من التحميل مرّة أخرى في هذه الجلسة كلّها.
         viewModelScope.launch {
             kotlinx.coroutines.delay(2_000L)
+            // 🐢 شبكة بطيئة: قراءة حزمة واحدة قد تتجاوز المهلة، فكان العلم يُمسح
+            // قبل أن يراه النقل فيُكمل الدرس رغم الإلغاء، ويبقى جزئيّه يتيماً.
+            awaitTransfersStopped(listOf(lessonId))
             downloads.clearCancel(lessonId)
             // المهلة تضمن أنّ نقلاً جارياً حذف جزئيّه بنفسه، فلا يتنازع
             // الكنسُ معه؛ والمنتظِر في الطابور لا يحذفه أحدٌ غيرُ هذا السطر.
@@ -360,6 +278,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
             downloads.discardPartials(listOf(lessonId))
+        }
+    }
+
+    /// ينتظر خروج [ids] من خريطة التقدّم (أي انتهاء النقل الجاري ومسحه علمَه
+    /// في `finally`)، بحدّ أقصى [maxMillis] كي لا يتعلّق الإلغاء أبداً.
+    private suspend fun awaitTransfersStopped(ids: Collection<String>, maxMillis: Long = 30_000L) {
+        val deadline = android.os.SystemClock.elapsedRealtime() + maxMillis
+        while (ids.any { downloads.progress.value.containsKey(it) } &&
+            android.os.SystemClock.elapsedRealtime() < deadline
+        ) {
+            kotlinx.coroutines.delay(250L)
         }
     }
 
@@ -380,6 +309,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // الدروس بصمت — وهو ما جعل «التحميل بعد الإلغاء» لا يفعل شيئاً.
         viewModelScope.launch {
             kotlinx.coroutines.delay(2_000L)
+            // 🐢 انظر cancelDownload: ننتظر توقّف النقل الجاري فعلاً (بحدّ أقصى).
+            awaitTransfersStopped(cancelled)
             downloads.clearAllCancels()
             // وعدُ الحوار «تُحذف الأجزاء المحمَّلة» يُنفَّذ هنا فعلاً.
             // ⚠️ نفس حارس سباق cancelDownload: «إلغاء الكل» ثم «تحميل قسم»
@@ -916,7 +847,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 _notificationsSeenBefore.value = store.notificationLastSeenMs()
                 store.setNotificationLastSeenMs(System.currentTimeMillis())
             }
-            Route.MySubmissions -> store.setSubmissionsLastSeenMs(System.currentTimeMillis())
             is Route.Category -> store.incrementCategoryVisit(route.id)
             is Route.Subcategory -> store.incrementSubcategoryVisit(route.id)
             else -> Unit
@@ -959,18 +889,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * الروابط العميقة: الويب (`https://…/lesson/<id>`) والمخطّط الخاص
-     * (`minbar://my-submissions`، `minbar://subcategory/<id>`،
+     * (`minbar://subcategory/<id>`،
      * `minbar://category/<id>`) — المعرّف يُقرأ من المضيف أو من المسار معاً
      * كي يصحّ الشكلان. المسارات القائمة لم تتغيّر.
      */
     fun handleDeepLink(uri: Uri?) {
         if (uri == null) return
         val host = uri.host.orEmpty()
+        if (host == "my-submissions" || "my-submissions" in uri.pathSegments) return
         val segments = uri.pathSegments.orEmpty()
-        if (host == "my-submissions" || uri.path?.contains("my-submissions") == true) {
-            open(Route.MySubmissions)
-            return
-        }
         // وجهة إشعارٍ عامّ بلا هدف بعينه (`minbar://notifications`): شاشة الإشعارات.
         if (host == "notifications") {
             open(Route.Notifications)
@@ -1126,14 +1053,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         open(Route.Car)
     }
 
-    // ---- ⬆️ إظهار/إخفاء زرّ «شارك درساً» العائم مع اتجاه تمرير الرئيسية ----
-    private val _homeFabVisible = MutableStateFlow(true)
-    val homeFabVisible: StateFlow<Boolean> = _homeFabVisible.asStateFlow()
-
-    fun setHomeFabVisible(visible: Boolean) {
-        _homeFabVisible.value = visible
-    }
-
     // ---- 🎉 احتفال إتمام قسم فرعي (مرّة واحدة لكل قسم) ----
     private val _celebration = MutableStateFlow<com.ali.menbaradkshk.data.Subcategory?>(null)
     val celebration: StateFlow<com.ali.menbaradkshk.data.Subcategory?> = _celebration.asStateFlow()
@@ -1191,359 +1110,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         watchSectionCompletion()
     }
 
-    /// «شارك إلى منبر» من تطبيق خارجي: يفتح نموذج المساهمة فوراً، ثم ينسخ
-    /// الملفات الواردة إلى كاش التطبيق. النسخ مقصود: إذن قراءة `content://`
-    /// القادم من تطبيق آخر مؤقّت ولا يقبل `takePersistableUriPermission`،
-    /// فينتهي مع النيّة وقد يسقط الرفع بعده — النسخة المحليّة تُبقيه سليماً.
-    /// أقصى حجم لملفّ صوتي مشارَك يُنسخ إلى الكاش (100 م.ب).
-    private val maxSharedAudioBytes = 100L * 1024 * 1024
-
-    fun receiveSharedAudio(uris: List<Uri>) {
-        if (uris.isEmpty()) return
-        if (_route.value != Route.Contribute) open(Route.Contribute)
-        _sharedAudio.value = SharedAudioState(preparing = true, originalCount = uris.size)
-        // الحدّ الأقصى للدمج يُطبَّق هنا، لكنّ العدد الأصلي يُحفظ ويُبلَّغ صراحةً
-        // كي لا يسقط الزائد بصمت ويظنّ المستخدم درسه كاملاً.
-        val accepted = uris.take(AudioMerger.maxFiles)
-        val overflow = uris.size - accepted.size
-        viewModelScope.launch {
-            val context = getApplication<Application>()
-            val (prepared, oversized) = withContext(Dispatchers.IO) {
-                val dir = File(context.cacheDir, "shared_intake").apply { mkdirs() }
-                // نسخ مشاركات سابقة لم تُستعمل تُحذف بعد يوم كي لا يتضخّم الكاش.
-                val cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000
-                dir.listFiles()?.forEach { old ->
-                    if (old.lastModified() < cutoff) runCatching { old.delete() }
-                }
-                // ⚠️ فحص الحجم **قبل** النسخ: ملفّ مشارَك عملاق (فيديو طويل
-                // مثلاً) كان يُنسخ كاملاً إلى الكاش فيلتهم مساحة الجهاز.
-                val fitting = accepted.filter { uri ->
-                    runCatching { sizeOf(context, uri) }.getOrDefault(-1L) <= maxSharedAudioBytes
-                }
-                fitting.mapNotNull { uri ->
-                    runCatching {
-                        val name = displayNameOf(context, uri)
-                        val safe = name.replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").takeLast(80)
-                        val target = File(dir, "${System.nanoTime()}_$safe")
-                        context.contentResolver.openInputStream(uri)!!.use { input ->
-                            target.outputStream().use(input::copyTo)
-                        }
-                        PickedFile(Uri.fromFile(target), name)
-                    }.getOrNull()
-                } to (accepted.size - fitting.size)
-            }
-            _sharedAudio.value = if (prepared.isEmpty()) {
-                SharedAudioState(
-                    error = if (oversized > 0) {
-                        "الملف المشارَك أكبر من الحدّ (100 م.ب) — شارك ملفاً صوتياً أصغر."
-                    } else {
-                        "تعذّرت قراءة الملف المشارَك — اختره من زر اختيار الملفات بالأعلى."
-                    },
-                    originalCount = uris.size,
-                )
-            } else {
-                SharedAudioState(files = prepared, originalCount = uris.size)
-            }
-            if (prepared.isNotEmpty()) {
-                val unreadable = accepted.size - oversized - prepared.size
-                val notes = buildList {
-                    if (overflow > 0) {
-                        add(
-                            "شاركتَ ${com.ali.menbaradkshk.util.filesCountLabel(uris.size)} والحدّ الأقصى ${com.ali.menbaradkshk.util.filesCountLabel(AudioMerger.maxFiles)} " +
-                                "للدرس الواحد — أُدرجت أول ${accepted.size}، وأرسل البقية في مساهمة أخرى.",
-                        )
-                    }
-                    if (oversized > 0) {
-                        add("تُرك $oversized من الملفات لأنّه أكبر من الحدّ (100 م.ب).")
-                    }
-                    if (unreadable > 0) {
-                        add("تعذّرت قراءة $unreadable من الملفات المشارَكة — أضِفها من زر اختيار الملفات.")
-                    }
-                }
-                if (notes.isNotEmpty()) showMessage(notes.joinToString(" "))
-            }
-        }
-    }
-
-    /// تستدعيها شاشة المساهمة بعد إدراج الملفات الواردة في قائمتها.
-    fun consumeSharedAudio() {
-        _sharedAudio.value = SharedAudioState()
-    }
-
-    /// «شارك إلى منبر» صورةً أو نصاً: يفتح «ساهم بالنص» (باختيار الدرس)
-    /// مع الحمولة الواردة. الصور تُنسخ لكاش التطبيق لنفس سبب نسخ الصوتيات
-    /// (إذن قراءة content:// الخارجي مؤقّت وينتهي مع النيّة).
-    fun receiveSharedTranscript(text: String, imageUris: List<Uri>) {
-        if (text.isBlank() && imageUris.isEmpty()) return
-        if (_route.value != Route.ContributeTranscript) open(Route.ContributeTranscript)
-        val accepted = imageUris.take(TranscriptRepository.MAX_IMAGES)
-        if (accepted.isEmpty()) {
-            _sharedTranscript.value = SharedTranscriptState(text = text.trim())
-            return
-        }
-        _sharedTranscript.value = SharedTranscriptState(preparing = true, text = text.trim())
-        viewModelScope.launch {
-            val context = getApplication<Application>()
-            val prepared = withContext(Dispatchers.IO) {
-                val dir = File(context.cacheDir, "shared_pages").apply { mkdirs() }
-                val cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000
-                dir.listFiles()?.forEach { old ->
-                    if (old.lastModified() < cutoff) runCatching { old.delete() }
-                }
-                accepted.mapNotNull { uri ->
-                    runCatching {
-                        val target = File(dir, "${System.nanoTime()}_page.jpg")
-                        context.contentResolver.openInputStream(uri)!!.use { input ->
-                            target.outputStream().use(input::copyTo)
-                        }
-                        Uri.fromFile(target)
-                    }.getOrNull()
-                }
-            }
-            _sharedTranscript.value = if (prepared.isEmpty() && text.isBlank()) {
-                SharedTranscriptState(
-                    error = "تعذّرت قراءة الصورة المشارَكة — أرفقها من زر الصور داخل النموذج.",
-                )
-            } else {
-                SharedTranscriptState(text = text.trim(), images = prepared)
-            }
-            if (imageUris.size > accepted.size) {
-                showMessage(
-                    "شاركتَ ${com.ali.menbaradkshk.util.imagesCountLabel(imageUris.size)} والحدّ ${com.ali.menbaradkshk.util.imagesCountLabel(TranscriptRepository.MAX_IMAGES)} " +
-                        "— أُدرجت أول ${accepted.size}.",
-                )
-            }
-        }
-    }
-
-    fun consumeSharedTranscript() {
-        _sharedTranscript.value = SharedTranscriptState()
-    }
-
-    /**
-     * يرفع مساهمة النص في نطاق الـViewModel؛ نطاق الشاشة كان يُلغى عند
-     * التدوير أو الرجوع فتتوقف المساهمة بصمت بعد أن بدأ رفع صورها.
-     */
-    fun submitTranscript(draft: TranscriptDraft) {
-        if (_transcriptContribution.value.submitting) {
-            // ⚠️ لا تجاهل صامتاً: شاشة المساهمة المستقلّة كانت تستدعي والرفعُ
-            // لدرس آخر جارٍ (زرّها لا يعرف إلا حالتها هي) فلا يحدث شيء بلا أي
-            // تفسير — الرسالة هنا تغطّي كل المداخل بنصّ حارس الورقة نفسه.
-            showMessage("هناك مساهمة قيد الإرسال — انتظر انتهاءها.")
-            return
-        }
-        _transcriptContribution.value = TranscriptContributionState(
-            lessonId = draft.lessonId,
-            submitting = true,
-        )
-        viewModelScope.launch {
-            try {
-                val id = transcripts.submit(draft) { percent ->
-                    _transcriptContribution.value = _transcriptContribution.value.copy(
-                        progress = percent,
-                    )
-                }
-                rememberSubmission(id)
-                _transcriptContribution.value = TranscriptContributionState(
-                    lessonId = draft.lessonId,
-                    done = true,
-                )
-            } catch (failure: Throwable) {
-                _transcriptContribution.value = TranscriptContributionState(
-                    lessonId = draft.lessonId,
-                    error = when {
-                        // رسائل التحقّق المحلية عربية مكتوبة عندنا — تمرّ كما هي.
-                        failure is IllegalArgumentException || failure is IllegalStateException ->
-                            failure.message ?: "تعذّر الإرسال. تأكد من الاتصال وحاول مجدداً."
-                        else -> submissionFailureMessage(failure)
-                            ?: "تعذّر الإرسال. تأكد من الاتصال وحاول مجدداً."
-                    },
-                )
-            }
-        }
-    }
-
-    fun clearTranscriptContribution() {
-        if (!_transcriptContribution.value.submitting) {
-            _transcriptContribution.value = TranscriptContributionState()
-        }
-    }
-
-    /// يدمج الملفات (عند تعددها) ثم يرفع المساهمة داخل `viewModelScope`،
-    /// فيستمر الرفع رغم تدوير الشاشة أو إعادة إنشاء النشاط.
-    fun submitContribution(
-        files: List<PickedFile>,
-        title: String,
-        // القسمان اختياريان: من لا يعرف قسم درسه يرسله بلا قسم، ويختاره
-        // المشرف عند النشر — بدل أن يخمّن المساهم أو يترك المساهمة كلّها.
-        category: com.ali.menbaradkshk.data.Category? = null,
-        subcategory: com.ali.menbaradkshk.data.Subcategory? = null,
-        submitterName: String,
-        note: String,
-        // إقرارا الحقوق والضوابط اختياريان: يُنقَلان كما اختارهما المستخدم
-        // ليراهما المشرف عند المراجعة، ولا يمنعان الإرسال إطلاقاً.
-        rightsConfirmed: Boolean = false,
-        contentPolicyAccepted: Boolean = false,
-        // «النص المشروح» الاختياري: يُرفع مع المساهمة ويُنشر مع الدرس عند اعتماده.
-        transcript: com.ali.menbaradkshk.data.TranscriptExtras =
-            com.ali.menbaradkshk.data.TranscriptExtras(),
-    ) {
-        // لا خروج صامت: كل منع يصل للمستخدم كرسالة تشرح سببه.
-        if (_contribution.value.submitting) return
-        if (files.isEmpty()) {
-            _contribution.value = ContributionState(error = "اختر ملفاً صوتياً أولاً.")
-            return
-        }
-        if (title.isBlank()) {
-            _contribution.value = ContributionState(error = "اكتب عنوان الدرس أولاً.")
-            return
-        }
-        _contribution.value = ContributionState(submitting = true)
-        viewModelScope.launch {
-            val context = getApplication<Application>()
-            var mergedTemp: File? = null
-            var mergeCache: File? = null
-            try {
-                // ملف واحد يُرفع كما هو؛ أكثر يُدمج محلياً أولاً ثم يُرفع الناتج.
-                val (uploadUri, uploadName) = if (files.size == 1) {
-                    files.single().uri to files.single().name
-                } else {
-                    // ⚠️ فتح الواصفات خارج خيط الواجهة: المزوّد قد يكون سحابيّاً
-                    // (Drive مثلاً) فيحجب الفتحُ حتى يجلب الملفّ. والطول المجهول
-                    // (‎-1) لا يُنقص المجموع.
-                    val total = withContext(Dispatchers.IO) {
-                        files.sumOf { file ->
-                            runCatching {
-                                context.contentResolver.openAssetFileDescriptor(file.uri, "r")
-                                    ?.use { it.length } ?: 0L
-                            }.getOrDefault(0L).coerceAtLeast(0L)
-                        }
-                    }
-                    if (total > SubmissionRepository.MAX_FILE_BYTES) error("file_too_large")
-                    _contribution.value = _contribution.value.copy(merging = true)
-                    val timestamp = System.currentTimeMillis()
-                    var mergedName = "merged_$timestamp.mp3"
-                    mergedTemp = withContext(Dispatchers.IO) {
-                        // قتل العملية قد يمنع finally؛ نكنس فقط المحاولات القديمة
-                        // ثم نحذف مجلد المحاولة الحالية حتماً في finally أدناه.
-                        val cutoff = timestamp - 24L * 60 * 60 * 1000
-                        context.cacheDir.listFiles()?.forEach { stale ->
-                            if (stale.isDirectory && stale.name.startsWith("merge_") &&
-                                stale.lastModified() < cutoff
-                            ) {
-                                runCatching { stale.deleteRecursively() }
-                            }
-                        }
-                        val cache = File(context.cacheDir, "merge_$timestamp").apply { mkdirs() }
-                        mergeCache = cache
-                        val locals = files.mapIndexed { index, picked ->
-                            // الامتداد الأصلي يبقى (المحوّل يفحص المحتوى لا الاسم).
-                            val extension = picked.name.substringAfterLast('.', "bin")
-                                .lowercase().take(6)
-                            File(cache, "part_$index.$extension").also { target ->
-                                context.contentResolver.openInputStream(picked.uri)!!.use { input ->
-                                    target.outputStream().use(input::copyTo)
-                                }
-                            }
-                        }
-                        // مساران: كل الملفات MP3 → لصق إطارات بلا إعادة ترميز
-                        // (سريع وبلا فقد)؛ غير ذلك أو تعذّر اللصق (ترميزات MP3
-                        // متنافرة) → فكّ الجميع وإعادة ترميز AAC/M4A — فيصحّ
-                        // الدمج **مهما اختلفت الصيغ** والناتج صيغة واحدة دائماً.
-                        val allMp3 = files.all { AudioMerger.isMp3(it.name) }
-                        val merged = if (allMp3) {
-                            try {
-                                AudioMerger.mergeMp3(
-                                    locals,
-                                    File(cache, "merged_$timestamp.mp3").absolutePath,
-                                )
-                            } catch (_: Mp3FormatException) {
-                                mergedName = "merged_$timestamp.m4a"
-                                AudioTranscodeMerger.mergeToM4a(
-                                    locals,
-                                    File(cache, "merged_$timestamp.m4a").absolutePath,
-                                )
-                            }
-                        } else {
-                            mergedName = "merged_$timestamp.m4a"
-                            AudioTranscodeMerger.mergeToM4a(
-                                locals,
-                                File(cache, "merged_$timestamp.m4a").absolutePath,
-                            )
-                        }
-                        locals.forEach(File::delete)
-                        merged
-                    }
-                    _contribution.value = _contribution.value.copy(merging = false)
-                    Uri.fromFile(mergedTemp) to mergedName
-                }
-                val id = submissions.submit(
-                    SubmissionDraft(
-                        audioUri = uploadUri,
-                        fileName = uploadName,
-                        title = title,
-                        category = category,
-                        subcategory = subcategory,
-                        submitterName = submitterName,
-                        note = note,
-                        rightsConfirmed = rightsConfirmed,
-                        contentPolicyAccepted = contentPolicyAccepted,
-                        transcript = transcript,
-                    ),
-                ) { percent ->
-                    _contribution.value = _contribution.value.copy(progress = percent)
-                }
-                rememberSubmission(id)
-                _contribution.value = ContributionState(done = true)
-            } catch (failure: Throwable) {
-                _contribution.value = ContributionState(
-                    error = when {
-                        failure is AudioTranscodeMerger.UnsupportedAudioException ->
-                            failure.message ?: "تعذّر فكّ أحد الملفات الصوتية."
-                        failure is Mp3FormatException ->
-                            "تعذّر دمج الملفات — أحدها ليس ملفاً صوتياً سليماً."
-                        failure.message?.contains("file_too_large") == true ->
-                            "الحجم الكلي أكبر من الحدّ المسموح (100MB)."
-                        failure is IllegalArgumentException || failure is IllegalStateException ->
-                            failure.message
-                                ?: "تعذّر إرسال المساهمة. تحقق من اتصالك وحاول مجدداً."
-                        else -> submissionFailureMessage(failure)
-                            ?: "تعذّر إرسال المساهمة. تحقق من اتصالك وحاول مجدداً."
-                    },
-                )
-            } finally {
-                mergeCache?.let { runCatching { it.deleteRecursively() } }
-                    ?: mergedTemp?.delete()
-            }
-        }
-    }
-
-    /**
-     * رسالة أدقّ لفشل الإرسال بدل «تحقق من اتصالك» العامة:
-     * رفضٌ قاطع من دوالّ الخادم يحمل نصّه العربي المكتوب هناك فيُعرض كما هو،
-     * وانقطاع الشبكة يُسمّى باسمه مع طمأنة أنّ الملف ما زال على الجهاز.
-     */
-    private fun submissionFailureMessage(failure: Throwable): String? {
-        // رفضٌ قاطع من الخادم (4xx) يحمل نصّه العربي فيُعرض كما هو؛
-        // وما كان عابراً (5xx/انقطاع) يُترك لرسالة الشبكة أدناه.
-        val api = failure as? com.ali.menbaradkshk.data.MinbarApi.ApiException
-            ?: failure.cause as? com.ali.menbaradkshk.data.MinbarApi.ApiException
-        if (api != null && api.code in 400..499) {
-            return api.message?.takeIf(String::isNotBlank)
-        }
-        val network = generateSequence(failure) { it.cause }.take(5).any {
-            it is java.io.IOException
-        }
-        if (network || api != null) {
-            return "انقطع الاتصال أثناء الإرسال — ملفك ما زال على جهازك، أعد المحاولة عند عودة الشبكة."
-        }
-        return null
-    }
-
-    fun clearContributionState() {
-        _contribution.value = ContributionState()
-    }
-
     fun showMessage(value: String) {
         _message.value = value
     }
@@ -1552,31 +1118,38 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _message.value = null
     }
 
+    private var clearCompletedDownloadsJob: kotlinx.coroutines.Job? = null
+
+    fun clearCompletedDownloads() {
+        if (clearCompletedDownloadsJob?.isActive == true) return
+        clearCompletedDownloadsJob = viewModelScope.launch {
+            val unconfirmed = downloads.deleteAll(spareQueued = true)
+            showMessage(if (unconfirmed.isEmpty()) "تم مسح التنزيلات المكتملة."
+            else "لم يؤكّد متجر Play إزالة كل حزم الصوت. قد تبقى بعض الملفات على جهازك.")
+        }
+    }
+
     suspend fun deleteMyData() {
         val app = getApplication<android.app.Application>()
         // ما كان مجدولاً يُوقَف أوّلاً كي لا يستيقظ بعد الحذف فيُرسل أو يُنزّل.
-        androidx.work.WorkManager.getInstance(app).cancelUniqueWork("support_outbox")
         com.ali.menbaradkshk.data.DownloadScheduler.cancelScheduled(app)
         downloads.clearAllCancels()
-        submissions.deleteCloudIdentityData()
-        // الصندوق الصادر والاسم والإقرار، ثمّ هويّةٌ جديدة: بلا هذا كانت رسالةٌ
-        // معلّقة تُرسَل بعد الحذف بالمعرّف نفسه فتعود الهويّة إلى الخادم.
-        com.ali.menbaradkshk.data.SupportStore.get(app).clearAll()
-        com.ali.menbaradkshk.data.AppConfigRepository.get(app).resetInstallId()
-        downloads.deleteAll()
+        // ينتهي الإرسال الجاري قبل إزالة الهوية القديمة ومرفقات صندوق الصادر.
+        com.ali.menbaradkshk.data.SupportRepository.get(app).deleteAccountSupportData()
+        val unconfirmedPacks = downloads.deleteAll()
         store.clearPersonalData()
         // تفضيلات ContentRepository الشخصيّة (السجلّ المخفي وطوابعه وترتيب
         // القوائم) في ملفٍّ مستقلّ لا يمسّه `store.clearPersonalData` — كانت
         // تنجو من المحو فيبقى درسٌ أخفاه المستخدم محجوباً من سجلّه بعده.
         content.clearPersonalData()
         content.refreshPersonalization()
-        _message.value = "حُذفت بياناتك بنجاح."
+        _message.value = if (unconfirmedPacks.isEmpty()) "حُذفت بياناتك بنجاح."
+            else "حُذفت بياناتك الشخصية، لكن متجر Play لم يؤكّد إزالة كل حزم الصوت."
     }
 
     /// «حذف بياناتي» من الإعدادات — في `viewModelScope` لا نطاق التركيبة:
     /// التنفيذ من نطاق الدرج كان يُقطع بتدوير الشاشة في منتصف الحذف (بعد حذف
-    /// السحابة وقبل المحو المحلي مثلاً) فيترك حالة غير متسقة بصمت — نفس
-    /// العلّة التي أُصلحت في [submitTranscript] بالضبط.
+    /// السحابة وقبل المحو المحلي مثلاً) فيترك حالة غير متسقة بصمت.
     /// 🖼️ مسح كاش الصور — على خيط الإدخال/الإخراج لا على الواجهة: المسح
     /// يحذف مجلّداً قد يبلغ خمسين ميغابايت، ونداؤه من نقرة كان يجمّد الشاشة.
     /// [onDone] يُنادى بعد اكتمال المسح فعلاً — كان العارض يعيد قياس المجلّد
@@ -1603,8 +1176,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
+                    val bytes = store.exportBackup().toByteArray(Charsets.UTF_8)
+                    require(bytes.size <= com.ali.menbaradkshk.util.BACKUP_MAX_BYTES)
                     getApplication<Application>().contentResolver.openOutputStream(uri)
-                        ?.use { stream -> stream.write(store.exportBackup().toByteArray()) }
+                        ?.use { stream -> stream.write(bytes) }
                         ?: error("تعذّر فتح الوجهة")
                 }
             }.onSuccess { showMessage("حُفظت نسخة بياناتك.") }
@@ -1619,8 +1194,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.IO) {
                     val text = getApplication<Application>().contentResolver
                         .openInputStream(uri)
-                        ?.use { it.readBytes().toString(Charsets.UTF_8) }
+                        ?.use { com.ali.menbaradkshk.util.readBoundedBackup(it) }
                         .orEmpty()
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     store.importBackup(text)
                 }
             }.getOrNull()
@@ -1676,28 +1252,5 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             store.toggleFavorite(id)
             store.toggleFavorite(id)
         }
-    }
-}
-
-/**
- * 🔗 وصلة صغيرة بين «راسِل المطوّر» و«شارك درساً».
- *
- * لماذا كائن عامّ لا معامل في المسار؟ فتح «شارك درساً» يجري من شاشة
- * الإعدادات (خارج نطاق هذا التعديل)، فتمرير معامل عبرها يكسر مستدعياً
- * قائماً بلا فائدة. علمٌ واحد يُرفع ثم **يُستهلَك مرّة واحدة** أبسط وأخفّ،
- * ولا يبقى أثره لفتحة تالية.
- */
-internal object ContributePrefill {
-    /// `true` = افتح النموذج وقد اختير سلفاً وضع «لا أعرف القسم».
-    private var withoutCategory: Boolean = false
-
-    fun requestWithoutCategory() {
-        withoutCategory = true
-    }
-
-    fun consumeWithoutCategory(): Boolean {
-        val value = withoutCategory
-        withoutCategory = false
-        return value
     }
 }

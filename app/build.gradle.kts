@@ -1,7 +1,19 @@
+import javax.inject.Inject
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
+import org.gradle.process.ExecOperations
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.Properties
+import java.util.Locale
 import java.util.TreeMap
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -42,10 +54,68 @@ val hasReleaseSigning = listOf(
 // وحدها. الحارس أسفل كتلة `android` يوقف البناء إن عاد أحد فأضاف لاحقة.
 val canonicalAppLabel = "منبر ادكصهك"
 
+// A Web OAuth client ID is public configuration, not an OAuth client secret.
+// Separate the .dev and Play-signed applications; no implicit publication or provisioning.
+fun adminGoogleWebClientId(buildType: String): String {
+    val name = "MINBAR_ADMIN_GOOGLE_WEB_CLIENT_ID_" + buildType.uppercase(Locale.ROOT)
+    val id = providers.gradleProperty(name).orElse(providers.environmentVariable(name)).orElse("").get().trim()
+    require(id.isEmpty() || id.matches(Regex("[0-9]+-[A-Za-z0-9_-]+\\.apps\\.googleusercontent\\.com"))) {
+        "Invalid Google Web OAuth client ID for Minbar " + buildType
+    }
+    return id
+}
+
+
 // 🎁 حزم الأصول المملوءة فقط (انظر settings.gradle.kts)
-val filledAssetPacks = listOf("core_pack", "rest_pack").filter { pack ->
+val filledAssetPacks = listOf("core_pack", "rest_pack", "more_pack").filter { pack ->
     rootProject.file("$pack/src/main/assets/serving").listFiles()?.any { it.name.endsWith(".ogg") } == true
 }.map { ":$it" }
+
+// A base-only build still needs no pack tooling. A real packed build must prove
+// that both serving inventories correspond to the snapshot it actually embeds.
+check(filledAssetPacks.isEmpty() || filledAssetPacks.size == 3) {
+    "Stage all three verified Minbar audio packs, or leave all empty for a base-only build."
+}
+
+abstract class GenerateMinbarPadMembership : DefaultTask() {
+    @get:Internal abstract val tree: DirectoryProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val tooling: DirectoryProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val coreServing: DirectoryProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val restServing: DirectoryProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val moreServing: DirectoryProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val frozenCatalog: RegularFileProperty
+    @get:OutputDirectory abstract val generatedAssets: DirectoryProperty
+    @get:Inject abstract val execOps: ExecOperations
+
+    @TaskAction fun generate() {
+        execOps.exec {
+            commandLine("python3", "-B", tooling.file("generate_packed_membership.py").get().asFile,
+                tree.get().asFile, frozenCatalog.get().asFile,
+                generatedAssets.file("catalog/pad-membership.v1").get().asFile)
+        }
+    }
+}
+
+if (filledAssetPacks.isNotEmpty()) {
+    val membership = tasks.register<GenerateMinbarPadMembership>("generateMinbarPadMembership") {
+        tree.set(rootProject.layout.projectDirectory)
+        tooling.set(rootProject.layout.projectDirectory.dir("tools/assetpack"))
+        coreServing.set(rootProject.layout.projectDirectory.dir("core_pack/src/main/assets/serving"))
+        restServing.set(rootProject.layout.projectDirectory.dir("rest_pack/src/main/assets/serving"))
+        moreServing.set(rootProject.layout.projectDirectory.dir("more_pack/src/main/assets/serving"))
+        frozenCatalog.set(layout.projectDirectory.file("src/main/assets/catalog/snapshot.jz"))
+        generatedAssets.set(layout.buildDirectory.dir("generated/minbar-pad-assets"))
+    }
+    androidComponents.onVariants { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(membership, GenerateMinbarPadMembership::generatedAssets)
+    }
+}
+
 
 android {
     namespace = "com.ali.menbaradkshk"
@@ -221,11 +291,15 @@ android {
         // وفي البيانات: ارتدادٌ ثانٍ من ٣٩ — تجديد الدرس القديم كان يحذف صوته الصالح قبل
         // تنزيل البديل؛ والتنزيل التلقائي كان يَسِم اليدويّ المجدَّد «تلقائياً» فيُخلى؛
         // واستطلاع النبض كان يعيد طلب الإشعارات كلّ نبضة بلا كاش؛ و429 في لقطة النصوص.
-        versionCode = 40
-        versionName = "2.8.4"
+        // ٤١ / ٢.٩.٠ — مرشح إصدار محلي (2026-11-27): توحيد تطبيق العامة والمشرفين (مدخل المشرفين من
+        // الإعدادات برمز المالك فقط)، وحذف «راسِل المطوّر» و«مساهماتي» و«إضافة درس»، واختصار «حول»،
+        // والدعاء للمطوّر ووالديه في التذييل، ودمج الصوت إلى Opus 96k مع معاينة خاصة للمشرف.
+        versionCode = 41
+        versionName = "2.9.0"
         manifestPlaceholders["appLabel"] = canonicalAppLabel
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "LIBRARY_ASSET_PACKS", "\"${filledAssetPacks.joinToString(",") { it.removePrefix(":").removeSuffix("_pack") }}\"")
         vectorDrawables.useSupportLibrary = true
     }
 
@@ -242,6 +316,7 @@ android {
 
     buildTypes {
         debug {
+            buildConfigField("String", "ADMIN_GOOGLE_WEB_CLIENT_ID", "\"${adminGoogleWebClientId("debug")}\"")
             applicationIdSuffix = ".dev"
             versionNameSuffix = "-dev"
             // الاسم الظاهر للمستخدم هو «منبر ادكصهك» في كل الأنواع بلا استثناء.
@@ -249,6 +324,7 @@ android {
             // مضمون أصلاً بلاحقة الحزمة `.dev` أعلاه، لا بالاسم الظاهر.
         }
         release {
+            buildConfigField("String", "ADMIN_GOOGLE_WEB_CLIENT_ID", "\"${adminGoogleWebClientId("release")}\"")
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
             }
@@ -322,6 +398,11 @@ dependencies {
 
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-compose:1.13.0")
+
+    // Existing-admin Google sign-in uses the same provider as the old standalone panel.
+    implementation("androidx.credentials:credentials:1.5.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
     implementation("androidx.fragment:fragment-ktx:1.8.9")
     // 2.11 targets API 37/AGP 9.1; 2.10 is the newest line compatible
     // with the published app's API 36 toolchain.
@@ -330,7 +411,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.navigation:navigation-compose:2.9.8")
     implementation("androidx.work:work-runtime-ktx:2.11.2")
-    // 🎁 قراءة موضع حزم أصول Play (fast-follow) — بلا Firebase ولا خدمات أخرى.
+    // 🎁 قراءة موضع حزم الأصول وطلبها من Play (on-demand) — بلا Firebase ولا خدمات أخرى.
     implementation("com.google.android.play:asset-delivery-ktx:2.3.0")
 
     implementation("androidx.compose.ui:ui")
@@ -350,6 +431,7 @@ dependencies {
     // عرض صور «النص المشروح» (صفحات الكتاب) — نفس نسخة لوحة الإدارة.
     implementation("io.coil-kt.coil3:coil-compose:3.2.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.2.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // قصّ صور صفحات الكتاب قبل الإرفاق (واجهة قصّ جاهزة عبر ActivityResult).
     implementation("com.vanniktech:android-image-cropper:4.6.0")
     // موجودة انتقالياً أصلاً عبر Coil/Media3؛ نعلنها مباشرة لأن دمج الصور
@@ -418,7 +500,7 @@ androidComponents {
 val refreshCatalogSnapshot = tasks.register("refreshCatalogSnapshot") {
     outputs.upToDateWhen { false }
     doLast {
-        if (project.hasProperty("skipCatalogSnapshot")) return@doLast
+        if (filledAssetPacks.isNotEmpty() || project.hasProperty("skipCatalogSnapshot")) return@doLast
         val text = URL("https://minbar-adkassahk.vercel.app/api/catalog")
             .openConnection().apply { connectTimeout = 20000; readTimeout = 60000 }
             .getInputStream().bufferedReader().readText()

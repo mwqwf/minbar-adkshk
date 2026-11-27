@@ -39,6 +39,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,10 +49,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.ali.menbaradkshk.data.SupportKind
+import com.ali.menbaradkshk.data.SupportMessage
 import com.ali.menbaradkshk.data.SupportRepository
 import com.ali.menbaradkshk.data.SupportStore
 import com.ali.menbaradkshk.data.SupportThread
 import java.io.File
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 
 /**
  * 📮 «راسِل المطوّر» — قناة بين المستخدم ومالك المشروع وحده.
@@ -67,13 +71,12 @@ import java.io.File
 @Composable
 fun SupportDialog(
     onClose: () -> Unit,
-    onOpenContribute: () -> Unit,
 ) {
     Dialog(
         onDismissRequest = onClose,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
-        SupportFlow(onClose = onClose, onOpenContribute = onOpenContribute)
+        SupportFlow(onClose = onClose)
     }
 }
 
@@ -85,7 +88,7 @@ private sealed interface SupportStep {
 }
 
 @Composable
-private fun SupportFlow(onClose: () -> Unit, onOpenContribute: () -> Unit) {
+private fun SupportFlow(onClose: () -> Unit) {
     val context = LocalContext.current
     val repository = remember { SupportRepository.get(context) }
     // ⚠️ محفوظةٌ عبر إعادة الإنشاء (التدوير وتغيير حجم خطّ النظام): كانت
@@ -99,21 +102,14 @@ private fun SupportFlow(onClose: () -> Unit, onOpenContribute: () -> Unit) {
     // إنترنت ضعيف بلا فائدة.
     val threadsFlow = remember { repository.myThreads() }
     val threads by threadsFlow.collectAsState(initial = emptyList())
+    val outboxFlow = remember { repository.newMessageOutbox() }
+    val newMessages by outboxFlow.collectAsState(initial = emptyList())
 
     when (val current = step) {
         SupportStep.Entry -> SupportEntry(
             threads = threads,
-            onPick = { kind ->
-                // ⚠️ «عندي درس» لا يفتح استمارة: مسار «شارك درساً» موجود
-                // ومكتمل، وبناء مسار رفع ثانٍ يشتّت المحتوى ويضاعف العمل.
-                // ونرفع علم «بلا قسم» قبل فتحه: من دخل من هنا قال أصلاً إنّه
-                // لا يعرف القسم، فلا يُردّ إلى منتقي أقسام يحيّره من جديد.
-                if (kind == SupportKind.LESSON_HELP) {
-                    ContributePrefill.requestWithoutCategory()
-                    onOpenContribute()
-                }
-                else step = SupportStep.Form(kind)
-            },
+            newMessages = newMessages,
+            onPick = { step = SupportStep.Form(it) },
             onOpenThread = { step = SupportStep.Conversation(it) },
             onClose = onClose,
         )
@@ -165,7 +161,6 @@ internal val recordedFileSaver = androidx.compose.runtime.saveable.Saver<File?, 
 private val supportOptions = listOf(
     SupportOption(SupportKind.SUGGESTION, "💡", "عندي اقتراح لتحسين التطبيق"),
     SupportOption(SupportKind.BUG, "⚠️", "شيءٌ لا يعمل عندي"),
-    SupportOption(SupportKind.LESSON_HELP, "🎙️", "عندي درس ولا أعرف قسمه"),
     SupportOption(SupportKind.IDEA, "✍️", "ملاحظة أو فكرة"),
     SupportOption(SupportKind.SUPERVISION, "🛡️", "أريد أن أكون مشرفاً"),
 )
@@ -173,6 +168,7 @@ private val supportOptions = listOf(
 @Composable
 private fun SupportEntry(
     threads: List<SupportThread>,
+    newMessages: List<SupportMessage>,
     onPick: (String) -> Unit,
     onOpenThread: (SupportThread) -> Unit,
     onClose: () -> Unit,
@@ -220,6 +216,12 @@ private fun SupportEntry(
                     }
                 }
             }
+            if (newMessages.isNotEmpty()) {
+                Text("رسائل لم يُؤكَّد إرسالها", style = MaterialTheme.typography.titleMedium)
+                newMessages.forEach { message ->
+                    androidx.compose.runtime.key(message.id) { SupportBubble(message) }
+                }
+            }
             supportOptions.forEach { option ->
                 // بطاقة كبيرة (≥ 72dp) بأيقونة واسم مكتوب: هدف لمس واسع لا
                 // يخطئه إصبعٌ في الشمس، ونصٌّ يُقرأ بلا تدقيق.
@@ -227,7 +229,7 @@ private fun SupportEntry(
                     // «عندي درس» يبقى مفتوحاً دائماً: مساره غير هذه المحادثات
                     // ولا يخضع لحدّها.
                     onClick = {
-                        if (blocking != null && option.kind != SupportKind.LESSON_HELP) {
+                        if (blocking != null) {
                             onOpenThread(blocking)
                         } else {
                             onPick(option.kind)
@@ -302,6 +304,9 @@ private fun SupportForm(kind: String, onBack: () -> Unit, onSent: () -> Unit) {
     var shareDeviceInfo by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
     var askIdentity by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    androidx.activity.compose.BackHandler(enabled = saving) {}
 
     fun composedText(): String = if (kind == SupportKind.SUPERVISION) {
         listOf(
@@ -314,13 +319,23 @@ private fun SupportForm(kind: String, onBack: () -> Unit, onSent: () -> Unit) {
     }
 
     fun send() {
-        repository.enqueue(
-            kind = kind,
-            text = composedText(),
-            audioFile = recorded,
-            includeDeviceInfo = kind == SupportKind.BUG && shareDeviceInfo,
-        )
-        onSent()
+        if (saving) return
+        val stagedText = composedText()
+        val stagedRecording = recorded
+        val includeInfo = kind == SupportKind.BUG && shareDeviceInfo
+        saving = true
+        scope.launch {
+            try {
+                repository.enqueue(kind = kind, text = stagedText, audioFile = stagedRecording, includeDeviceInfo = includeInfo)
+                onSent()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                notice = "تعذّر حفظ الرسالة في صندوق الصادر. لم نرسل النص بدل التسجيل."
+            } finally {
+                saving = false
+            }
+        }
     }
 
     Scaffold(
@@ -328,7 +343,7 @@ private fun SupportForm(kind: String, onBack: () -> Unit, onSent: () -> Unit) {
         topBar = {
             TopAppBar(
                 title = { Text(supportKindTitle(kind)) },
-                navigationIcon = { SupportBackButton(onBack) },
+                navigationIcon = { SupportBackButton { if (!saving) onBack() } },
             )
         },
     ) { padding ->
@@ -348,6 +363,7 @@ private fun SupportForm(kind: String, onBack: () -> Unit, onSent: () -> Unit) {
                 file = recorded,
                 onRecorded = { recorded = it },
                 onCleared = { recorded = null },
+                controlsEnabled = !saving,
             )
             if (kind == SupportKind.SUPERVISION) {
                 SupportField(who, { who = it }, "من أنت؟")
@@ -400,6 +416,7 @@ private fun SupportForm(kind: String, onBack: () -> Unit, onSent: () -> Unit) {
                     // الإقرار والاسم يُسألان مرّة واحدة، وقبل أوّل إرسال فقط.
                     if (!store.consented() || !store.hasChosenName()) askIdentity = true else send()
                 },
+                enabled = !saving,
                 modifier = Modifier.fillMaxWidth().height(60.dp),
             ) {
                 Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)
@@ -519,8 +536,7 @@ private fun SupportSent(onDone: () -> Unit) {
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                "ستُرسل عند عودة الإنترنت، ولو أغلقت التطبيق. " +
-                    "سنردّ إن احتجنا توضيحاً.",
+                "حُفظت على جهازك ولم نؤكّد وصولها بعد. يمكنك متابعة حالتها في «راسِل المطوّر».",
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -528,7 +544,7 @@ private fun SupportSent(onDone: () -> Unit) {
             Button(
                 onClick = onDone,
                 modifier = Modifier.fillMaxWidth().height(56.dp),
-            ) { Text("تمام") }
+            ) { Text("متابعة حالة الرسالة") }
         }
     }
 }

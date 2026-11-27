@@ -18,6 +18,11 @@ import java.time.LocalDate
 class LocalStoreMigrationTest {
     @Test
     fun flutterPreferencesAreCopiedWithoutDeletingRollbackData() {
+        // Other Robolectric suites may share this classloader, but not its Application.
+        LocalStore::class.java.getDeclaredField("instance").apply {
+            isAccessible = true
+            set(null, null)
+        }
         val context = ApplicationProvider.getApplicationContext<Context>()
         val legacy = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
         val today = LocalDate.now()

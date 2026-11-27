@@ -227,20 +227,98 @@ class LocalStore private constructor(context: Context) {
         parsedCache[cacheKey] = raw to value
         return value
     }
-    fun localAudioPath(lessonId: String): String? =
-        downloads()[lessonId]?.takeIf { File(it).isFile }
+    fun localAudioPath(lessonId: String): String? = playableAudio(lessonId)?.path
 
-    fun setDownload(lessonId: String, path: String) {
-        val json = jsonObject(KEY_DOWNLOADS).put(lessonId, path)
-        putJson(KEY_DOWNLOADS, json)
-        trackEvent("download")
+    internal fun playableAudio(lessonId: String): LocalAudio? = playableAudioSnapshot()(lessonId)
+
+    private data class AudioIndexMeta(val bundled: Boolean, val sha: String, val size: Long)
+
+    private fun audioIndexMeta(): Map<String, AudioIndexMeta> =
+        parsed("play:$KEY_DOWNLOADS_META", string(KEY_DOWNLOADS_META, "{}")) { raw ->
+            val parsed = runCatching { JSONObject(raw) }.getOrElse { JSONObject() }
+            parsed.keys().asSequence().mapNotNull { id ->
+                parsed.optJSONObject(id)?.let {
+                    id to AudioIndexMeta(it.optString("src") == "bundle", it.optString("sha"), it.optLong("size"))
+                }
+            }.toMap()
+        }
+
+    /** لقطة لكل قائمة، لا لكل عنصر؛ لا تُخزّن جذور Play بين عمليتي تشغيل. */
+    @Synchronized
+    internal fun playableAudioSnapshot(
+        servingRoots: () -> List<File> = { AssetPackSeeder.liveServingRoots(appContext) },
+    ): (String) -> LocalAudio? {
+        val paths = downloads()
+        // فهرس المسارات وهوية الملفّ يجب أن ينتميا إلى الكتابة نفسها.
+        val meta = audioIndexMeta()
+        val blocked = libraryPackReseedingBlocked()
+        val deleted = userDeletedDownloadIds()
+        val roots by lazy(LazyThreadSafetyMode.NONE) { servingRoots() }
+        return lookup@{ id ->
+            val savedPath = paths[id] ?: return@lookup null
+            val record = meta[id]
+            if (record?.bundled != true) {
+                return@lookup File(savedPath).takeIf { it.isFile }?.let { LocalAudio(it.absolutePath) }
+            }
+            val sha = record.sha
+            val size = record.size
+            if (blocked || id in deleted || !isServingAudioSha(sha) || size <= 0L) return@lookup null
+            roots.asSequence().map { File(it, "$sha.ogg") }
+                .firstOrNull { it.isFile && it.length() == size }
+                ?.let { LocalAudio(it.absolutePath, sha) }
+        }
+    }
+
+    /** Publish path and metadata together, after the complete file is in its final location. */
+    @Synchronized
+    internal fun publishDownload(lessonId: String, file: File, sha: String): Boolean {
+        val priorPathIndex = string(KEY_DOWNLOADS, "{}")
+        val priorMetaIndex = string(KEY_DOWNLOADS_META, "{}")
+        val priorAutoQueued = string(KEY_AUTO_QUEUED, "{}")
+        val priorDeleted = string(KEY_USER_DELETED_DL, "{}")
+        val paths = jsonObject(KEY_DOWNLOADS).put(lessonId, file.absolutePath)
+        val autoQueued = jsonObject(KEY_AUTO_QUEUED)
+        val source = if (autoQueued.has(lessonId)) "auto" else "manual"
+        val meta = jsonObject(KEY_DOWNLOADS_META).put(
+            lessonId,
+            JSONObject().put("sha", sha).put("src", source)
+                .put("size", file.length()).put("at", System.currentTimeMillis()),
+        )
+        val deleted = jsonObject(KEY_USER_DELETED_DL)
+        autoQueued.remove(lessonId)
+        deleted.remove(lessonId)
+        val persisted = preferences.edit()
+            .putString(KEY_DOWNLOADS, paths.toString())
+            .putString(KEY_DOWNLOADS_META, meta.toString())
+            .putString(KEY_AUTO_QUEUED, autoQueued.toString())
+            .putString(KEY_USER_DELETED_DL, deleted.toString())
+            .commit()
+        if (!persisted) {
+            // A failed commit still changes SharedPreferences in memory. Restore what readers
+            // could see before the attempt, and never permit the old physical file to be removed.
+            preferences.edit()
+                .putString(KEY_DOWNLOADS, priorPathIndex)
+                .putString(KEY_DOWNLOADS_META, priorMetaIndex)
+                .putString(KEY_AUTO_QUEUED, priorAutoQueued)
+                .putString(KEY_USER_DELETED_DL, priorDeleted)
+                .apply()
+            return false
+        }
+        _revision.update { it + 1L }
+        runCatching { trackEvent("download") } // Telemetry is not part of the file transaction.
+        return true
     }
 
     /// يحذف تنزيلات دروس لم تعد موجودة في الفهرس (ملفات يتيمة تستهلك المساحة).
     /// يُستدعى بعد مزامنة ناجحة فقط كي لا تُحذف عند فشل الجلب.
     /// [sparePartialsOf] دروسٌ تُصان جزئيّاتها وحدها وإن لم تكن في [validIds]:
     /// «حذف الكل» يمرّر ما في طابور التحميل، فلا يُمحى ملفٌّ يُكتب الآن.
-    fun pruneDownloads(validIds: Set<String>, sparePartialsOf: Set<String> = emptySet()): Int {
+    @Synchronized
+    fun pruneDownloads(
+        validIds: Set<String>,
+        sparePartialsOf: Set<String> = emptySet(),
+        spareBundled: Boolean = false,
+    ): Int {
         // موضع تنظيف الفهرس: هنا (خيط خلفيّ بعد مزامنة) لا في الإقلاع.
         repairDownloadIndex()
         // 🧹 كنس الجزئيات اليتيمة: ملفات `.part` (وبصمات مصدرها `.part.src`)
@@ -262,7 +340,7 @@ class LocalStore private constructor(context: Context) {
                 }
             }
         }
-        val orphans = downloads().filterKeys { it !in validIds }
+        val orphans = downloads().filterKeys { it !in validIds && (!spareBundled || !isBundledDownload(it)) }
         if (orphans.isEmpty()) return 0
         // ⛔ ملفّات حزم المتجر تُستثنى من الحذف: نُسقط قيدها من الفهرس فقط.
         orphans.forEach { (id, path) ->
@@ -278,19 +356,37 @@ class LocalStore private constructor(context: Context) {
 
     /// 🎁 بذر دفعة من حزم أصول Play: كتابة واحدة للفهرس وواحدة للميتا (لا
     /// نبضة لكل درس)، والمصدر `bundle` محصَّن من الإخلاء التلقائي كاليدوي.
-    fun seedBundledDownloads(entries: Map<String, Triple<String, String, Long>>) {
-        if (entries.isEmpty()) return
+    @Synchronized
+    fun seedBundledDownloads(entries: Map<String, Triple<String, String, Long>>): Int {
+        if (entries.isEmpty() || libraryPackReseedingBlocked()) return 0
         val index = jsonObject(KEY_DOWNLOADS)
         val meta = jsonObject(KEY_DOWNLOADS_META)
+        val deleted = userDeletedDownloadIds()
         val at = System.currentTimeMillis()
+        var seeded = 0
         entries.forEach { (id, e) ->
+            val existing = index.optString(id)
+            val prior = meta.optJSONObject(id)
+            val next = File(e.first)
+            if (id in deleted || !next.isFile || next.length() != e.third || e.third <= 0L) return@forEach
+            // Preserve valid existing independent files; a newly arriving pack cannot discard them.
+            if (existing.isNotBlank() && File(existing).isFile) {
+                if (prior?.optString("src") != "bundle" || (existing == e.first && prior?.optString("sha") == e.second)) {
+                    return@forEach
+                }
+            }
             index.put(id, e.first)
             meta.put(id, JSONObject().put("sha", e.second).put("src", "bundle").put("at", at).put("size", e.third))
+            seeded++
         }
-        writeQuiet { putString(KEY_DOWNLOADS_META, meta.toString()) }
-        putJson(KEY_DOWNLOADS, index)
+        if (seeded != 0) write {
+            putString(KEY_DOWNLOADS_META, meta.toString())
+            putString(KEY_DOWNLOADS, index.toString())
+        }
+        return seeded
     }
 
+    @Synchronized
     fun removeDownload(lessonId: String) {
         val json = jsonObject(KEY_DOWNLOADS)
         json.remove(lessonId)
@@ -319,6 +415,7 @@ class LocalStore private constructor(context: Context) {
     /// واحدة بدل إعادة تحليله لكل درس.
     fun downloadsMetaSnapshot(): JSONObject = jsonObject(KEY_DOWNLOADS_META)
 
+    @Synchronized
     fun setDownloadMeta(lessonId: String, sha: String, source: String, sizeBytes: Long) {
         val json = jsonObject(KEY_DOWNLOADS_META).put(
             lessonId,
@@ -353,6 +450,7 @@ class LocalStore private constructor(context: Context) {
 
     /// وسمُ دروسٍ ستدخل الطابور **تلقائياً** (لا بيد المستخدم) — يُقرأ عند
     /// الاكتمال ليُسجَّل المصدر في الفهرس الجانبي ثم يُمحى.
+    @Synchronized
     fun markAutoQueued(ids: Collection<String>) {
         if (ids.isEmpty()) return
         val json = jsonObject(KEY_AUTO_QUEUED)
@@ -362,6 +460,7 @@ class LocalStore private constructor(context: Context) {
 
     /// محو وسم «تلقائي» عن دفعة: طلبُ المستخدم اليدويّ لدرسٍ سبق وسمه
     /// تلقائياً يجعل نيّته هي الحاكمة — فلا يُصنَّف تنزيله «قابلاً للإخلاء».
+    @Synchronized
     fun clearAutoQueued(ids: Collection<String>) {
         if (ids.isEmpty()) return
         val json = jsonObject(KEY_AUTO_QUEUED)
@@ -370,6 +469,7 @@ class LocalStore private constructor(context: Context) {
         if (changed) writeQuiet { putString(KEY_AUTO_QUEUED, json.toString()) }
     }
 
+    @Synchronized
     fun consumeAutoQueued(lessonId: String): Boolean {
         val json = jsonObject(KEY_AUTO_QUEUED)
         if (!json.has(lessonId)) return false
@@ -380,12 +480,14 @@ class LocalStore private constructor(context: Context) {
 
     /// إشارة سلبية صريحة: ما حذفه المستخدم بيده لا يُعاد تنزيله تلقائياً أبداً
     /// (يبقى التنزيل اليدوي متاحاً دائماً ويمسح الإشارة).
+    @Synchronized
     fun markUserDeletedDownload(lessonId: String) {
         val json = jsonObject(KEY_USER_DELETED_DL)
         json.put(lessonId, System.currentTimeMillis())
         writeQuiet { putString(KEY_USER_DELETED_DL, json.toString()) }
     }
 
+    @Synchronized
     fun clearUserDeletedDownload(lessonId: String) {
         val json = jsonObject(KEY_USER_DELETED_DL)
         if (json.has(lessonId)) {
@@ -395,12 +497,16 @@ class LocalStore private constructor(context: Context) {
     }
 
     fun userDeletedDownloadIds(): Set<String> =
-        jsonObject(KEY_USER_DELETED_DL).keys().asSequence().toSet()
+        parsed("set:$KEY_USER_DELETED_DL", string(KEY_USER_DELETED_DL, "{}")) {
+            runCatching { JSONObject(it) }.getOrElse { JSONObject() }.keys().asSequence().toSet()
+        }
 
     private fun repairDownloadIndex() {
         val current = downloads()
         if (current.isEmpty()) return
-        val valid = current.filterValues { File(it).isFile }
+        val metadata = audioIndexMeta()
+        // غياب مسار Play مؤقتاً ليس حذف المستخدم؛ أبقِ هوية الدرس إلى أن يعود موقع الحزمة.
+        val valid = current.filter { (id, path) -> metadata[id]?.bundled == true || File(path).isFile }
         if (valid.size != current.size) {
             putJson(KEY_DOWNLOADS, JSONObject(valid))
         }
@@ -463,6 +569,11 @@ class LocalStore private constructor(context: Context) {
     }
 
     fun completedIds(): List<String> = stringList(KEY_COMPLETED)
+    fun isCompleted(lessonId: String): Boolean =
+        lessonId in parsed("set:$KEY_COMPLETED", string(KEY_COMPLETED, "[]")) { raw ->
+            runCatching { JSONArray(raw) }.getOrElse { JSONArray() }.strings().toSet()
+        }
+
     fun markCompleted(lessonId: String) {
         val values = completedIds().toMutableList()
         if (lessonId !in values) {
@@ -610,6 +721,12 @@ class LocalStore private constructor(context: Context) {
     // المظهر الافتراضي: اتّباع النظام (طلب المستخدم 2026-07-23).
     fun themeMode(): String = string(KEY_THEME, "system")
     fun setThemeMode(value: String) = write { putString(KEY_THEME, value) }
+    fun listeningCoverMotionEnabled(): Boolean =
+        runCatching { preferences.getBoolean(KEY_LISTENING_COVER_MOTION, true) }.getOrDefault(false)
+
+    fun setListeningCoverMotionEnabled(enabled: Boolean) =
+        write { putBoolean(KEY_LISTENING_COVER_MOTION, enabled) }
+
     // المدى مطابق لمنزلق الإعدادات وللأصل (0.8–1.4).
     fun fontScale(): Float = double(KEY_FONT_SCALE, 1.0).toFloat().coerceIn(0.8f, 1.4f)
     fun setFontScale(value: Float) =
@@ -885,6 +1002,75 @@ class LocalStore private constructor(context: Context) {
     fun homeMoreExpanded(): Boolean = bool(KEY_HOME_MORE_EXPANDED)
     fun setHomeMoreExpanded(value: Boolean) =
         writeQuiet { putBoolean(KEY_HOME_MORE_EXPANDED, value) }
+
+    fun libraryPackMode(): LibraryPackMode = LibraryPackMode.restore(string("library_pack_delivery_mode"))
+
+    internal fun hasUnconfirmedPackRemoval(): Boolean = bool("library_pack_removal_unconfirmed")
+
+    @Synchronized
+    internal fun confirmLibraryPackRemoval() = write { putBoolean("library_pack_removal_unconfirmed", false) }
+
+    private fun libraryPackReseedingBlocked(): Boolean = bool("library_pack_removal_pending")
+
+    @Synchronized
+    fun setLibraryPackMode(value: LibraryPackMode): Boolean = writeLibraryPackPreferences(
+        mode = value,
+        blockReseeding = if (value == LibraryPackMode.AUTOMATIC) false else libraryPackReseedingBlocked(),
+    )
+
+    /** Play can defer physical removal until app exit. Block even already-running seeding scans. */
+    @Synchronized
+    internal fun beginLibraryPackRemoval(): Boolean = writeLibraryPackPreferences(
+        mode = LibraryPackMode.DISABLED,
+        blockReseeding = true,
+        detachInstalledPacks = true,
+    )
+
+    /** Only a new express request can restore the packs while automatic delivery remains off. */
+    @Synchronized
+    internal fun allowManualLibraryPackSeeding(): Boolean = !libraryPackReseedingBlocked() ||
+        writeLibraryPackPreferences(libraryPackMode(), blockReseeding = false)
+
+    private fun writeLibraryPackPreferences(
+        mode: LibraryPackMode,
+        blockReseeding: Boolean,
+        detachInstalledPacks: Boolean = false,
+    ): Boolean {
+        val modeKey = "library_pack_delivery_mode"
+        val removalKey = "library_pack_removal_pending"
+        val previousMode = string(modeKey)
+        val previousBlock = libraryPackReseedingBlocked()
+        val editor = preferences.edit().putString(modeKey, mode.name).putBoolean(removalKey, blockReseeding)
+        val restore = preferences.edit().putString(modeKey, previousMode).putBoolean(removalKey, previousBlock)
+        val unconfirmedKey = "library_pack_removal_unconfirmed"
+        if (detachInstalledPacks || !blockReseeding) {
+            restore.putBoolean(unconfirmedKey, hasUnconfirmedPackRemoval())
+            editor.putBoolean(unconfirmedKey, detachInstalledPacks)
+        }
+        if (detachInstalledPacks) {
+            val index = jsonObject(KEY_DOWNLOADS)
+            val meta = jsonObject(KEY_DOWNLOADS_META)
+            val bundled = meta.keys().asSequence().filter { meta.optJSONObject(it)?.optString("src") == "bundle" }.toList()
+            if (bundled.isNotEmpty()) {
+                restore.putString(KEY_DOWNLOADS, index.toString()).putString(KEY_DOWNLOADS_META, meta.toString())
+                bundled.forEach {
+                    index.remove(it)
+                    meta.remove(it)
+                }
+                editor.putString(KEY_DOWNLOADS, index.toString()).putString(KEY_DOWNLOADS_META, meta.toString())
+            }
+        }
+        if (!editor.commit()) {
+            restore.apply()
+            return false
+        }
+        _revision.update { it + 1L }
+        return true
+    }
+
+    fun isAutoDownloadQueued(id: String): Boolean = jsonObject(KEY_AUTO_QUEUED).has(id)
+
+    internal fun autoDownloadQueuedIds(): Set<String> = jsonObject(KEY_AUTO_QUEUED).keys().asSequence().toSet()
 
     fun autoDownloadEnabled(): Boolean = bool(KEY_AUTO_DOWNLOAD)
     fun setAutoDownloadEnabled(value: Boolean) = write { putBoolean(KEY_AUTO_DOWNLOAD, value) }
@@ -1380,17 +1566,15 @@ class LocalStore private constructor(context: Context) {
     }
 
     // ---- نسخة احتياطية محلية (مفضّلة/قوائم/سجل/تقدّم/لحظات) ----
-    private val backupKeys = listOf(
-        KEY_FAVORITES, KEY_PLAYLISTS, KEY_RECENT, KEY_COMPLETED, KEY_POSITIONS,
-        KEY_DURATIONS, KEY_BOOKMARKS, KEY_FOLLOWED_SUBS, KEY_SEARCH_HISTORY,
-        KEY_CATEGORY_VISITS, KEY_SUBCATEGORY_VISITS, KEY_PLAY_COUNTS,
-        KEY_DAILY_SECONDS, KEY_STREAK, KEY_LAST_LISTEN_DATE, KEY_WEEKLY_GOAL,
-        // بيانات المصحف والأذكار شخصيّة كذلك (وهي في PERSONAL_KEYS): إسقاطها
-        // من النسخة كان يعني ضياع العلامات والموضع والسلسلة عند الاستعادة.
-        KEY_QURAN_BOOKMARKS, KEY_QURAN_LAST,
-        KEY_QURAN_WARD_DAY, KEY_QURAN_WARD_LAST_PAGE, KEY_QURAN_WARD_COUNT,
-        "adhkar_counts", "adhkar_day", "adhkar_streak", "adhkar_streak_day",
-    )
+    private val backupStringLists = setOf(KEY_FAVORITES, KEY_RECENT, KEY_COMPLETED, KEY_FOLLOWED_SUBS,
+        KEY_SEARCH_HISTORY, KEY_QURAN_BOOKMARKS)
+    private val backupArrayObjects = setOf(KEY_PLAYLISTS)
+    private val backupObjects = setOf(KEY_POSITIONS, KEY_DURATIONS, KEY_BOOKMARKS, KEY_CATEGORY_VISITS,
+        KEY_SUBCATEGORY_VISITS, KEY_PLAY_COUNTS, KEY_DAILY_SECONDS, "adhkar_counts")
+    private val backupNumbers = setOf(KEY_STREAK, KEY_WEEKLY_GOAL, KEY_QURAN_LAST,
+        KEY_QURAN_WARD_LAST_PAGE, KEY_QURAN_WARD_COUNT, "adhkar_streak")
+    private val backupText = setOf(KEY_LAST_LISTEN_DATE, KEY_QURAN_WARD_DAY, "adhkar_day", "adhkar_streak_day")
+    private val backupKeys = backupStringLists + backupArrayObjects + backupObjects + backupNumbers + backupText
 
     /// يصدّر البيانات الشخصية كنص JSON (بلا تنزيلات ولا كاش المحتوى).
     fun exportBackup(): String {
@@ -1418,22 +1602,49 @@ class LocalStore private constructor(context: Context) {
         val root = runCatching { JSONObject(json) }.getOrNull() ?: return -1
         if (root.optString("app") != "menbaradkshk") return -1
         val data = root.optJSONObject("data") ?: return -1
-        var restored = 0
-        write {
-            backupKeys.forEach { key ->
-                if (!data.has(key)) return@forEach
-                when (val value = data.get(key)) {
-                    is String -> putString(key, value)
-                    is Int -> putLong(key, value.toLong())
-                    is Long -> putLong(key, value)
-                    is Boolean -> putBoolean(key, value)
-                    is Double -> putFloat(key, value.toFloat())
-                    else -> return@forEach
+        // Validate first: a later malformed known field must never overwrite only half a backup.
+        val validated = LinkedHashMap<String, Any>()
+        for (key in backupKeys) {
+            if (!data.has(key)) continue
+            val value = data.opt(key)
+            val normalized = runCatching {
+                when (key) {
+                    in backupStringLists -> {
+                        val list = when (value) {
+                            is JSONArray -> value
+                            is String -> JSONArray(decodeFlutterStringList(value) ?: value)
+                            else -> error("Invalid backup string list")
+                        }
+                        require((0 until list.length()).all { list.opt(it) is String })
+                        list.toString()
+                    }
+                    in backupArrayObjects -> {
+                        val list = JSONArray(value as String)
+                        require((0 until list.length()).all { list.opt(it) is JSONObject })
+                        list.toString()
+                    }
+                    in backupObjects -> JSONObject(value as String).toString()
+                    in backupNumbers -> when (value) {
+                        is Int -> value.toLong()
+                        is Long -> value
+                        is String -> requireNotNull(value.toLongOrNull()) // Older migrated data.
+                        else -> error("Invalid backup number")
+                    }
+                    in backupText -> value as String
+                    else -> error("Unsupported backup key")
                 }
-                restored += 1
+            }.getOrElse { return -1 }
+            validated[key] = normalized
+        }
+        if (validated.isNotEmpty()) write {
+            validated.forEach { (key, value) ->
+                when (value) {
+                    is String -> putString(key, value)
+                    is Long -> putLong(key, value)
+                }
             }
         }
-        return restored
+        return validated.size
     }
 
     fun clearPersonalData() {
@@ -1539,6 +1750,7 @@ class LocalStore private constructor(context: Context) {
         const val KEY_QUEUE_ATTEMPTS = "download_queue_attempts"
         const val KEY_THEME = "theme_mode"
         const val KEY_FONT_SCALE = "font_scale"
+        private const val KEY_LISTENING_COVER_MOTION = "listening_cover_motion"
         const val KEY_ADHKAR_FONT = "adhkar_font_sp"
 
         /**

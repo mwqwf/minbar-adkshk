@@ -29,9 +29,20 @@ object MinbarApi {
     private const val CONNECT_TIMEOUT_MS = 12_000
     private const val READ_TIMEOUT_MS = 30_000
 
-    /** مرآة الصوت خارج Cloudflare (بروكسي الموقع) — تُشتقّ من البصمة. */
-    fun audioMirrorUrl(sha256: String): String =
-        "https://minbar-adkassahk.vercel.app/audio/$sha256.ogg"
+    private const val SEALED_AUDIO_PREFIX = "https://minbar-api.mushafak.workers.dev/v1/sealed-lesson-audio/"
+    private val SEALED_AUDIO_FILE = Regex("[a-f0-9]{64}\\.ogg")
+
+    /**
+     * Sealed audio is only published on its canonical Worker read route and has no legacy mirror.
+     * The route shape is intentional: old feeds do not have to add a catalog flag, and a stale or
+     * absent cache key must never turn a canonical sealed URL into legacy fallback eligibility.
+     */
+    internal fun legacyAudioFallbackUrl(primaryUrl: String, sha256: String): String? {
+        val sealed = primaryUrl.startsWith(SEALED_AUDIO_PREFIX) &&
+            SEALED_AUDIO_FILE.matches(primaryUrl.substring(SEALED_AUDIO_PREFIX.length))
+        if (sha256.isBlank() || sealed || isMirrorUrl(primaryUrl)) return null
+        return "https://minbar-adkassahk.vercel.app/audio/$sha256.ogg"
+    }
 
     /** الرابط الأصلي للصوت على R2 من البصمة (للتراجع عن المرآة أيضاً). */
     fun audioPrimaryUrl(sha256: String): String = "https://media.menbar.app/serving/$sha256.ogg"
@@ -40,13 +51,21 @@ object MinbarApi {
 
     @Volatile private var preferred = 0
 
-    class ApiException(val code: Int, message: String) : IOException(message)
+    class ApiException(val code: Int, message: String, internal val serverCode: String? = null) :
+        IOException(message)
+
+    private fun apiClientError(status: Int, body: String): ApiException {
+        val machineCode = if (status == 410) runCatching {
+            JSONObject(body).opt("code") as? String
+        }.getOrNull() else null
+        return ApiException(status, serverError(body), machineCode)
+    }
 
     private fun open(base: String, path: String, method: String, body: String?, headers: Map<String, String> = emptyMap()): HttpURLConnection {
         val connection = (URL(base + path).openConnection() as HttpURLConnection).apply {
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS
-            instanceFollowRedirects = true
+            instanceFollowRedirects = method != "DELETE"
             requestMethod = method
             setRequestProperty("User-Agent", UA)
             setRequestProperty("Accept", "application/json")
@@ -82,11 +101,11 @@ object MinbarApi {
                 connection = open(base, path, method, body, headers)
                 val code = connection.responseCode
                 val text = readBody(connection)
-                if (code in 200..299) {
+                if (code in 200..299 && (method != "DELETE" || code == 200)) {
                     preferred = index
                     return text
                 }
-                if (code in 400..499) throw ApiException(code, serverError(text))
+                if (code in 400..499) throw apiClientError(code, text)
                 last = ApiException(code, "HTTP $code من $base")
             } catch (e: ApiException) {
                 throw e
@@ -269,8 +288,11 @@ object MinbarApi {
         JSONObject(requestUser(context, path, "POST", body.toString()).ifBlank { "{}" })
     fun putUser(context: Context, path: String, body: JSONObject): JSONObject =
         JSONObject(requestUser(context, path, "PUT", body.toString()).ifBlank { "{}" })
-    fun deleteUser(context: Context, path: String): JSONObject =
-        JSONObject(requestUser(context, path, "DELETE", null).ifBlank { "{}" })
+    fun deleteUser(context: Context, path: String) {
+        val receipt = JSONObject(requestUser(context, path, "DELETE", null).ifBlank { "{}" })
+        // Unlike optBoolean(), opt() does not coerce a JSON string to a Boolean.
+        requireSupportDeletionReceipt(receipt.opt("ok"))
+    }
 
     /**
      * رفع مرفق المستخدم (`PUT /v1/upload/{kind}/{name}`) ببثّ ثابت الطول وتبليغ
@@ -327,7 +349,7 @@ object MinbarApi {
                 if (code in 200..299) {
                     return JSONObject(text)
                 }
-                if (code in 400..499) throw ApiException(code, serverError(text))
+                if (code in 400..499) throw apiClientError(code, text)
                 last = ApiException(code, "HTTP $code")
             } catch (e: ApiException) {
                 throw e

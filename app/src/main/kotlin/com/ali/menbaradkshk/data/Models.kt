@@ -116,6 +116,13 @@ data class Lesson(
     val sha256: String = "",
     /** حجم الملف المُقدَّم بالبايت — لتقدّم صادق وميزانيات مساحة دقيقة. */
     val sizeBytes: Long = 0L,
+    val displayOrder: LessonDisplayOrder? = null,
+    /**
+     * علوّ التشغيل لهذا الدرس بالـdB (−6…+12، `gainDb` من الفهرس): −18 LUFS ناقص
+     * علوّه المقيس. يطبّقه المشغّل (`LessonLoudness`) دون مساس بالملف أو بصمته.
+     * null = لم يُقَس ⇒ بلا تعديل.
+     */
+    val gainDb: Double? = null,
 ) {
     /// العنوان كما يُعرض: أي عنوان غير فارغ يُحترم مهما قصر («صوم»، «حج»)،
     /// ولا يُستبدل باسم المتحدّث إلا حين لا عنوان أصلاً.
@@ -143,6 +150,8 @@ data class Lesson(
         .put("featuredUntilMs", featuredUntilMs)
         .put("sha256", sha256)
         .put("sizeBytes", sizeBytes)
+        .put("displayOrder", displayOrder?.toJson())
+        .apply { gainDb?.let { put("gainDb", it) } }
 
     companion object {
         private fun subcategoryId(data: Map<String, Any?>): String {
@@ -172,6 +181,8 @@ data class Lesson(
                 featuredUntilMs = data["featuredUntil"].timeMillis(),
                 sha256 = data["sha256"].text(),
                 sizeBytes = data["sizeBytes"].longValue(),
+                displayOrder = LessonDisplayOrder.parse(data["displayOrder"], data["categoryId"].text(), subcategoryId(data)),
+                gainDb = gainDbOf(data["gainDb"]),
             )
         }
 
@@ -195,7 +206,14 @@ data class Lesson(
             featuredUntilMs = json.optLong("featuredUntilMs", 0L),
             sha256 = json.optString("sha256"),
             sizeBytes = json.optLong("sizeBytes", 0L),
+            displayOrder = LessonDisplayOrder.parse(json.opt("displayOrder"), json.optString("categoryId"),
+                json.optString("subcategoryId").ifEmpty { json.optJSONObject("subcategory")?.optString("_id").orEmpty() }),
+            gainDb = gainDbOf(json.opt("gainDb")),
         )
+
+        /** `gainDb` من الفهرس: رقمٌ محدود يُحصر في [−6، +12]؛ وما سواه (غياب، نصّ، NaN) ⇒ null. */
+        internal fun gainDbOf(raw: Any?): Double? =
+            (raw as? Number)?.toDouble()?.takeIf { it.isFinite() }?.coerceIn(-6.0, 12.0)
     }
 }
 

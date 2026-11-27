@@ -13,9 +13,10 @@ import androidx.media3.session.MediaButtonReceiver
 import com.ali.menbaradkshk.MainActivity
 import com.ali.menbaradkshk.R
 import com.ali.menbaradkshk.data.LocalStore
+import com.ali.menbaradkshk.media.coldLessonResumeTarget
 import java.util.concurrent.Executors
 
-/// ودجت الشاشة الرئيسية: يعرض آخر درس مُشغَّل ويفتح التطبيق عليه،
+/// ودجت الشاشة الرئيسية: يعرض الوسائط الجارية أو هدف الاستئناف البارد،
 /// وزرّه يرسل أمر تشغيل/إيقاف إلى جلسة الوسائط مباشرة.
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 class NowPlayingWidget : AppWidgetProvider() {
@@ -41,15 +42,29 @@ class NowPlayingWidget : AppWidgetProvider() {
 
     private fun render(context: Context, manager: AppWidgetManager, widgetId: Int) {
         val store = LocalStore.get(context)
-        val lastId = store.recentPlayedIds().firstOrNull()
-        val lesson = lastId?.let { id -> store.lessons().firstOrNull { it.id == id } }
+        val liveId = activeMedia?.id
+        val resume = if (liveId == null) store.coldLessonResumeTarget() else null
+        val lesson = if (liveId == null) resume?.lesson else store.lessons().firstOrNull { it.id == liveId }
+        val actionLabel = when {
+            liveId != null -> R.string.widget_play
+            resume?.isContinuation == true -> R.string.widget_resume
+            lesson != null -> R.string.widget_play_from_saved
+            else -> R.string.widget_open_app
+        }
+        val hasPlaybackTarget = liveId != null || resume != null
 
         val views = RemoteViews(context.packageName, R.layout.widget_now_playing).apply {
             setTextViewText(R.id.widget_title, lesson?.displayTitle ?: context.getString(R.string.app_name))
             setTextViewText(
                 R.id.widget_subtitle,
-                lesson?.speaker?.takeIf { it.isNotBlank() }
-                    ?: context.getString(if (lesson == null) R.string.widget_empty else R.string.widget_label),
+                context.getString(
+                    when {
+                        liveId != null -> R.string.widget_session
+                        resume?.isContinuation == true -> R.string.widget_resume
+                        lesson != null -> R.string.widget_play_from_saved
+                        else -> R.string.widget_empty
+                    },
+                ),
             )
 
             // فتح التطبيق على الدرس نفسه (رابط عميق) أو على الرئيسية.
@@ -81,6 +96,7 @@ class NowPlayingWidget : AppWidgetProvider() {
                 ),
             )
 
+            setContentDescription(R.id.widget_play, context.getString(actionLabel))
             // زر التشغيل/الإيقاف: أمر وسائط إلى مستقبل أزرار الوسائط المعلن
             // في المانيفست — وهو مسار media3 الرسميّ نفسه الذي تسلكه أزرار
             // السمّاعة.
@@ -97,18 +113,41 @@ class NowPlayingWidget : AppWidgetProvider() {
             }
             setOnClickPendingIntent(
                 R.id.widget_play,
-                PendingIntent.getBroadcast(
-                    context,
-                    widgetId + 1_000,
-                    toggleIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                ),
+                if (hasPlaybackTarget) {
+                    PendingIntent.getBroadcast(
+                        context,
+                        widgetId + 1_000,
+                        toggleIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                    )
+                } else {
+                    PendingIntent.getActivity(
+                        context,
+                        widgetId,
+                        openIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                    )
+                },
             )
         }
         manager.updateAppWidget(widgetId, views)
     }
 
     companion object {
+        private data class ActiveMedia(val owner: Context, val id: String)
+        @Volatile private var activeMedia: ActiveMedia? = null
+
+        // Both callbacks run on the service main thread. Keep the live session
+        // authoritative until that specific owner releases it; widgets read on a worker.
+        internal fun setActiveMedia(owner: Context, id: String) {
+            activeMedia = if (id.isBlank()) null else ActiveMedia(owner, id)
+        }
+
+        internal fun clearActiveMedia(owner: Context) {
+            if (activeMedia?.owner === owner) activeMedia = null
+            refresh(owner)
+        }
+
         /// خيط واحد لكل الرسم الخلفيّ — الودجت نادر التحديث فلا داعي لمجمّع.
         private val worker = Executors.newSingleThreadExecutor { r ->
             Thread(r, "widget-render").apply { isDaemon = true }

@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.UUID
 
 /**
@@ -21,7 +22,12 @@ import java.util.UUID
  * إنترنته ضعيف.
  */
 class SupportStore private constructor(context: Context) {
-    private val prefs = context.applicationContext
+    private val app = context.applicationContext
+    private val recordings = SupportRecordingFiles(
+        File(app.noBackupFilesDir, "support_outbox_voice"),
+        File(app.cacheDir, "support_voice"),
+    )
+    private val prefs = app
         .getSharedPreferences("minbar_support", Context.MODE_PRIVATE)
 
     // ─── الهويّة والإقرار (يُسألان مرّة واحدة) ───────────────────
@@ -29,8 +35,15 @@ class SupportStore private constructor(context: Context) {
     /// «احذف بياناتي»: الاسم والإقرار والصندوق الصادر وعلامات القراءة كلّها —
     /// كان الصندوق ينجو فيُرسل رسالةً معلّقة بعد الحذف فتعود محادثةٌ باسمه.
     fun clearAll() {
-        synchronized(outboxLock) { prefs.edit().clear().apply() }
-        _outboxRevision.update { it + 1L }
+        synchronized(outboxLock) {
+            // Cloud has already erased this installation. Do not allow an older
+            // in-process Worker to read or recreate its rows after a local disk error.
+            committedOutbox.blockErasedRows()
+            val cleared = prefs.edit().clear().commit()
+            _outboxRevision.update { it + 1L }
+            recordings.clear()
+            check(cleared) { "Cannot clear local support drafts" }
+        }
     }
 
     /** الاسم الذي اختاره المستخدم، أو «مستخدم» إن تركه فارغاً. */
@@ -68,6 +81,7 @@ class SupportStore private constructor(context: Context) {
     /// ومن عامل الإرسال الخلفي معاً — بلا قفل كانت الكتابتان تتسابقان فتضيع
     /// رسالة أو تتكرّر (نمط `LocalStore.queueLock` نفسه).
     private val outboxLock = Any()
+    private val committedOutbox = CommittedSupportOutbox(::readPersistedOutbox)
 
     /// 📣 يرتفع مع كل تغيّر في الطابور كي تلتقطه الواجهة فوراً (رسالة جديدة
     /// بلا إنترنت مثلاً) بدل انتظار ردّ مستمع Firestore الذي قد لا يأتي.
@@ -91,9 +105,12 @@ class SupportStore private constructor(context: Context) {
         /// رفضها الخادم رفضاً قاطعاً — تبقى معروضة بزرّ إعادة محاولة بدل
         /// أن تُحذف بصمت، والعامل يتجاوزها حتى يعيدها المستخدم إلى الطابور.
         val failed: Boolean = false,
+        val attachmentUnavailable: Boolean = false,
     )
 
-    fun pending(): List<Pending> {
+    fun pending(): List<Pending> = synchronized(outboxLock) { committedOutbox.current() }
+
+    private fun readPersistedOutbox(): List<Pending> {
         val raw = prefs.getString(KEY_OUTBOX, null) ?: return emptyList()
         val array = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
         return (0 until array.length()).mapNotNull { index ->
@@ -108,6 +125,7 @@ class SupportStore private constructor(context: Context) {
                 deviceInfo = o.optString("deviceInfo"),
                 createdAtMs = o.optLong("createdAtMs"),
                 failed = o.optBoolean("failed"),
+                attachmentUnavailable = o.optBoolean("attachmentUnavailable"),
             )
         }
     }
@@ -117,35 +135,91 @@ class SupportStore private constructor(context: Context) {
         threadId: String,
         isNew: Boolean,
         text: String,
-        audioFile: String,
+        audioFile: File?,
         deviceInfo: String,
-    ): Pending {
+    ): Pending = synchronized(outboxLock) {
+        val id = UUID.randomUUID().toString()
+        val durable = audioFile?.let { recordings.stage(it, id) }
         val item = Pending(
-            id = UUID.randomUUID().toString().take(10),
+            id = id,
             kind = kind,
             threadId = threadId,
             isNew = isNew,
             text = text,
-            audioFile = audioFile,
+            audioFile = durable?.absolutePath.orEmpty(),
             deviceInfo = deviceInfo,
             createdAtMs = System.currentTimeMillis(),
         )
-        synchronized(outboxLock) { save(pending() + item) }
-        return item
+        // On a preference write error keep both copies for local recovery; the
+        // worker can see only the previous saved rows, not a partially queued draft.
+        save(pending() + item)
+        runCatching { audioFile?.let { recordings.removeOwned(it, id) } }
+        item
     }
 
-    fun removePending(id: String) = synchronized(outboxLock) {
-        save(pending().filterNot { it.id == id })
+    /** Existing cache-based rows are moved when a worker or the outbox opens. */
+    fun migrateLegacyRecordings() = synchronized(outboxLock) {
+        val rows = pending()
+        val replacements = rows.mapNotNull { row ->
+            val source = row.audioFile.takeIf(String::isNotBlank)?.let(::File) ?: return@mapNotNull null
+            if (!recordings.ownedScratch(source) || !source.isFile) return@mapNotNull null
+            val target = runCatching { recordings.stage(source, row.id) }.getOrNull() ?: return@mapNotNull null
+            row.id to row.copy(audioFile = target.absolutePath)
+        }.toMap()
+        if (replacements.isNotEmpty()) {
+            save(rows.map { replacements[it.id] ?: it })
+            rows.filter { it.id in replacements }.forEach { row ->
+                runCatching { recordings.removeOwned(File(row.audioFile), row.id) }
+            }
+        }
+    }
+
+    fun checkedRecording(item: Pending): File? {
+        val file = item.audioFile.takeIf(String::isNotBlank)?.let(::File) ?: return null
+        require(recordings.ownedDraft(file, item.id) || recordings.ownedScratch(file)) {
+            "Invalid outbox recording"
+        }
+        return file
+    }
+
+    fun removePending(id: String) = removeMatching { it.id == id }
+
+    fun discardFailed(id: String) = removeMatching(eraseFirst = true) {
+        it.id == id && (it.failed || it.attachmentUnavailable)
+    }
+
+    fun discardThread(threadId: String) = removeMatching { it.threadId == threadId }
+
+    private fun removeMatching(eraseFirst: Boolean = false, match: (Pending) -> Boolean) = synchronized(outboxLock) {
+        val existing = pending()
+        val removed = existing.filter(match)
+        fun erase() = removed.forEach { row ->
+            row.audioFile.takeIf(String::isNotBlank)?.let { recordings.removeOwned(File(it), row.id) }
+        }
+        if (removed.isNotEmpty()) {
+            if (eraseFirst) erase() // failed local rows cannot send while being discarded
+            save(existing.filterNot(match))
+            if (!eraseFirst) erase()
+        }
     }
 
     /// يعلّم الرسالة «فشلت» بدل حذفها — فتبقى ظاهرة بزرّ إعادة المحاولة.
-    fun markFailed(id: String) = synchronized(outboxLock) {
-        save(pending().map { if (it.id == id) it.copy(failed = true) else it })
+    fun markFailed(id: String, attachmentUnavailable: Boolean = false) = synchronized(outboxLock) {
+        save(pending().map { row ->
+            if (row.id == id) row.copy(
+                failed = true,
+                attachmentUnavailable = row.attachmentUnavailable || attachmentUnavailable,
+            ) else row
+        })
     }
 
-    /// «أعد المحاولة»: يمسح علامة الفشل فيلتقطها عامل الإرسال من جديد.
-    fun retryFailed(id: String) = synchronized(outboxLock) {
-        save(pending().map { if (it.id == id) it.copy(failed = false) else it })
+    /// «أعد المحاولة» للفشل العادي فقط؛ رفض المرفق يبقي المسودة محلية.
+    fun retryFailed(id: String): Boolean = synchronized(outboxLock) {
+        val rows = pending()
+        val row = rows.firstOrNull { it.id == id } ?: return@synchronized false
+        if (!canRetrySupportDraft(row.failed, row.attachmentUnavailable)) return@synchronized false
+        save(rows.map { if (it.id == id) it.copy(failed = false) else it })
+        true
     }
 
     private fun save(items: List<Pending>) {
@@ -162,10 +236,16 @@ class SupportStore private constructor(context: Context) {
                     put("deviceInfo", item.deviceInfo)
                     put("createdAtMs", item.createdAtMs)
                     put("failed", item.failed)
+                    put("attachmentUnavailable", item.attachmentUnavailable)
                 },
             )
         }
-        prefs.edit().putString(KEY_OUTBOX, array.toString()).apply()
+        val previous = prefs.getString(KEY_OUTBOX, null)
+        committedOutbox.replace(items) {
+            val stored = prefs.edit().putString(KEY_OUTBOX, array.toString()).commit()
+            if (!stored) prefs.edit().putString(KEY_OUTBOX, previous).apply()
+            stored
+        }
         _outboxRevision.update { it + 1L }
     }
 

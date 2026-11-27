@@ -2,6 +2,7 @@ package com.ali.menbaradkshk.data
 
 import android.content.Context
 import android.util.Log
+import com.ali.menbaradkshk.notification.isRetiredContributionNotice
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -17,14 +18,12 @@ import org.json.JSONObject
 /**
  * 🔔 خلاصة الإشعارات — من `minbar-api` (قرار 2026-09-10):
  * - **العامة** (`/v1/notifications`): ما يبثّه المشرفون للجميع.
- * - **الخاصة** (`/v1/me/notifications` بمعرّف الجهاز): قرارات مساهماتي
- *   واقتراحاتي وردود المطوّر — لا تُسأل إلا لمن ساهم أو راسل من قبل.
+ * - **الخاصة**: ردود الدعم لمن راسل من قبل؛ قرارات المساهمات السابقة لا تُعرض.
  * استطلاعٌ خفيف كل خمس دقائق ما دامت الشاشة تجمع، بدل مستمعي Firestore.
  */
 class NotificationsRepository(
     private val context: Context,
-    private val submissions: SubmissionRepository,
-    private val hasContributedBefore: () -> Boolean = { true },
+    private val hasSupportHistory: () -> Boolean = { false },
     private val installedAtMs: () -> Long = { 0L },
 ) {
     private companion object {
@@ -66,7 +65,7 @@ class NotificationsRepository(
                     publicItems = MinbarApi.notifications(cutoffMs(), limit.toInt()).toItems("public")
                     emit()
                 }.onFailure { Log.w(TAG, "تعذّرت قراءة الإشعارات العامة", it) }
-                if (hasContributedBefore()) {
+                if (hasSupportHistory()) {
                     runCatching {
                         privateItems = (
                             MinbarApi.getUser(context, "/v1/me/notifications?since=${cutoffMs()}")
@@ -88,6 +87,7 @@ class NotificationsRepository(
     private fun JSONArray.toItems(prefix: String): List<NotificationItem> =
         (0 until length())
             .mapNotNull { index -> optJSONObject(index) }
+            .filterNot { isRetiredContributionNotice(it.optString("type"), it.optString("route")) }
             .map { item -> fromJson("$prefix:" + item.optString("id"), item) }
 
     private fun fromJson(id: String, item: JSONObject): NotificationItem = NotificationItem(

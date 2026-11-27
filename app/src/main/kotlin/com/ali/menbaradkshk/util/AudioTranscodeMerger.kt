@@ -16,19 +16,21 @@ import java.nio.ByteOrder
  *
  * - كل ملف يُفَكّ إلى PCM عبر MediaCodec (يدعم mp3/m4a/aac/ogg/opus/wav/
  *   amr/flac وكل ما يفكّه الجهاز أصلاً).
- * - يُوحَّد الصوت إلى 44.1kHz ستيريو 16-bit (مضاعفة الأحادي، إسقاط القنوات
- *   الزائدة، إعادة عيّنة خطية ذات حالة تحفظ استمرارية الطور بين الدُفعات).
- * - ثم يُرمَّز AAC-LC ‏128kbps في حاوية MP4 (‏.m4a) عبر MediaMuxer.
- *
- * لا مكتبات خارجية، ويعمل تدفّقياً (لا يُحمَّل الملف كاملاً في الذاكرة).
- * نتيجة الدمج صيغة واحدة دائماً: audio/mp4 بامتداد .m4a.
+ * - يُوحَّد الصوت إلى PCM ستيريو 16-bit مع استمرار الطور بين الدُفعات.
+ * - الإخراج Opus في Ogg عندما ينجح تهيئة مرمّز أندرويد، وإلا AAC-LC
+ *   ‏128kbps في M4A وسيطًا (تظهر الصيغة الفعلية قبل الرفع).
+ * - يُعالَج تدفقياً دون تحميل الملفات بأكملها في الذاكرة.
  */
 object AudioTranscodeMerger {
-    private const val TARGET_SAMPLE_RATE = 44_100
     private const val TARGET_CHANNELS = 2
-    private const val BIT_RATE = 128_000
     private const val TIMEOUT_US = 10_000L
+    private const val STALL_TIMEOUT_NS = 30L * 1_000_000_000L
     private const val BYTES_PER_FRAME = 2 * TARGET_CHANNELS
+
+    private enum class Profile(val mime: String, val ext: String, val rate: Int, val bitrate: Int) {
+        OPUS(MediaFormat.MIMETYPE_AUDIO_OPUS, "ogg", 48_000, 96_000),
+        AAC(MediaFormat.MIMETYPE_AUDIO_AAC, "m4a", 44_100, 128_000),
+    }
 
     /// سقف زمن فكّ **ملفّ واحد**: عشر دقائق تكفي أطول درسٍ على أبطأ جهاز
     /// بفارقٍ واسع، ولا تترك ملفّاً تالفاً يعلّق العمليّة إلى الأبد.
@@ -39,43 +41,55 @@ object AudioTranscodeMerger {
 
     /** صيغة غير قابلة للفك على هذا الجهاز (تصل رسالتها للمستخدم كما هي). */
     class UnsupportedAudioException(message: String) : Exception(message)
+    private class OpusUnavailable(cause: Exception) : Exception(cause)
 
-    /**
-     * يدمج [inputs] بالترتيب في ملف M4A واحد عند [outputPath].
-     * يرمي [UnsupportedAudioException] برسالة عربية تسمّي الملف المتعذّر.
-     */
-    fun mergeToM4a(inputs: List<File>, outputPath: String): File {
+    /** يحافظ على ترتيب المقاطع؛ اختيار صيغة أخرى يقتصر على فشل تهيئة Opus. */
+    fun mergeForUpload(inputs: List<File>, outputStem: File): File {
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                return merge(inputs, File("${outputStem.path}.ogg"), Profile.OPUS)
+            } catch (_: OpusUnavailable) {
+                // لم تُقرأ أجزاءٌ بعد؛ لا نكرر دمج ملف تالف أو محاولة كتابة فاشلة.
+            }
+        }
+        return mergeToM4a(inputs, "${outputStem.path}.$OUTPUT_EXTENSION")
+    }
+
+    fun mergeToM4a(inputs: List<File>, outputPath: String): File =
+        merge(inputs, File(outputPath), Profile.AAC)
+
+    private fun merge(inputs: List<File>, output: File, profile: Profile): File {
         require(inputs.isNotEmpty()) { "لا ملفات للدمج." }
-        val output = File(outputPath)
         output.parentFile?.mkdirs()
-        if (output.exists()) output.delete()
+        require(!output.exists()) { "ملف ناتج الدمج موجود سلفًا." }
+        val encoder = try {
+            MediaCodec.createEncoderByType(profile.mime).also { codec ->
+                try {
+                    codec.configure(
+                        MediaFormat.createAudioFormat(profile.mime, profile.rate, TARGET_CHANNELS).apply {
+                            if (profile == Profile.AAC) setInteger(
+                                MediaFormat.KEY_AAC_PROFILE,
+                                MediaCodecInfo.CodecProfileLevel.AACObjectLC,
+                            )
+                            setInteger(MediaFormat.KEY_BIT_RATE, profile.bitrate)
+                            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 64 * 1024)
+                        },
+                        null, null, MediaCodec.CONFIGURE_FLAG_ENCODE,
+                    )
+                    codec.start()
+                } catch (failure: Throwable) {
+                    runCatching { codec.release() }
+                    throw failure
+                }
+            }
+        } catch (failure: Exception) {
+            if (profile == Profile.OPUS) throw OpusUnavailable(failure)
+            throw failure
+        }
 
-        val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-        encoder.configure(
-            MediaFormat.createAudioFormat(
-                MediaFormat.MIMETYPE_AUDIO_AAC,
-                TARGET_SAMPLE_RATE,
-                TARGET_CHANNELS,
-            ).apply {
-                setInteger(
-                    MediaFormat.KEY_AAC_PROFILE,
-                    MediaCodecInfo.CodecProfileLevel.AACObjectLC,
-                )
-                setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
-                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 64 * 1024)
-            },
-            null,
-            null,
-            MediaCodec.CONFIGURE_FLAG_ENCODE,
-        )
-        // ⚠️ `start()` و`MediaMuxer(...)` كانا **خارج** الحماية التي تحرّرهما
-        // في `finally`: أيّ استثناء من مُنشئ `MediaMuxer` (مسار غير قابل
-        // للكتابة، مساحة ممتلئة) يترك مرمّز الأجهزة محجوزاً بلا `release()` —
-        // ومرمّزات الأجهزة موردٌ شحيح على مستوى النظام، فتفشل كلّ محاولة دمج
-        // تالية على الجهاز حتى إعادة تشغيله.
         val muxer = try {
-            encoder.start()
-            MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            MediaMuxer(output.absolutePath, if (profile == Profile.OPUS)
+                MediaMuxer.OutputFormat.MUXER_OUTPUT_OGG else MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         } catch (failure: Throwable) {
             runCatching { encoder.stop() }
             runCatching { encoder.release() }
@@ -88,7 +102,9 @@ object AudioTranscodeMerger {
         val encoderInfo = MediaCodec.BufferInfo()
 
         fun drainEncoder(untilEos: Boolean) {
+            var lastProgress = System.nanoTime()
             while (true) {
+                check(System.nanoTime() - lastProgress < STALL_TIMEOUT_NS) { "توقّف مرمّز الصوت دون إكمال الملف." }
                 val index = encoder.dequeueOutputBuffer(
                     encoderInfo,
                     if (untilEos) TIMEOUT_US else 0L,
@@ -116,6 +132,7 @@ object AudioTranscodeMerger {
                             encoderInfo.size = 0
                         }
                         if (encoderInfo.size > 0 && muxerStarted) {
+                            lastProgress = System.nanoTime()
                             encoded.position(encoderInfo.offset)
                             encoded.limit(encoderInfo.offset + encoderInfo.size)
                             muxer.writeSampleData(trackIndex, encoded, encoderInfo)
@@ -128,11 +145,13 @@ object AudioTranscodeMerger {
             }
         }
 
-        // يدفع PCM موحَّداً (16-bit ستيريو 44.1k) إلى المرمّز مع تصريف مستمر
+        // يدفع PCM موحَّداً (16-bit ستيريو بمعدّل الإخراج) إلى المرمّز مع تصريف مستمر
         // كي لا تمتلئ صوامعه فيتجمّد الفكّ.
         fun feedPcm(data: ByteArray, length: Int) {
             var offset = 0
+            var lastProgress = System.nanoTime()
             while (offset < length) {
+                check(System.nanoTime() - lastProgress < STALL_TIMEOUT_NS) { "توقّف مرمّز الصوت أثناء الدمج." }
                 val inIndex = encoder.dequeueInputBuffer(TIMEOUT_US)
                 if (inIndex >= 0) {
                     // ⚠️ بالعلّة نفسها في [drainEncoder]: القفز بلا إعادة صومعة
@@ -144,28 +163,32 @@ object AudioTranscodeMerger {
                         continue
                     }
                     buffer.clear()
-                    val chunk = minOf(buffer.remaining(), length - offset)
+                    val capacity = minOf(buffer.remaining(), length - offset)
+                    val chunk = capacity - capacity % BYTES_PER_FRAME
+                    check(chunk > 0) { "مرمّز الصوت لم يوفّر مساحة لإطار كامل." }
                     buffer.put(data, offset, chunk)
                     encoder.queueInputBuffer(
                         inIndex,
                         0,
                         chunk,
-                        totalFrames * 1_000_000L / TARGET_SAMPLE_RATE,
+                        totalFrames * 1_000_000L / profile.rate,
                         0,
                     )
                     totalFrames += chunk / BYTES_PER_FRAME
                     offset += chunk
+                    lastProgress = System.nanoTime()
                 }
                 drainEncoder(false)
             }
         }
 
+        var complete = false
         try {
             inputs.forEach { file ->
                 // كل ملف يجب أن يساهم بصوت فعلي؛ كان الملف المبتور الذي يفكّ
                 // صفر عيّنات يسقط بصمت ويُرفع الدرس المدموج ناقصاً جزءاً كاملاً.
                 val framesBefore = totalFrames
-                decodeInto(file, ::feedPcm)
+                decodeInto(file, profile.rate, sink = ::feedPcm)
                 if (totalFrames == framesBefore) {
                     throw UnsupportedAudioException(
                         "تعذّر استخراج صوت من «${file.name}» — الملف تالف أو فارغ.",
@@ -173,14 +196,16 @@ object AudioTranscodeMerger {
                 }
             }
             // راية نهاية التدفق ثم تصريف كامل.
+            val eosRequestedAt = System.nanoTime()
             while (true) {
+                check(System.nanoTime() - eosRequestedAt < STALL_TIMEOUT_NS) { "تعذّر إنهاء ترميز الصوت." }
                 val inIndex = encoder.dequeueInputBuffer(TIMEOUT_US)
                 if (inIndex >= 0) {
                     encoder.queueInputBuffer(
                         inIndex,
                         0,
                         0,
-                        totalFrames * 1_000_000L / TARGET_SAMPLE_RATE,
+                        totalFrames * 1_000_000L / profile.rate,
                         MediaCodec.BUFFER_FLAG_END_OF_STREAM,
                     )
                     break
@@ -188,21 +213,33 @@ object AudioTranscodeMerger {
                 drainEncoder(false)
             }
             drainEncoder(untilEos = true)
+            check(muxerStarted && totalFrames > 0L) { "لم ينتج الدمج مسارًا صوتيًا." }
+            // تمرير فشل الإنهاء مهمّ؛ الملف الجزئي ليس جاهزًا للرفع.
+            muxerStarted = false
+            muxer.stop()
+            complete = true
         } finally {
             runCatching { encoder.stop() }
             runCatching { encoder.release() }
             if (muxerStarted) runCatching { muxer.stop() }
             runCatching { muxer.release() }
+            if (!complete) output.delete()
         }
-        if (totalFrames == 0L) {
+        if (output.length() == 0L) {
             output.delete()
-            throw UnsupportedAudioException("تعذّر استخراج صوت من الملفات المختارة.")
+            throw UnsupportedAudioException("تعذّر إنشاء ملف صوتي صالح.")
         }
         return output
     }
 
+    internal fun decodePrivateOpusPreview(file: File, checkActive: () -> Unit, sink: (ByteArray, Int) -> Unit) =
+        decodeInto(file, 48_000, exactOpus = true, checkActive = checkActive, sink = sink)
+
     /** يفكّ ملفاً واحداً ويسلّم PCM الموحَّد إلى [sink] دفعةً دفعة. */
-    private fun decodeInto(file: File, sink: (ByteArray, Int) -> Unit) {
+    private fun decodeInto(
+        file: File, targetRate: Int, exactOpus: Boolean = false,
+        checkActive: () -> Unit = {}, sink: (ByteArray, Int) -> Unit,
+    ) {
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(file.absolutePath)
@@ -224,8 +261,32 @@ object AudioTranscodeMerger {
             extractor.release()
             throw UnsupportedAudioException("«${file.name}» لا يحتوي مساراً صوتياً.")
         }
-        extractor.selectTrack(trackIndex)
         val mime = sourceFormat.getString(MediaFormat.KEY_MIME).orEmpty()
+        val opus = try {
+            if (!exactOpus) null
+            else if (mime == MediaFormat.MIMETYPE_AUDIO_OPUS && file.inputStream().use {
+                    ByteArray(4).let { head -> it.read(head) == 4 && head.contentEquals(byteArrayOf(79, 103, 103, 83)) }
+                }) {
+                file.inputStream().buffered().use { OggOpusTrimPlan.read(it, checkActive) }.also { plan ->
+                    check(sourceFormat.intOr(MediaFormat.KEY_SAMPLE_RATE, -1) == 48_000)
+                    check(sourceFormat.intOr(MediaFormat.KEY_CHANNEL_COUNT, -1) == plan.channels)
+                    val header = checkNotNull(sourceFormat.getByteBuffer("csd-0")).duplicate()
+                    val bytes = ByteArray(header.remaining()).also(header::get)
+                    check(bytes.size == 19 && ((bytes[10].toInt() and 255) or
+                        ((bytes[11].toInt() and 255) shl 8)) == plan.preSkip)
+                    bytes[10] = 0
+                    bytes[11] = 0
+                    sourceFormat.setByteBuffer("csd-0", ByteBuffer.wrap(bytes))
+                    sourceFormat.setByteBuffer("csd-1", ByteBuffer.wrap(ByteArray(8)))
+                    sourceFormat.setInteger(MediaFormat.KEY_ENCODER_DELAY, 0)
+                    sourceFormat.setInteger(MediaFormat.KEY_ENCODER_PADDING, 0)
+                }
+            } else error("Unsupported exact Opus container")
+        } catch (_: Exception) {
+            extractor.release()
+            throw UnsupportedAudioException("تعذّر التحقق من حدود صوت Opus في «${file.name}».")
+        }
+        extractor.selectTrack(trackIndex)
         val decoder = try {
             MediaCodec.createDecoderByType(mime)
         } catch (error: Exception) {
@@ -236,10 +297,11 @@ object AudioTranscodeMerger {
             decoder.configure(sourceFormat, null, null, 0)
             decoder.start()
             val info = MediaCodec.BufferInfo()
-            var sampleRate = sourceFormat.intOr(MediaFormat.KEY_SAMPLE_RATE, TARGET_SAMPLE_RATE)
+            var sampleRate = sourceFormat.intOr(MediaFormat.KEY_SAMPLE_RATE, targetRate)
             var channels = sourceFormat.intOr(MediaFormat.KEY_CHANNEL_COUNT, 1)
             var pcmFloat = false
-            var resampler = Resampler(sampleRate, channels)
+            var rawDecodedFrames = 0L
+            var resampler = Resampler(sampleRate, channels, targetRate)
             var inputDone = false
             var outputDone = false
             // ⏱️ مهلة كليّة: الحلقة كانت تدور حتى راية EOS وحدها، وملفٌّ تالف
@@ -247,6 +309,7 @@ object AudioTranscodeMerger {
             // الدمج» إلى ما لا نهاية بلا رسالة ولا مخرج.
             val deadlineMs = System.currentTimeMillis() + DECODE_TIMEOUT_MS
             while (!outputDone) {
+                checkActive()
                 if (System.currentTimeMillis() > deadlineMs) {
                     throw UnsupportedAudioException(
                         "استغرق فكّ «${file.name}» وقتاً طويلاً — الملف تالف أو غير مدعوم.",
@@ -282,7 +345,7 @@ object AudioTranscodeMerger {
                             format.containsKey(MediaFormat.KEY_PCM_ENCODING) &&
                             format.getInteger(MediaFormat.KEY_PCM_ENCODING) ==
                             AudioFormat.ENCODING_PCM_FLOAT
-                        resampler = Resampler(sampleRate, channels)
+                        resampler = Resampler(sampleRate, channels, targetRate)
                     }
 
                     outIndex >= 0 -> {
@@ -296,7 +359,20 @@ object AudioTranscodeMerger {
                                 } else {
                                     pcm16BufferToShorts(buffer)
                                 }
-                                val out = resampler.process(samples)
+                                val source = if (opus == null) samples else {
+                                    check(sampleRate == 48_000 && channels == opus.channels &&
+                                        samples.size % channels == 0)
+                                    val start = rawDecodedFrames
+                                    val end = start + samples.size / channels
+                                    check(end <= opus.packetFrames)
+                                    rawDecodedFrames = end
+                                    val left = maxOf(start, opus.preSkip.toLong())
+                                    val right = minOf(end, opus.preSkip + opus.audibleFrames)
+                                    if (left >= right) ShortArray(0)
+                                    else samples.copyOfRange(((left - start) * channels).toInt(),
+                                        ((right - start) * channels).toInt())
+                                }
+                                val out = resampler.process(source)
                                 if (out.isNotEmpty()) sink(out, out.size)
                             }
                         }
@@ -305,6 +381,9 @@ object AudioTranscodeMerger {
                         if (eos) outputDone = true
                     }
                 }
+            }
+            if (opus != null && rawDecodedFrames != opus.packetFrames) {
+                throw UnsupportedAudioException("لم يسلّم مفكّك Opus كل إطارات «${file.name}» دون قصّ تلقائي.")
             }
         } finally {
             runCatching { decoder.stop() }
@@ -340,24 +419,34 @@ object AudioTranscodeMerger {
      * فلا انقطاع في الطور عند حدود الصوامع. تحوّل أيضاً عدد القنوات إلى
      * ستيريو (الأحادي يُضاعَف، والزائد عن اثنتين يُسقَط).
      */
-    private class Resampler(sourceRate: Int, private val sourceChannels: Int) {
-        private val step = sourceRate.toDouble() / TARGET_SAMPLE_RATE
+    private class Resampler(sourceRate: Int, private val sourceChannels: Int, targetRate: Int) {
+        private val step = sourceRate.toDouble() / targetRate
         private var position = 0.0
         private var previousLeft = 0
         private var previousRight = 0
         private var hasPrevious = false
-        private val passthrough = sourceRate == TARGET_SAMPLE_RATE && sourceChannels == 2
+        private val sameRate = sourceRate == targetRate
 
         fun process(samples: ShortArray): ByteArray {
             if (samples.isEmpty() || sourceChannels <= 0) return ByteArray(0)
-            if (passthrough) {
-                val bytes = ByteArray(samples.size * 2)
-                ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-                    .asShortBuffer().put(samples)
-                return bytes
-            }
             val frameCount = samples.size / sourceChannels
             if (frameCount == 0) return ByteArray(0)
+            // Channel mapping alone must not enter the interpolation path: at equal rates
+            // that path repeats a leading sample and drops the last sample of a clip.
+            if (sameRate) {
+                val bytes = ByteArray(frameCount * BYTES_PER_FRAME)
+                val output = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                if (sourceChannels == 2) {
+                    output.put(samples, 0, frameCount * 2)
+                } else {
+                    for (frame in 0 until frameCount) {
+                        val first = samples[frame * sourceChannels]
+                        output.put(first)
+                        output.put(if (sourceChannels >= 2) samples[frame * sourceChannels + 1] else first)
+                    }
+                }
+                return bytes
+            }
             fun left(frame: Int): Int = samples[frame * sourceChannels].toInt()
             fun right(frame: Int): Int =
                 if (sourceChannels >= 2) samples[frame * sourceChannels + 1].toInt() else left(frame)

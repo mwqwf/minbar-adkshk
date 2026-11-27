@@ -5,24 +5,18 @@ import android.net.Uri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Code
-import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.OndemandVideo
 import androidx.compose.material.icons.filled.PrivacyTip
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -32,24 +26,23 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
-/// شاشة «حول التطبيق» — صفحة كاملة (لا حوار): تعريف مستمدّ من موقع منبر،
-/// وإشارة المصدر المفتوح مع رابط حساب GitHub، ورابط نسخة الويب.
-/// ⚠️ قاعدة دائمة: مع كل رفع لإصدار التطبيق يُراجَع هذا الوصف ويُحدَّث
-/// بما استجدّ (رقم الإصدار يُقرأ آلياً فلا يحتاج تدخلاً).
+/// تعريف موجز ثابت؛ تفاصيل التغييرات تبقى في ملاحظات الإصدار.
 @Composable
 fun AboutScreen(vm: AppViewModel) {
     val context = LocalContext.current
-    val versionName = remember {
+    val versionName = remember(context) {
         runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
-        }.getOrNull() ?: ""
+        }.getOrNull().orEmpty()
     }
-
     fun openUrl(url: String) {
         runCatching {
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
@@ -62,14 +55,9 @@ fun AboutScreen(vm: AppViewModel) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Icon(
-            Icons.Filled.Mic,
-            contentDescription = null,
-            modifier = Modifier.size(64.dp),
-            tint = Teal,
-        )
-        Spacer(Modifier.height(12.dp))
+        Icon(Icons.Filled.Mic, null, Modifier.size(36.dp), tint = MaterialTheme.colorScheme.primary)
         Text(
             "منبر ادكصهك",
             style = MaterialTheme.typography.headlineSmall,
@@ -82,221 +70,45 @@ fun AboutScreen(vm: AppViewModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Spacer(Modifier.height(18.dp))
-        // 📖 «مصحفك» — التطبيق الشقيق من المطوّر نفسه، بنقرةٍ إلى المتجر.
-        MushafakButton()
-        Spacer(Modifier.height(12.dp))
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-            ),
-        ) {
-            Text(
-                "منصّة تحفظ إرث مشايخ ادكصهك وتوفّر لهم منبرًا لنشر صوتياتهم " +
-                    "لأكبر قدر من الجمهور: مئات الصوتيات العلمية الدينية التي تشرح " +
-                    "كتبًا مختلفة، وتسجيلات نادرة لأشهر المشايخ، محدّثة باستمرار — " +
-                    "مكتبة مصنّفة بحسب العلوم، ومشغّل متقدّم، وتنزيل واستماع دون " +
-                    "إنترنت، بلا حساب وبأقل بيانات.\n\n" +
-                    "ومعه «المصحف الكامل»: القرآن كاملًا بثلاث روايات — حفص عن " +
-                    "عاصم وورش عن نافع وقالون عن نافع — مصوَّرًا بصفحات مصاحف " +
-                    "مجمع الملك فهد الرسميّة الملوّنة، بإطارها المزخرف وعلامات " +
-                    "آيها، بملء الشاشة. تُضاء الآية الجارية على الصفحة مع التلاوة، " +
-                    "واضغط أيّ آية لتبدأ منها. وإن شئت النصّ المكتوب فهو خيارٌ " +
-                    "بضغطة، برسم كل رواية وبخطّ يكبر كما تشاء.\n\n" +
-                    "وفيه فهرسة بالسور والأجزاء والأحزاب والصفحات، وبحث في أسماء " +
-                    "السور وفي نصّ الآيات، وعلامات تحفظ مواضعك، و191 قارئًا " +
-                    "موزَّعين على الروايات الثلاث — تبحث عنهم بالاسم — وتنزيل " +
-                    "السورة أو المصحف كاملًا صوتًا وصورةً للعمل دون إنترنت. " +
-                    "ونصّ المصحف يعمل دون إنترنت دائمًا. ومعه وِردٌ يوميّ تختار " +
-                    "مقداره فيذكّرك به ويتتبّع ما أتممته منه.\n\n" +
-                    "وللبحث وجهٌ آخر: تكتب كلمةً فيجد لك الدروس التي شُرحت " +
-                    "فيها ولو خلا عنوانها منها — بحثٌ داخل «النص المشروح» " +
-                    "نفسه لا في العناوين وحدها.\n\n" +
-                    "وهو مبنيٌّ على أنّ إنترنتك قد يضعف أو ينقطع: من أوّل " +
-                    "تشغيلٍ ترى المكتبة كلّها ولو بلا إنترنت إطلاقًا، والدروس " +
-                    "صارت أخفّ بأضعاف فتنزل أسرع وبأقل بيانات، وإن رضيت " +
-                    "بالحفظ التلقائي بنى لك التطبيق مكتبتك على هاتفك كلما اتصلت " +
-                    "بواي فاي — يبدأ بما تستمع إليه وتتابعه ثم يكمل الباقي، ولا " +
-                    "يمسّ بيانات هاتفك أبدًا. وكل درسٍ نزل يُفحص حرفًا حرفًا " +
-                    "قبل حفظه فلا يصلك ملفٌ ناقص أو معطوب. وإن انقطع " +
-                    "الإنترنت ظهر «أظهر المحفوظ فقط» فلا ترى إلا ما يعمل " +
-                    "عندك فعلًا. وللدرس المحفوظ «أرسل الملف الصوتي» فينتقل " +
-                    "بالبلوتوث إلى من بجوارك بلا شبكة.\n\n" +
-                    "وفي المشغّل زرُّ «30 ث» يعيد ما لم تفهمه بضغطة — وهو أكبر " +
-                    "ما على الشاشة في وضع القيادة بعد زرّ التشغيل. وللنصّ " +
-                    "المشروح والأذكار زرّا «أ+» و«أ−» لتكبير الخطّ بلا حاجة " +
-                    "إلى القرص بالإصبعين. وإن أخطأتَ في عنوان درسٍ ساهمتَ به " +
-                    "فصحّحه ما دام بانتظار المراجعة، بلا رفع الملف من جديد.\n\n" +
-                    "ومعه صفحة «الأذكار»: أذكار الصباح والمساء ومجموعات مواضيعية " +
-                    "بتخريجها وفضلها، بعدّاد يومي وتذكيرات لطيفة، وخطّ عريض وتكبير " +
-                    "بالإصبعين يصل إلى أضعاف حجمه لكبار السنّ — تعمل كاملةً دون " +
-                    "إنترنت، ويتقدّمها ذكرُ وقتك: الصباح صباحاً والمساء مساءً. " +
-                    "وفي بيتها الصباحُ والمساءُ والنومُ وما بعد الصلاة بنقرةٍ واحدة، " +
-                    "وزرُّ عدٍّ كبير على كل ذكر، ونجمةٌ تجمع أذكارك المفضّلة في " +
-                    "صفحة، و«المسبحة»: دائرةٌ كبيرة بأهداف ٣٣ و٩٩ و١٠٠ و١٠٠٠، " +
-                    "بالدورات وحصاد اليوم، وتُربط بأيّ ذكرٍ فتعدّ له.\n\n" +
-                    "وفيه طريقٌ مباشر إليك: «راسِل المطوّر» — اقتراحٌ لتحسين " +
-                    "التطبيق، أو شيءٌ لا يعمل عندك، أو درسٌ لا تعرف قسمه، أو " +
-                    "طلبُ إشراف. تختار ما تريد من خمس بطاقات، وتقول ما عندك " +
-                    "بصوتك إن لم تُرِد الكتابة، وتصلك إجابةٌ في التطبيق نفسه. " +
-                    "ورسالتك ليست مجهولة: يرى المطوّر الاسم الذي اخترته " +
-                    "ليردّ عليك، ولك أن تحذف محادثتك متى شئت.\n\n" +
-                    "وللاستماع نفسه: «تابع من حيث وقفت» في أوّل الشاشة، " +
-                    "والسلسلة تكمل درساً بعد درس بلا بحث، وبحثٌ بصوتك لمن لا " +
-                    "يكتب، وحجم التنزيل يُعرض قبل الضغط لا بعده، ومؤقّت نومٍ " +
-                    "يقف بنهاية الدرس لا برقمٍ تخمّنه.\n\n" +
-                    "والرئيسية أبسط وأرتب: ثلاث لبناتٍ أساسية و«المزيد من " +
-                    "القوائم» مطويٌّ لمن أراده. وإن انقطع الإنترنت أثناء " +
-                    "الاستماع أكمل التشغيلُ من تنزيلاتك بلا توقّف. ولوضع " +
-                    "القيادة أزرارٌ أضخم، ويفتح تلقائيًا عند اتصال بلوتوث " +
-                    "سيّارتك إن شئت. وإذا أتممتَ قسمًا كاملًا احتفل بك " +
-                    "التطبيق بشهادةٍ تشاركها. والنسخة الاحتياطية صارت تشمل " +
-                    "علامات المصحف والأذكار وسلسلتها أيضًا.\n\n" +
-                    "ومنذ هذا الإصدار الاستقلال التام عن Firebase: لا مكتبات " +
-                    "Google في التطبيق، فهو أخفّ وأسرع وأقلّ استهلاكًا للشبكة، " +
-                    "والإشعارات تصلك بنبضٍ خفيف يتكيّف مع جديد الخادم (أكثر " +
-                    "حين يكثر الجديد وأقلّ حين يسكن) وعند فتح التطبيق — وجديد " +
-                    "الأقسام التي تتابعها وقرارات مساهماتك " +
-                    "وردود المطوّر معها. ومعه إصلاحات: إشعارات الخادم كانت " +
-                    "لا تصل، وتجمّد المحطّات الكبيرة، وهوية التنزيل الجزئي " +
-                    "بالبصمة فلا يُعاد تنزيل ما اكتمل.\n\n" +
-                    "ومكتبة الصوت صارت تصلك مع التطبيق: يتكفّل متجر Play " +
-                    "بإحضارها بعد التثبيت من غير أن تطلب شيئًا، فتسمع بلا " +
-                    "إنترنت ودون انتظار تنزيل. وما يُضاف بعد الإصدار يصلك " +
-                    "كما كان: تلقائيًا على الواي فاي، أو بتنزيلٍ منك متى شئت.\n\n" +
-                    "ومنذ هذا الإصدار لا يُنزَّل شيء مرّتين: ما يُحضره لك " +
-                    "المتجر لم يعد يُسحب من الإنترنت كذلك، فتُوفَّر بياناتك " +
-                    "ومساحة هاتفك. وسؤال أوّل تشغيل صار يعلم أنّ مكتبتك " +
-                    "وصلتك، فيسألك عن الجديد بعدها لا عن المكتبة كلّها. " +
-                    "ولأصحاب أندرويد ٦ خاصّةً: الحفظ التلقائي يعمل الآن بعد " +
-                    "أن كان متوقّفًا من حيث لا يُدرى، ولافتةُ انقطاع الإنترنت " +
-                    "تتحدّث كما ينبغي.\n\n" +
-                    "وأزلنا من الإعدادات خيار «ما الذي يُنزّل تلقائيًا؟»: كان " +
-                    "يَعِد بما لا يفعل منذ أن حلّ محرّك الأولوية محلّ الأهداف " +
-                    "الثلاثة، فبقيت الورقة تُعرض وتُحفظ قيمتُها ولا أثرَ لها. " +
-                    "وإعدادٌ بلا أثرٍ أسوأ من غيابه. وما يُنزَّل أولًا يقرّره " +
-                    "التطبيق من استماعك أنت، بلا ضبطٍ منك.\n\n" +
-                    "ومنذ هذا الإصدار يصلك «النص المشروح» مع الصوت: كلّ متنٍ " +
-                    "معتمد يُشحن داخل التطبيق فتقرؤه بلا إنترنت من أوّل تشغيل، " +
-                    "وما تنزّله من الدروس يجلب نصّه وصور صفحاته معه ويبقيها " +
-                    "ولو ضاقت المساحة. وما يُعتمد من نصوصٍ بعد الإصدار يصلك " +
-                    "عند أوّل فتحٍ للدرس بالإنترنت ثم يبقى عندك.\n\n" +
-                    "وفي هذا الإصدار إقلاعٌ أخفّ ومشغّلٌ أسرع استجابةً: ما كان " +
-                    "يُجهَّز عند التشغيل صار يُجهَّز في الخلفية، فتوقّف تجمّدٌ " +
-                    "وانهيارٌ كانا يقعان عند تشغيل الدرس من السمّاعة بعد إغلاق " +
-                    "التطبيق. وفتح الجزء من الفهرس يعود إلى أوّله دائماً، وتسجيلك " +
-                    "الصوتي في «راسِل المطوّر» لا يضيع بتدوير الشاشة.",
-                modifier = Modifier.padding(16.dp),
-                style = MaterialTheme.typography.bodyLarge,
-                textAlign = TextAlign.Start,
-            )
-        }
-        Spacer(Modifier.height(10.dp))
-
-        // بيان الوقف: المشروع خيري لا ربحي — نص ثابت ظاهر لكل مستخدم.
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f),
-            ),
-        ) {
-            Text(
-                "🕌 هذا المشروع خيريٌّ ووقفٌ لله تعالى: لا نتربّح منه ولن نتربّح، " +
-                    "ولا نسمح لأحد بالتربّح منه. وهو مفتوح لكل من يريد خدمة تراث " +
-                    "هذه القبيلة العلمي وما يهمّها.",
-                modifier = Modifier.padding(16.dp),
-                style = MaterialTheme.typography.bodyLarge,
-                textAlign = TextAlign.Start,
-            )
-        }
-        Spacer(Modifier.height(14.dp))
-
-        Column(
-            Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            ListItem(
-                modifier = Modifier.clickable { openUrl(WEB_APP_URL) },
-                colors = ListItemDefaults.colors(
-                    containerColor = androidx.compose.ui.graphics.Color.Transparent,
-                ),
-                leadingContent = { Icon(Icons.Filled.Language, null, tint = Teal) },
-                headlineContent = { Text("استمع عبر الويب") },
-                supportingContent = {
-                    Text(
-                        "نسخة ويب كاملة من منبر ادكصهك: تصفّح الأقسام وشغّل " +
-                            "الصوتيات مباشرة في المتصفح — بنفس المحتوى محدَّثًا لحظيًا.",
-                    )
-                },
-            )
-            ListItem(
-                modifier = Modifier.clickable { openUrl(GITHUB_URL) },
-                colors = ListItemDefaults.colors(
-                    containerColor = androidx.compose.ui.graphics.Color.Transparent,
-                ),
-                leadingContent = { Icon(Icons.Filled.Code, null, tint = Teal) },
-                headlineContent = { Text("مفتوح المصدر بالكامل") },
-                supportingContent = {
-                    Text(
-                        "اطّلع على جميع مشاريعنا مفتوحة المصدر على GitHub، بما فيها " +
-                            "تطبيق منبر ادكصهك بشقّيه (التطبيق ولوحة الإدارة) وبجميع " +
-                            "نسخه: كوتلن وغيرها، ونسخة الويب أيضًا.\ngithub.com/mwqwf",
-                    )
-                },
-            )
-            ListItem(
-                modifier = Modifier.clickable { openUrl(YOUTUBE_URL) },
-                colors = ListItemDefaults.colors(
-                    containerColor = androidx.compose.ui.graphics.Color.Transparent,
-                ),
-                leadingContent = { Icon(Icons.Filled.OndemandVideo, null, tint = Teal) },
-                headlineContent = { Text("قناتنا على يوتيوب") },
-                supportingContent = {
-                    Text(
-                        "ننشر فيها فيديوهات توضيحية عن الجديد في التطبيق " +
-                            "وكيفية استعمال مزاياه خطوة بخطوة.\nyoutube.com/@Al-Mutafail",
-                    )
-                },
-            )
-            ListItem(
-                colors = ListItemDefaults.colors(
-                    containerColor = androidx.compose.ui.graphics.Color.Transparent,
-                ),
-                leadingContent = { Icon(Icons.Filled.Headphones, null, tint = Teal) },
-                headlineContent = { Text("تطبيق صوتي بامتياز") },
-                supportingContent = {
-                    Text(
-                        "مشغّل بسرعات متعددة ومؤقّت نوم وتشغيل خلفي، وقوائم ومفضّلة " +
-                            "وسجلّ و«تابع الاستماع»، وبحث عربي ذكي، ومشاركة الدروس " +
-                            "بتوقيت اللحظة، و«شارك درسًا» لرفع التسجيلات النادرة.",
-                    )
-                },
-            )
-            ListItem(
-                modifier = Modifier.clickable { openUrl("$WEB_APP_URL/privacy") },
-                colors = ListItemDefaults.colors(
-                    containerColor = androidx.compose.ui.graphics.Color.Transparent,
-                ),
-                leadingContent = { Icon(Icons.Filled.PrivacyTip, null, tint = Teal) },
-                headlineContent = { Text("سياسة الخصوصية") },
-                supportingContent = { Text("تفتح مباشرة في موقع منبر.") },
-            )
-        }
-
-        Spacer(Modifier.height(20.dp))
         Text(
-            "منبر ادكصهك — دروس صوتية",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            "وقفٌ لله لحفظ دروس مشايخ إدكصهك وتسجيلاتهم ونشرها. " +
+                "تصفّح المكتبة، واستمع إلى الدروس ونزّلها للسماع بلا إنترنت. ويضمّ المنبر المصحف والأذكار.",
+            modifier = Modifier.fillMaxWidth(),
+            style = MaterialTheme.typography.bodyLarge,
         )
-        Spacer(Modifier.height(24.dp))
+        DeveloperPrayer(Modifier.fillMaxWidth())
+        Column(Modifier.fillMaxWidth()) {
+            AboutLink(Icons.Filled.Language, "منبر على الويب") { openUrl(WEB_APP_URL) }
+            AboutLink(Icons.Filled.PrivacyTip, "سياسة الخصوصية") { openUrl("$WEB_APP_URL/privacy") }
+            AboutLink(Icons.Filled.Code, "الشيفرة المصدرية والترخيص") { openUrl(GITHUB_URL) }
+            AboutLink(Icons.Filled.OndemandVideo, "قناتنا على يوتيوب") { openUrl(YOUTUBE_URL) }
+        }
+        MushafakButton()
     }
 }
 
-const val GITHUB_URL = "https://github.com/mwqwf"
+@Composable
+private fun AboutLink(icon: ImageVector, title: String, onClick: () -> Unit) {
+    ListItem(
+        modifier = Modifier.clickable(role = Role.Button, onClick = onClick),
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        leadingContent = { Icon(icon, null, tint = MaterialTheme.colorScheme.primary) },
+        headlineContent = { Text(title) },
+    )
+}
+
+/** تذييل اختياري للقراءة، بلا زرّ أو تنبيه. */
+@Composable
+internal fun DeveloperPrayer(modifier: Modifier = Modifier) {
+    Text(
+        "لا تنسوا مطوّر التطبيق ووالديه من صالح دعائكم.",
+        modifier = modifier,
+        textAlign = TextAlign.Center,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+const val GITHUB_URL = "https://github.com/mwqwf/minbar-adkshk"
 const val WEB_APP_URL = "https://minbar-adkassahk.vercel.app"
 const val YOUTUBE_URL = "https://youtube.com/@Al-Mutafail"

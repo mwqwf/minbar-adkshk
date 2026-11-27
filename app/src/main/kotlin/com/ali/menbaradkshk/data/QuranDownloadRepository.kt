@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.HttpURLConnection
@@ -52,6 +54,8 @@ class QuranDownloadRepository private constructor(context: Context) {
     /// ⚠️ نطاق خاصّ بالحذف: `deleteRecursively` على تنزيلات قارئٍ «آية بآية»
     /// يمرّ على آلاف الملفّات، وكان يقع على خيط الواجهة من نقرة التأكيد
     /// مباشرةً فتتجمّد الشاشة. والنطاق مستقلّ عن الشاشة كي لا يُقطع حذفٌ بدأ.
+    private val fetchLocks = Array(64) { Mutex() }
+
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /// يحذف على خيط الإدخال/الإخراج ثمّ يرفع المراجعة — الترتيب مقصود كي
@@ -241,16 +245,17 @@ class QuranDownloadRepository private constructor(context: Context) {
      */
     private suspend fun fetch(url: String, target: File) {
         val temp = File(target.parentFile, target.name + ".part")
+        val metadata = File(target.parentFile, target.name + ".part.validator")
         var connection: HttpURLConnection? = null
-        // 📶 الملفّ الجزئي **يبقى** عند الانقطاع لا يُمحى.
-        //
-        // ⚠️ كان `finally { temp.delete() }` غير مشروط: كلّ انقطاعٍ يمحو ما
-        // نُزّل فيُعاد من الصفر — وسورةٌ بملفّ واحد قد تبلغ عشرات
-        // الميغابايتات، فعلى إنترنتٍ ضعيف لا تكتمل أبداً مهما أعاد المستخدم.
-        // والحذف عند النجاح وحده (فقد صار الملفّ باسمه النهائي).
-        var keepPartial = false
+        fun discardPartial() {
+            metadata.delete()
+            temp.delete()
+        }
         try {
-            val existing = if (temp.isFile) temp.length() else 0L
+            val saved = runCatching { metadata.readText().split('\n') }.getOrNull()
+            val validator = saved?.takeIf { it.size == 3 && it[0] == url }
+                ?.get(2)?.let(::strongQuranDownloadETag)
+            val existing = if (validator != null && temp.isFile) temp.length() else 0L
             connection = (URL(url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 20_000
                 readTimeout = 45_000
@@ -259,72 +264,79 @@ class QuranDownloadRepository private constructor(context: Context) {
                     "User-Agent",
                     "MinbarAdkassahk/${com.ali.menbaradkshk.BuildConfig.VERSION_NAME}",
                 )
-                // بلا ضغط وسيط: gzip شفّاف يجعل Content-Length وحساب
-                // الاستئناف غير مطابقَين للبايتات المكتوبة — القاعدة نفسها
-                // المطبَّقة في DownloadRepository.
                 setRequestProperty("Accept-Encoding", "identity")
-                // استئنافٌ من البايت نفسه لا من أوّله.
-                if (existing > 0L) setRequestProperty("Range", "bytes=$existing-")
+                if (existing > 0L) {
+                    setRequestProperty("Range", "bytes=$existing-")
+                    setRequestProperty("If-Range", checkNotNull(validator))
+                }
                 connect()
             }
             val code = connection.responseCode
-            // 416: الجزئي أطول من ملفّ الخادم (استُبدلت التلاوة بأصغر غالباً،
-            // أو بقي جزئي مكتمل بعد فشل rename) — يُحذف وتُعاد المحاولة من
-            // الصفر عبر fetchWithRetry. بدون هذا كانت كل محاولة تعيد 416 إلى
-            // الأبد (keepPartial يُبقيه) ولا مخرج للمستخدم إلا حذف السورة
-            // كلّها — بعكس DownloadRepository الذي يعالجها صراحةً.
-            if (code == 416 && existing > 0L) {
-                runCatching { temp.delete() }
-                throw java.io.IOException("HTTP 416")
-            }
-            if (code !in 200..299) throw java.io.IOException("HTTP $code")
-            // 🛡️ بوّابة أسيرة: 200 مع صفحة HTML لتسجيل الدخول — لولا الفحص
-            // لحُفظت الصفحة باسم webp/mp3 «مكتمل». فشل عاديّ فتعيده
-            // fetchWithRetry، وبعد تجاوز البوّابة يكتمل التنزيل الصحيح.
+            if (code == 416 && existing > 0L) discardPartial()
+            if (code != 200 && code != 206) throw java.io.IOException("HTTP $code")
             if (connection.contentType.orEmpty().startsWith("text/html", ignoreCase = true)) {
                 throw java.io.IOException("استجابة HTML لا ملفّاً")
             }
-            // 206 وحده يعني أن الخادم قبل الاستئناف؛ و200 مع طلب Range يعني
-            // أنّه تجاهله وأرسل الملفّ كاملاً، فنكتب من الصفر لا فوق الجزئي.
-            val append = code == 206 && existing > 0L
-            // اكتمال البايتات (الفحص المناظر في DownloadRepository): انتهاء
-            // نظيف مبكر كان يحفظ تلاوة مبتورة باسمها النهائي فلا تُنزَّل ثانية.
-            val remaining = connection.getHeaderField("Content-Length")
-                ?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
-            val expected = if (remaining > 0L) remaining + (if (append) existing else 0L) else 0L
+            val encoding = connection.getHeaderField("Content-Encoding")
+            if (!encoding.isNullOrBlank() && !encoding.equals("identity", ignoreCase = true)) {
+                throw java.io.IOException("ترميز نقل لا يطابق بايتات الملف")
+            }
+            if (code == 200 && connection.getHeaderField("Content-Range") != null) {
+                throw java.io.IOException("استجابة جزئية غير معلنة")
+            }
+            val contentLength = connection.getHeaderField("Content-Length")?.toLongOrNull()
+            val responseTag = strongQuranDownloadETag(connection.getHeaderField("ETag"))
+            val effectiveUrl = connection.url.toExternalForm()
+            val append = code == 206
+            val expected = if (append) {
+                val total = quranDownloadRangeTotal(
+                    connection.getHeaderField("Content-Range"), existing, contentLength,
+                )
+                if (validator == null || responseTag != validator || saved?.get(1) != effectiveUrl ||
+                    total == null || temp.length() != existing
+                ) {
+                    discardPartial()
+                    throw java.io.IOException("استئناف غير مطابق؛ ستبدأ المحاولة التالية من الصفر")
+                }
+                total
+            } else {
+                contentLength?.takeIf { it >= 0L }
+            }
             var received = if (append) existing else 0L
             connection.inputStream.use { input ->
+                // A new representation must never inherit the previous partial's validator.
+                if (!append && metadata.exists() && !metadata.delete()) {
+                    throw java.io.IOException("تعذّر حذف معرّف التنزيل السابق")
+                }
                 java.io.FileOutputStream(temp, append).use { output ->
+                    if (!append && responseTag != null) {
+                        // Truncation precedes writing the validator and any new media bytes.
+                        metadata.writeText("$url\n$effectiveUrl\n$responseTag")
+                    }
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                     while (true) {
                         coroutineContext.ensureActive()
                         val read = input.read(buffer)
                         if (read < 0) break
+                        if (expected != null && read.toLong() > expected - received) {
+                            // Never append an oversized chunk, even if the next read is cancelled.
+                            throw QuranDownloadOverrun()
+                        }
                         output.write(buffer, 0, read)
                         received += read
                     }
                 }
             }
-            if (temp.length() <= 0L) throw java.io.IOException("ملفّ فارغ")
-            // النقص يُبقي الجزئي (keepPartial) فيُستأنف من موضعه في المحاولة
-            // التالية؛ والزائد يُشفى ذاتياً عبر 416 أعلاه.
-            if (expected > 0L && received != expected) {
+            if (received <= 0L || (expected != null && received != expected)) {
                 throw java.io.IOException("نقل ناقص ($received من $expected)")
             }
             if (!temp.renameTo(target)) throw java.io.IOException("تعذّر حفظ الملف")
-        } catch (cancelled: CancellationException) {
-            // ⚠️ الجزئي يبقى حتى عند الإلغاء: التنزيل صار على WorkManager،
-            // والإلغاء قد يكون **النظامَ** يوقف العامل (انقطعت الشبكة، قيود
-            // البطارية) لا المستخدمَ — ومحوُ عشرات الميغابايتات عندها يعيد
-            // صاحب الإنترنت الضعيف إلى الصفر. بايتات زائدة بعد إلغاءٍ صريح
-            // تُستهلك في الاستئناف التالي أو يشفيها 416.
-            keepPartial = true
-            throw cancelled
-        } catch (failure: Throwable) {
-            keepPartial = true
-            throw failure
+            metadata.delete()
+        } catch (overrun: QuranDownloadOverrun) {
+            discardPartial()
+            throw overrun
         } finally {
-            if (!keepPartial) runCatching { temp.delete() }
+            // A validated partial survives interruption. Unvalidated bytes restart on the next retry.
             connection?.disconnect()
         }
     }
@@ -336,7 +348,13 @@ class QuranDownloadRepository private constructor(context: Context) {
      * ويعود المستخدم إلى أوّله. محاولاتٌ محدودة بمهلةٍ متزايدة تعالج العابر
      * بلا أن تُخفي العطل الحقيقي (بعدها يُرمى الاستثناء كما كان).
      */
-    private suspend fun fetchWithRetry(url: String, target: File) {
+    private suspend fun fetchWithRetry(url: String, target: File) =
+        fetchLocks[(target.absolutePath.hashCode() and Int.MAX_VALUE) % fetchLocks.size].withLock {
+            if (target.isFile && target.length() > 0L) return@withLock
+            fetchWithRetryLocked(url, target)
+        }
+
+    private suspend fun fetchWithRetryLocked(url: String, target: File) {
         var attempt = 0
         while (true) {
             try {

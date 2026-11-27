@@ -140,7 +140,10 @@ class DownloadRepository private constructor(context: Context) {
 
     fun localPath(lessonId: String): String? = store.localAudioPath(lessonId)
     fun isDownloaded(lessonId: String): Boolean = localPath(lessonId) != null
-    fun all(): Map<String, String> = store.downloads()
+    fun all(): Map<String, String> {
+        val lookup = store.playableAudioSnapshot()
+        return store.downloads().keys.mapNotNull { id -> lookup(id)?.let { id to it.path } }.toMap()
+    }
 
     suspend fun download(lesson: Lesson): String {
         require(lesson.id.isNotBlank()) { "معرّف الدرس مفقود." }
@@ -153,16 +156,16 @@ class DownloadRepository private constructor(context: Context) {
                 // بعد الاكتمال لا يتغيّر. الإلغاء والإيقاف لا يُلتقطان.
                 if (failure is CancellationException ||
                     failure is DownloadPausedException ||
-                    failure is DownloadCancelledException ||
-                    lesson.sha256.isBlank() ||
-                    MinbarApi.isMirrorUrl(lesson.audioUrl)
+                    failure is DownloadCancelledException
                 ) {
                     throw failure
                 }
+                val fallback = MinbarApi.legacyAudioFallbackUrl(lesson.audioUrl, lesson.sha256)
+                    ?: throw failure
                 com.ali.menbaradkshk.util.DiagLog.log(
                     appContext, "dl", "${lesson.id} mirror after: ${failure.message}",
                 )
-                downloadLocked(lesson.copy(audioUrl = MinbarApi.audioMirrorUrl(lesson.sha256)))
+                downloadLocked(lesson.copy(audioUrl = fallback))
             }
         }
     }
@@ -237,7 +240,11 @@ class DownloadRepository private constructor(context: Context) {
         val seededTotal = seedPartialFromStreamCache(lesson, partial)
         if (seededTotal > 0L && partial.length() == seededTotal) {
             // الدرس كله كان في كاش البث — تنزيل مكتمل بصفر شبكة.
-            return@withContext completePartial(lesson, partial, target, sourceMark)
+            try {
+                return@withContext completePartial(lesson, partial, target, sourceMark)
+            } catch (failure: java.io.IOException) {
+                throw RetryableDownloadException(failure)
+            }
         }
 
         // ميزانية مساحة استباقية: الحجم معلوم من الفهرس (sizeBytes) فلا نبدأ
@@ -447,32 +454,23 @@ class DownloadRepository private constructor(context: Context) {
                 java.io.IOException("بصمة الملف لا تطابق هوية المحتوى المعلنة."),
             )
         }
-        // الصوت القديم (stale) يُزال الآن فقط، وقد اكتمل البديل وتحقّقت بصمته.
-        // لا `delete()` العامّة: تلك توسم الدرس «حذفه المستخدم» فيُحرم من التلقائيّ.
-        store.localAudioPath(lesson.id)?.let { previous ->
-            if (previous != target.absolutePath && !store.isBundledDownload(lesson.id)) {
-                runCatching { File(previous).delete() }
+        val previous = store.localAudioPath(lesson.id)
+        val previousIsBundled = store.isBundledDownload(lesson.id)
+        val installed = installVerifiedAudio(partial, target) {
+            store.publishDownload(lesson.id, it, computedSha)
+        }
+        // Retire only an app-owned, unaliased path, after the replacement is durable.
+        if (previous != null && previous != installed.absolutePath && !previousIsBundled) {
+            runCatching {
+                val old = File(previous)
+                if (old.canonicalFile.parentFile == installed.canonicalFile.parentFile &&
+                    previous !in store.downloads().values &&
+                    old.canonicalFile != installed.canonicalFile
+                ) old.delete()
             }
         }
-        if (target.exists()) target.delete()
-        if (!partial.renameTo(target)) {
-            // بعض الأنظمة ترفض rename رغم أنّ الوجهة في المجلد نفسه —
-            // النسخ ثم الحذف خطة بديلة تُنقذ تنزيلاً اكتمل فعلاً.
-            partial.copyTo(target, overwrite = true)
-            partial.delete()
-        }
-        store.setDownload(lesson.id, target.absolutePath)
-        store.setDownloadMeta(
-            lesson.id,
-            sha = computedSha.ifBlank { lesson.sha256 },
-            source = if (store.consumeAutoQueued(lesson.id)) "auto" else "manual",
-            sizeBytes = target.length(),
-        )
-        // تنزيلٌ وصل بأي طريق يمسح إشارة «حذفه المستخدم» السلبية.
-        store.clearUserDeletedDownload(lesson.id)
-        // البصمة أدّت غرضها — الملف صار باسمه النهائي في الفهرس.
         sourceMark.delete()
-        return target.absolutePath
+        return installed.absolutePath
     }
 
     private fun sha256Of(file: File): String {
@@ -579,13 +577,11 @@ class DownloadRepository private constructor(context: Context) {
     fun staleDownloadIds(lessons: List<Lesson>): List<String> {
         // لقطة واحدة للفهرسين: كان كلّ درس يُعيد تحليل خريطة التنزيلات
         // وخريطة البيانات الغنيّة كاملتين — آلاف التحليلات في كل تخطيط.
-        val paths = store.downloads()
-        if (paths.isEmpty()) return emptyList()
+        if (store.downloads().isEmpty()) return emptyList()
+        val lookup = store.playableAudioSnapshot()
         val meta = store.downloadsMetaSnapshot()
         return lessons.mapNotNull { lesson ->
-            if (lesson.sha256.isBlank()) return@mapNotNull null
-            val path = paths[lesson.id] ?: return@mapNotNull null
-            if (!File(path).isFile) return@mapNotNull null
+            if (lesson.sha256.isBlank() || lookup(lesson.id) == null) return@mapNotNull null
             val recorded = meta.optJSONObject(lesson.id)?.optString("sha").orEmpty()
             if (recorded != lesson.sha256) lesson.id else null
         }
@@ -631,7 +627,9 @@ class DownloadRepository private constructor(context: Context) {
     /// [spareQueued]: «حذف الكل» من «تنزيلاتي» يصون جزئيّات ما في طابور
     /// التحميل — كان يمحو الجزئيّ الذي يُكتب الآن فيفشل تنزيله بعد استهلاك
     /// بياناته، ويُعيد ما ينتظر في الطابور إلى الصفر. («حذف بياناتي» يمحو كلّ شيء.)
-    suspend fun deleteAll(spareQueued: Boolean = false) {
+    private val clearDownloadsLock = Mutex()
+
+    suspend fun deleteAll(spareQueued: Boolean = false): Set<String> = clearDownloadsLock.withLock {
         // ⚠️ كان يُنادى `delete` لكل درس على حدة: قراءةٌ كاملة للتفضيلات
         // وتحليل JSON وكتابةٌ ونبضة `revision` لكلّ واحد — أي مئات الكتابات
         // وإعادات التركيب لأمرٍ واحد. تمرير مجموعة فارغة يعني «لا صالح يبقى»
@@ -642,14 +640,17 @@ class DownloadRepository private constructor(context: Context) {
             // ثمّ يُعيد البذرُ بعد أوّل مزامنة الدروسَ نفسها إلى «تنزيلاتي» كأنّ
             // الحذف لم يقع. الطريق الصحيح الوحيد لحذفها إزالة الحزمة عبر Play
             // (لا حذف ملفّاتها بأيدينا — الحارس `isBundledDownload` قائم).
-            AssetPackSeeder.removeAll(appContext)
+            val unconfirmedPacks = AssetPackSeeder.removeAll(appContext)
             val spared = if (spareQueued) {
                 store.downloadQueue().toSet() + _progress.value.keys
             } else {
                 emptySet()
             }
-            store.pruneDownloads(emptySet(), sparePartialsOf = spared)
+            // Play entries were detached in a separate serialized step. An explicit subsequent
+            // download may already be seeding them again; this older pass owns independent files only.
+            store.pruneDownloads(emptySet(), sparePartialsOf = spared, spareBundled = true)
             TranscriptRepository.get(appContext).dropAllImages()
+            unconfirmedPacks
         }
     }
 

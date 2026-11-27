@@ -5,6 +5,9 @@
     <string name="content_channel_name">محتوى جديد</string>
     <string name="ward_channel_name">الوِرد اليومي</string>
     <string name="widget_play">تشغيل أو إيقاف</string>
-    <string name="widget_label">منبر — الآن يُشغَّل</string>
+    <string name="widget_session">جلسة الاستماع</string>
+    <string name="widget_resume">أكمل الاستماع</string>
+    <string name="widget_play_from_saved">شغّل آخر درس متاح</string>
+    <string name="widget_open_app">افتح منبر</string>
     <string name="widget_empty">اختر درساً للاستماع</string>
 </resources>

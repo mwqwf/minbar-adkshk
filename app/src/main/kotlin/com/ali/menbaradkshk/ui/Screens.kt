@@ -4,10 +4,13 @@ package com.ali.menbaradkshk.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -26,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.DirectionsCar
@@ -45,6 +49,8 @@ import androidx.compose.material.icons.filled.MicExternalOn
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PauseCircleFilled
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.NotificationsNone
 import androidx.compose.material.icons.filled.Outbox
 import androidx.compose.material.icons.filled.PlayCircleFilled
@@ -81,7 +87,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -184,35 +196,18 @@ fun HomeScreen(
     val visibleFeed = deduped.second
 
     // ▶️ «تابع من حيث وقفت»: أكثر ما يفعله المستمع هو إكمال درس الأمس، وكان
-    // ذلك يكلّفه تذكّر اسم الدرس ثمّ البحث عنه. يُحسب هنا **مرّة واحدة** داخل
-    // `remember` لأنّ `position`/`duration` يفكّان JSON كاملاً عند كل نداء.
+    // ذلك يكلّفه تذكّر اسم الدرس ثمّ البحث عنه. يُحسب خارج خيط الواجهة.
     // `playback.mediaId` في المفتاح كي تتحدّث البطاقة عند تغيّر الدرس الجاري:
     // حفظُ الموضع كتابةٌ «صامتة» لا ترفع `revision` (انظر LocalStore.setPosition).
-    val resume = remember(revision, state.lessons, savedIds, playback.mediaId) {
-        resumeItemOf(vm, state, savedIds)
-    }
-
-    // ⬆️ زرّ «شارك درساً» العائم يتوارى مع التمرير للأسفل ويعود مع الصعود
-    // (نمط FAB القياسيّ): كان يغطّي بطاقة «وِرد اليوم» على الشاشات القصيرة.
-    // الحالة تُبلَّغ إلى MinbarApp (مالك الزرّ) عبر الـViewModel.
-    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-    LaunchedEffect(listState) {
-        var lastIndex = listState.firstVisibleItemIndex
-        var lastOffset = listState.firstVisibleItemScrollOffset
-        androidx.compose.runtime.snapshotFlow {
-            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
-        }.collect { (index, offset) ->
-            when {
-                index > lastIndex || (index == lastIndex && offset > lastOffset + 6) ->
-                    vm.setHomeFabVisible(false)
-                index < lastIndex || (index == lastIndex && offset < lastOffset - 6) ->
-                    vm.setHomeFabVisible(true)
-            }
-            lastIndex = index
-            lastOffset = offset
+    val resumeSavedOnly by vm.savedOnly.collectAsState()
+    val resumeCandidate by produceState<ResumeItem?>(
+        null, revision, state.lessonById, resumeSavedOnly, playback.mediaId,
+    ) {
+        value = withContext(Dispatchers.IO) {
+            resumeItemOf(vm, state, resumeSavedOnly)
         }
     }
-    DisposableEffect(Unit) { onDispose { vm.setHomeFabVisible(true) } }
+    val resume = resumeCandidate?.takeIf { !resumeSavedOnly || savedIds?.contains(it.lesson.id) == true }
 
     // ⤵️ حالة «المزيد» — تُقرأ مرّة عند الدخول وتُحفظ بكتابة صامتة عند التبديل.
     val homeMoreExpandedState = remember { mutableStateOf(vm.store.homeMoreExpanded()) }
@@ -226,12 +221,9 @@ fun HomeScreen(
         onRefresh = { vm.content.requestDeepRefresh() },
         modifier = Modifier.fillMaxSize(),
     ) {
-        // ٨٨dp أسفل القائمة: زرّ «شارك درساً» العائم (٥٦dp + ١٦dp هامشه) كان
-        // يغطّي آخر بطاقة، والحشوة تُبقيها كاملةً فوقه.
         LazyColumn(
-            state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 88.dp),
+            contentPadding = PaddingValues(bottom = 16.dp),
         ) {
             // ⚠️ حين لا شبكة أصلاً يظهر SavedOnlyBar وحده: كان الشريطان
             // يتكدّسان معاً — رسالتا انقطاع متلاصقتان بنفس اللون والأيقونة —
@@ -256,15 +248,18 @@ fun HomeScreen(
             // الحجم، وهي الموازنة التي تجعله تذكيراً لا إزعاجاً.
             item { UpdateBanner(vm) }
 
-            // ▶️ أوّل ما يراه المستمع: الدرس الذي تركه في منتصفه. نقرة واحدة
+            item(key = "home-search-entry") { HomeSearchEntry { vm.open(Route.Search()) } }
+
+            // ▶️ أوّل درس يراه المستمع: الدرس الذي تركه في منتصفه. نقرة واحدة
             // تعيده إلى الثانية نفسها، ولا تظهر البطاقة إن لم يكن هناك ما
             // يُتابَع (انظر `resumeItemOf`).
             if (resume != null) {
                 item(key = "resume") { ResumeCard(vm, resume) }
             }
 
-            // وِرد اليوم **ثانياً بعد «تابع من حيث وقفت» مباشرة** — تخفيفاً
-            // لأعلى الشاشة. ويسقط في وضع «المحفوظ فقط» إن لم يكن منزَّلاً:
+            item(key = "home-archive-doors") { HomeArchiveDoors(vm) }
+
+            // يسقط وِرد اليوم في وضع «المحفوظ فقط» إن لم يكن منزَّلاً:
             // بطاقةٌ كبيرة نقرتها تنتهي بخطأ تشغيل أسوأ من غيابها.
             if (ward != null && (savedIds == null || ward.id in savedIds)) {
                 item(key = "ward") { DailyWardCard(vm, ward, feed) }
@@ -286,14 +281,6 @@ fun HomeScreen(
                     text = "كل الأقسام والسلاسل تجدها في تبويب «المكتبة» أسفل الشاشة.",
                     actionLabel = "فتح المكتبة",
                     onAction = { vm.openRoot(Route.Library) },
-                )
-            }
-            item {
-                HintCard(
-                    vm = vm,
-                    hintKey = "contribute_fab",
-                    icon = Icons.Filled.MicExternalOn,
-                    text = "لديك تسجيل مفيد؟ شاركه من زر «شارك درساً» وسيُنشر بعد موافقة المشرفين.",
                 )
             }
             // تلميح «حول» — تذكير خفيف لمرة واحدة، لا يظهر في الوهلة الأولى
@@ -392,9 +379,7 @@ class ResumeItem(val lesson: Lesson, val positionMs: Long, val durationMs: Long)
 /**
  * ▶️ أحدث درس **لم يُكمَل** وله موضع استماع محفوظ.
  *
- * ⚠️ دالّة عاديّة لا قابلة للتركيب عن قصد: `positions()`/`durations()`
- * و`completedIds()` تفكّ JSON كاملاً في كل نداء، فتُقرأ كلّها **مرّة واحدة**
- * من داخل `remember` في الرئيسية، لا في جسم التركيب.
+ * يستعمل نفس قاعدة اختيار الاستئناف البارد، دون عرض بديل إعادة التشغيل.
  *
  * ولا تُرجع شيئاً حين لا استماع سابق، ولا لدرسٍ اكتمل — سواء بعلامة «مكتمل»
  * المحفوظة أو بموضعٍ بلغ آخر نصف دقيقة من المدّة.
@@ -402,36 +387,124 @@ class ResumeItem(val lesson: Lesson, val positionMs: Long, val durationMs: Long)
 private fun resumeItemOf(
     vm: AppViewModel,
     state: ContentState,
-    savedIds: Set<String>?,
+    savedOnly: Boolean,
 ): ResumeItem? {
-    val completed = vm.store.completedIds().toSet()
-    val positions = vm.store.positions()
-    val durations = vm.store.durations()
-    for (id in vm.store.recentPlayedIds()) {
-        if (id in completed) continue
-        // 📴 وضع «أظهر المحفوظ فقط»: بطاقةٌ كبيرة نقرتها تنتهي بخطأ تشغيل
-        // أسوأ من غيابها (نفس منطق «وِرد اليوم» أعلاه).
-        if (savedIds != null && id !in savedIds) continue
-        val lesson = state.lessonById[id] ?: continue
-        if (lesson.audioUrl.isBlank()) continue
-        val position = positions[id] ?: 0L
-        val duration = durations[id] ?: 0L
-        // أقلّ من نصف دقيقة: لم يبدأ فعلاً، وعرضُه «متابعة» مبالغة.
-        if (position < 30_000L) continue
-        // آخر نصف دقيقة: انتهى عملياً ولو لم يُعلَّم «مكتمل».
-        if (duration > 0L && position >= duration - 30_000L) continue
-        return ResumeItem(lesson, position, duration)
-    }
-    return null
+    val lookup = vm.store.playableAudioSnapshot()
+    return com.ali.menbaradkshk.media.selectLessonResumeTarget(
+        vm.store.recentPlayedIds(), state.lessonById, vm.store.positions(), vm.store.durations(),
+        vm.store.completedIds().toSet(), allowReplayFallback = false, savedOnly = savedOnly,
+        localPath = { lookup(it)?.path },
+    )?.let { ResumeItem(it.lesson, it.positionMs, it.durationMs) }
 }
 
-/**
- * ▶️ بطاقة «تابع من حيث وقفت» — أوّل ما يراه المستمع في الرئيسية.
- *
- * المواضع محفوظة أصلاً، لكنّ العودة إليها كانت تحتاج تذكّر اسم الدرس ثمّ
- * البحث عنه. هنا: الاسم وشريط التقدّم ودقيقة التوقّف وزرّ تشغيل كبير — ونقرةٌ
- * واحدة تعيده إلى الثانية نفسها عبر `Route.Lesson(id, startAtMs)`.
- */
+/** مدخل إلى البحث الأصلي؛ شريط الأدوات العام يبقى كما هو. */
+@Composable
+private fun HomeSearchEntry(onClick: () -> Unit) {
+    val shape = RoundedCornerShape(18.dp)
+    val colors = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .clip(shape)
+            .background(colors.surface)
+            .border(1.dp, colors.outlineVariant, shape)
+            .clickable(role = Role.Button, onClickLabel = "افتح البحث", onClick = onClick)
+            .heightIn(min = 64.dp)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        Box(Modifier.size(38.dp).background(colors.primaryContainer, RoundedCornerShape(12.dp)),
+            contentAlignment = Alignment.Center) {
+            Icon(Icons.Filled.Search, contentDescription = null, tint = colors.onPrimaryContainer,
+                modifier = Modifier.size(21.dp))
+        }
+        Text("ابحث عن درس أو سلسلة", modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.titleMedium, color = colors.onSurface)
+        Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = colors.onSurfaceVariant,
+            modifier = Modifier.size(17.dp))
+    }
+}
+
+/** مداخل تكرّر طرق التبويب ولا تستبدلها. تُرصّ عمودياً عند ضيق العرض أو تكبير النص. */
+@Composable
+private fun HomeArchiveDoors(vm: AppViewModel) {
+    val fontScale = LocalDensity.current.fontScale
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(9.dp),
+        ) {
+            Box(Modifier.size(width = 3.dp, height = 19.dp)
+                .background(MaterialTheme.colorScheme.secondary, RoundedCornerShape(2.dp)))
+            Text("أبواب المنبر", style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.onSurface)
+        }
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val compact = maxWidth < 300.dp || fontScale > 1.25f
+            val content: @Composable (Modifier) -> Unit = { tile ->
+                ArchiveDoor(tile, Icons.Filled.FolderOpen, "المكتبة", "دروس وسلاسل", compact) { vm.openRoot(Route.Library) }
+                ArchiveDoor(tile, Icons.Filled.Star, "الأذكار", "للوِرد اليومي", compact) { vm.openRoot(Route.Adhkar) }
+                ArchiveDoor(tile, Icons.AutoMirrored.Filled.MenuBook, "المصحف", "للقراءة", compact) { vm.openRoot(Route.Quran) }
+            }
+            if (compact) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { content(Modifier.fillMaxWidth()) }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { content(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArchiveDoor(
+    modifier: Modifier,
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    compact: Boolean,
+    open: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(18.dp)
+    val container = modifier.clip(shape).background(colors.surface)
+        .border(1.dp, colors.outlineVariant, shape)
+        .clickable(role = Role.Button, onClick = open)
+        .heightIn(min = if (compact) 60.dp else 105.dp)
+        .padding(horizontal = 10.dp, vertical = 12.dp)
+    val mark: @Composable () -> Unit = {
+        Box(
+            Modifier.size(37.dp).background(colors.secondaryContainer, RoundedCornerShape(12.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, contentDescription = null, tint = colors.onSecondaryContainer, modifier = Modifier.size(19.dp))
+        }
+    }
+    val labels: @Composable () -> Unit = {
+        Text(title, style = MaterialTheme.typography.titleMedium, color = colors.onSurface)
+        Text(subtitle, style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+    }
+    if (compact) {
+        Row(container, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            mark()
+            Column(Modifier.weight(1f)) { labels() }
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null,
+                tint = colors.onSurfaceVariant, modifier = Modifier.size(18.dp))
+        }
+    } else {
+        Column(container, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            mark()
+            Spacer(Modifier.height(4.dp))
+            labels()
+        }
+    }
+}
+
+/** استعادة الموضع كما هو بعد اختيار الدرس؛ لا تظهر هذه البطاقة في حالة سجلّ فارغ. */
 @Composable
 private fun ResumeCard(vm: AppViewModel, item: ResumeItem) {
     val lesson = item.lesson
@@ -439,70 +512,91 @@ private fun ResumeCard(vm: AppViewModel, item: ResumeItem) {
     val sectionName = vm.content.state.collectAsState().value
         .subcategoryById[lesson.subcategoryId]?.name
     val title = remember(lesson.id, lesson.title, sectionName) { sectionAwareTitle(vm, lesson) }
-    val accent = brandTintOnSurface(GreenBrand)
+    // «محراب الفجر»: نهاراً فجرٌ فاتح (نعناعيّ ← رمليّ) بنصٍّ زمرّديّ، وليلاً زمرّدٌ عميق بنصٍّ فاتح.
+    val night = MaterialTheme.colorScheme.background.luminance() < .5f
+    val ink = if (night) ArchivePlayerInk else Color.White           // لون رمز التشغيل داخل الدائرة
+    val gold = if (night) ArchiveAmber else Gem500                  // الإبراز: دائرة التشغيل والشريط
+    val ivory = if (night) Color(0xFFEAF3EE) else Color(0xFF0F3B2F) // العنوان والنصّ
+    val muted = if (night) Color(0xFF9DB5AA) else Color(0xFF55625B)
+    val label = if (night) ArchiveAmber else Gold800
+    val heroBrush = if (night) Brush.linearGradient(listOf(NightEmerald, ArchivePlayerInk, Color(0xFF2A2A1C)))
+        else Brush.linearGradient(listOf(DawnMint, ArchiveIvory, DawnSand))
+    val trackColor = if (night) Color(0xFF4E6B60) else Color(0xFFCFC3AE)
     val minutes = (item.positionMs / 60_000L).toInt()
-    // «الدقيقة 0» لا تعني شيئاً لمن يقرأ — تُقال «من أوّله» بدلها.
     val where = if (minutes >= 1) "تابع من الدقيقة $minutes" else "تابع من أوّله"
     val open = { vm.open(Route.Lesson(lesson.id, item.positionMs)) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .clickable(onClick = open)
-            .padding(14.dp),
+    Box(
+        modifier = Modifier.fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 5.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .background(heroBrush)
+            .border(1.dp, if (night) gold.copy(alpha = 0.26f) else Color(0xFFE2D7C3), RoundedCornerShape(22.dp))
+            .clickable(role = Role.Button, onClickLabel = "تشغيل من حيث وقفت", onClick = open),
     ) {
-        Text(
-            "تابع من حيث وقفت",
-            style = MaterialTheme.typography.labelLarge,
-            color = accent,
-        )
-        Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (lesson.speaker.isNotBlank()) {
+        // علامة القوس والصفحة رسم هادئ غير وظيفي، لا صورة خلف نصوص المصحف.
+        Canvas(Modifier.matchParentSize()) {
+            val unit = minOf(size.width * 0.37f, size.height * 0.76f) / 64f
+            val ox = -1f * unit
+            val oy = (size.height - 64 * unit) / 2
+            fun px(x: Float) = ox + x * unit
+            fun py(y: Float) = oy + y * unit
+            val arch = Path().apply {
+                moveTo(px(8f), py(52f))
+                lineTo(px(8f), py(37f))
+                cubicTo(px(8f), py(21f), px(17f), py(12f), px(32f), py(6f))
+                cubicTo(px(47f), py(12f), px(56f), py(21f), px(56f), py(37f))
+                lineTo(px(56f), py(52f))
+                cubicTo(px(47f), py(49f), px(39f), py(50f), px(32f), py(55f))
+                cubicTo(px(25f), py(50f), px(17f), py(49f), px(8f), py(52f))
+                moveTo(px(32f), py(28f))
+                lineTo(px(32f), py(55f))
+                moveTo(px(17f), py(34f))
+                cubicTo(px(23f), py(33f), px(28f), py(36f), px(32f), py(40f))
+                cubicTo(px(36f), py(36f), px(41f), py(33f), px(47f), py(34f))
+            }
+            drawPath(arch, color = gold.copy(alpha = 0.16f), style = Stroke(width = 1.1f * unit))
+        }
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 17.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text("أكمل الاستماع", style = MaterialTheme.typography.labelLarge, color = label)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
-                        lesson.speaker,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
+                        title,
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = ivory,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    if (lesson.speaker.isNotBlank()) {
+                        Text(
+                            lesson.speaker,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = muted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Text(where, style = MaterialTheme.typography.bodyMedium, color = ivory)
                 }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    where,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
+                // البطاقة نفسها فعل واحد ومقروء؛ لا زران متداخلان يكرران الإجراء.
+                Box(Modifier.size(50.dp).background(gold, RoundedCornerShape(50)), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = ink, modifier = Modifier.size(27.dp))
+                }
+            }
+            if (item.durationMs > 0L) {
+                Spacer(Modifier.height(3.dp))
+                ClassicLinearProgress(
+                    progress = progress(item.positionMs, item.durationMs),
+                    modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+                    color = gold,
+                    trackColor = trackColor,
                 )
             }
-            Spacer(Modifier.width(12.dp))
-            // هدف لمس ٥٦dp — أكبر من الحدّ الأدنى، فهو الفعل الأهمّ في البطاقة.
-            IconButton(onClick = open, modifier = Modifier.size(56.dp)) {
-                Icon(
-                    Icons.Filled.PlayCircleFilled,
-                    contentDescription = "تشغيل من حيث وقفت",
-                    tint = accent,
-                    modifier = Modifier.size(48.dp),
-                )
-            }
-        }
-        if (item.durationMs > 0L) {
-            Spacer(Modifier.height(10.dp))
-            ClassicLinearProgress(
-                progress = progress(item.positionMs, item.durationMs),
-                modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
-                color = accent,
-            )
         }
     }
 }
@@ -620,7 +714,8 @@ private fun SectionDownloadSuggestion(vm: AppViewModel, state: ContentState) {
     suggestion?.let { (sub, lessons) ->
         // العدد المذكور هو **المتبقّي فعلاً** لا كل دروس القسم.
         val remaining = remember(sub.id) {
-            lessons.count { it.id !in vm.downloads.all() }
+            val lookup = vm.store.playableAudioSnapshot()
+            lessons.count { lookup(it.id) == null }
         }
         AlertDialog(
             onDismissRequest = { suggestion = null },
@@ -764,7 +859,7 @@ private fun FeaturedCard(
 }
 
 /**
- * 📬 بطاقات «ما يخصّني»: الإشعارات، مساهماتي، تنزيلاتي — **بأسمائها مكتوبة**.
+ * 📬 بطاقات «ما يخصّني»: الإشعارات والتنزيلات — **بأسمائها مكتوبة**.
  *
  * كانت هذه المداخل أيقونات في الشريط العلويّ (سبع أيقونات بلا كلمة واحدة،
  * تزاحم العنوان حتى يكاد يُقصّ). وجمهور التطبيق لا يفكّ رموز الأيقونات، فما
@@ -777,7 +872,6 @@ private fun HomeInboxCards(vm: AppViewModel) {
         StreakLine(vm)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             NotificationsCard(vm, Modifier.weight(1f))
-            MySubmissionsCard(vm, Modifier.weight(1f))
             InboxCard(
                 icon = Icons.Filled.Download,
                 label = "تنزيلاتي",
@@ -836,34 +930,6 @@ private fun NotificationsCard(vm: AppViewModel, modifier: Modifier = Modifier) {
         badge = if (unread > 0) "$unread" else null,
         modifier = modifier,
         onClick = { vm.open(Route.Notifications) },
-    )
-}
-
-/// «مساهماتي» — تظهر لمن ساهم من قبل فقط (نفس شرط زرّ الشريط السابق)، وعليها
-/// نقطة إذا حُسمت مساهمة بعد آخر زيارة.
-@Composable
-private fun MySubmissionsCard(vm: AppViewModel, modifier: Modifier = Modifier) {
-    // لا هويّة سحابيّة بعد اليوم: «ساهم من قبل» مؤشّرٌ محلّي وحده.
-    val revision by vm.store.revision.collectAsState()
-    val contributed = remember(revision) { vm.hasContributedBefore() }
-    if (!contributed) return
-
-    val flow = remember { vm.submissions.mine().catch { emit(emptyList()) } }
-    val submissions by flow.collectAsState(initial = emptyList())
-    val transcriptsFlow = remember { vm.transcripts.mine().catch { emit(emptyList()) } }
-    val transcriptItems by transcriptsFlow.collectAsState(initial = emptyList())
-    val hasNewDecision = remember(submissions, transcriptItems, revision) {
-        val seen = vm.store.submissionsLastSeenMs()
-        submissions.any { it.status != "pending" && it.decidedAtMs > seen } ||
-            transcriptItems.any { it.status != "pending" && it.decidedAtMs > seen }
-    }
-    InboxCard(
-        icon = Icons.Filled.Outbox,
-        label = "مساهماتي",
-        tint = brandTintOnSurface(BlueBrand),
-        badge = if (hasNewDecision) " " else null,
-        modifier = modifier,
-        onClick = { vm.open(Route.MySubmissions) },
     )
 }
 
@@ -984,33 +1050,36 @@ private fun QuickChip(
 
 @Composable
 private fun DailyWardCard(vm: AppViewModel, ward: Lesson, feed: List<Lesson>) {
-    Box(
-        modifier = Modifier
-            .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 2.dp)
-            .fillMaxWidth()
-            .background(
-                Brush.horizontalGradient(listOf(Teal, Slate)),
-                RoundedCornerShape(12.dp),
-            )
-            .clickable { vm.openPlayer(ward, listOf(ward) + feed) }
-            .padding(14.dp),
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(16.dp)
+    Row(
+        modifier = Modifier.fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 5.dp)
+            .clip(shape)
+            .background(colors.surfaceContainer)
+            .clickable(role = Role.Button) { vm.openPlayer(ward, listOf(ward) + feed) }
+            .heightIn(min = 68.dp)
+            .padding(horizontal = 13.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Filled.WbSunny, contentDescription = null, tint = Color.White, modifier = Modifier.size(34.dp))
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text("وِرد اليوم", color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.bodyMedium)
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    ward.displayTitle,
-                    color = Color.White,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.titleMedium,
-                )
-            }
-            Icon(Icons.Filled.PlayCircleFilled, contentDescription = null, tint = Color.White, modifier = Modifier.size(40.dp))
+        Box(
+            Modifier.size(36.dp).background(colors.secondaryContainer, RoundedCornerShape(50)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Filled.WbSunny, contentDescription = null, tint = colors.onSecondaryContainer, modifier = Modifier.size(22.dp))
         }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("وِرد اليوم", color = colors.secondary, style = MaterialTheme.typography.labelLarge)
+            Text(
+                ward.displayTitle,
+                color = colors.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
+        Icon(Icons.Filled.PlayCircleFilled, contentDescription = null, tint = colors.primary, modifier = Modifier.size(30.dp))
     }
 }
 
@@ -1527,8 +1596,8 @@ fun LessonsScreen(vm: AppViewModel, subcategoryId: String, playback: PlaybackUiS
     var downloadedCount by remember { mutableIntStateOf(0) }
     LaunchedEffect(revision, all) {
         downloadedCount = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val map = vm.downloads.all()
-            all.count { l -> map[l.id]?.let { java.io.File(it).isFile } == true }
+            val lookup = vm.store.playableAudioSnapshot()
+            all.count { lookup(it.id) != null }
         }
     }
     // القسم الرئيسي قد لا يكون قد وصل بعد (رابط عميق/إشعار قبل اكتمال

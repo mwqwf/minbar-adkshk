@@ -62,6 +62,7 @@ import com.ali.menbaradkshk.data.SupportRepository
 import com.ali.menbaradkshk.data.SupportThread
 import com.ali.menbaradkshk.util.VoiceRecorder
 import com.ali.menbaradkshk.util.formatDuration
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -180,8 +181,11 @@ fun SupportThreadScreen(
 
 /// فقاعة رسالة — رسائل المطوّر على جهة، ورسائل المستخدم على الأخرى بلون بارز.
 @Composable
-private fun SupportBubble(message: SupportMessage) {
+internal fun SupportBubble(message: SupportMessage) {
     val fromOwner = message.fromOwner
+    val retainedRecording = remember(message.audioPath, message.attachmentUnavailable) {
+        message.attachmentUnavailable && File(message.audioPath).isFile
+    }
     val background = if (fromOwner) {
         MaterialTheme.colorScheme.surfaceVariant
     } else {
@@ -211,9 +215,17 @@ private fun SupportBubble(message: SupportMessage) {
                 )
             }
             if (message.text.isNotBlank()) {
-                Text(message.text, color = textColor, style = MaterialTheme.typography.bodyLarge)
+                if (message.attachmentUnavailable) {
+                    androidx.compose.foundation.text.selection.SelectionContainer {
+                        Text(message.text, color = textColor, style = MaterialTheme.typography.bodyLarge)
+                    }
+                } else {
+                    Text(message.text, color = textColor, style = MaterialTheme.typography.bodyLarge)
+                }
             }
-            if (message.audioPath.isNotBlank()) {
+            if (message.audioPath.isNotBlank() &&
+                (!message.attachmentUnavailable || retainedRecording)
+            ) {
                 SupportAudioPlayer(message.audioPath, message.pending || message.failed)
             }
             // ⚠️ ردّ المطوّر بالصورة وحدها كان يظهر فقاعةً فارغة لا تحمل إلا
@@ -231,17 +243,68 @@ private fun SupportBubble(message: SupportMessage) {
                 val context2 = LocalContext.current
                 val repo = remember { SupportRepository.get(context2) }
                 Text(
-                    "تعذّر الإرسال",
+                    if (message.attachmentUnavailable) "لم يُؤكَّد الإرسال: المرفق مرفوض" else "تعذّر الإرسال",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.error,
                 )
-                TextButton(onClick = { repo.retryFailed(message.id) }) {
-                    Text("أعد المحاولة")
+                if (message.attachmentUnavailable) {
+                    if (retainedRecording) {
+                        Text("التسجيل لا يزال على جهازك.", color = textColor, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Text(
+                        if (message.text.isNotBlank()) {
+                            "يمكنك نسخ النص وإرساله في رسالة منفصلة دون مرفق."
+                        } else {
+                            "يمكنك كتابة رسالة منفصلة وإرسالها دون مرفق."
+                        },
+                        color = textColor,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                val actions = rememberCoroutineScope()
+                var working by remember(message.id) { mutableStateOf(false) }
+                var confirmDiscard by remember(message.id) { mutableStateOf(false) }
+                var localError by remember(message.id) { mutableStateOf<String?>(null) }
+                if (!message.attachmentUnavailable) {
+                    TextButton(enabled = !working, onClick = {
+                        if (!working) {
+                            working = true
+                            actions.launch {
+                                try { repo.retryFailed(message.id) }
+                                catch (e: CancellationException) { throw e }
+                                catch (_: Exception) { localError = "تعذّرت جدولة إعادة المحاولة." }
+                                finally { working = false }
+                            }
+                        }
+                    }) { Text("أعد المحاولة") }
+                }
+                TextButton(enabled = !working, onClick = { confirmDiscard = true }) { Text("احذف المسودة من الجهاز") }
+                localError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                if (confirmDiscard) {
+                    AlertDialog(
+                        onDismissRequest = { confirmDiscard = false },
+                        text = { Text("سيُحذف النص والتسجيل من هذا الجهاز فقط. إذا كانت الرسالة قد وصلت من قبل، فلن تُحذف من الخادم.") },
+                        dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text("إلغاء") } },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                confirmDiscard = false
+                                if (!working) {
+                                    working = true
+                                    actions.launch {
+                                        try { repo.discardFailed(message.id) }
+                                        catch (e: CancellationException) { throw e }
+                                        catch (_: Exception) { localError = "لم نتمكن من تأكيد حذف المسودة محليًا." }
+                                        finally { working = false }
+                                    }
+                                }
+                            }) { Text("احذف من الجهاز") }
+                        },
+                    )
                 }
             } else if (message.pending) {
                 // لا نقول «فشل الإرسال»: الرسالة محفوظة وستُرسل وحدها.
                 Text(
-                    "ستُرسل عند عودة الإنترنت",
+                    "في انتظار تأكيد الإرسال",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -378,12 +441,16 @@ private fun SupportAudioPlayer(path: String, pending: Boolean) {
 
 /// حقل الردّ بعد أن يردّ المطوّر: زرّ الصوت أوّلاً وأكبر، والكتابة بعده.
 @Composable
-private fun SupportComposer(onSend: (String, File?) -> Unit) {
+private fun SupportComposer(onSend: suspend (String, File?) -> Unit) {
     // محفوظان عبر التدوير — كما في استمارة «راسِل المطوّر».
     var text by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
     var recorded by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = recordedFileSaver) {
         mutableStateOf<File?>(null)
     }
+
+    val scope = rememberCoroutineScope()
+    var saving by remember { mutableStateOf(false) }
+    var saveFailed by remember { mutableStateOf(false) }
 
     Column(
         Modifier.fillMaxWidth().padding(12.dp),
@@ -393,21 +460,40 @@ private fun SupportComposer(onSend: (String, File?) -> Unit) {
             file = recorded,
             onRecorded = { recorded = it },
             onCleared = { recorded = null },
+            controlsEnabled = !saving,
         )
         OutlinedTextField(
             value = text,
+            enabled = !saving,
             onValueChange = { if (it.length <= SupportRepository.MAX_TEXT) text = it },
             modifier = Modifier.fillMaxWidth(),
             placeholder = { Text("أو اكتب هنا (اختياري)") },
             minLines = 1,
         )
+        if (saveFailed) Text("تعذّر حفظ المسودة. لم نرسل النص بدل التسجيل.", color = MaterialTheme.colorScheme.error)
         Button(
             onClick = {
-                onSend(text, recorded)
-                text = ""
-                recorded = null
+                if (!saving) {
+                    saving = true
+                    saveFailed = false
+                    val nextText = text
+                    val nextAudio = recorded
+                    scope.launch {
+                        try {
+                            onSend(nextText, nextAudio)
+                            text = ""
+                            recorded = null
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            saveFailed = true
+                        } finally {
+                            saving = false
+                        }
+                    }
+                }
             },
-            enabled = text.isNotBlank() || recorded != null,
+            enabled = !saving && (text.isNotBlank() || recorded != null),
             modifier = Modifier.fillMaxWidth().height(56.dp),
         ) {
             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)
@@ -432,6 +518,7 @@ fun VoiceRecordButton(
     file: File?,
     onRecorded: (File) -> Unit,
     onCleared: () -> Unit,
+    controlsEnabled: Boolean = true,
 ) {
     val context = LocalContext.current
     // المفرد لا نسخة لكلّ تركيبة: تسجيلٌ جارٍ يصمد للتدوير ويُعاد ربط الزرّ به.
@@ -496,7 +583,7 @@ fun VoiceRecordButton(
                     }
                 },
                 // معطّل لحظة التحقّق من التسجيل كي لا تبدأ ضغطةٌ ثانية تسجيلاً فوقه.
-                enabled = !stopping,
+                enabled = !stopping && controlsEnabled,
                 modifier = Modifier.fillMaxWidth().height(84.dp),
                 shape = RoundedCornerShape(20.dp),
                 colors = if (recording) {
@@ -544,6 +631,7 @@ fun VoiceRecordButton(
                     Spacer(Modifier.width(8.dp))
                     Text("تسجيلك جاهز", Modifier.weight(1f))
                     TextButton(
+                        enabled = controlsEnabled,
                         onClick = {
                             runCatching { file.delete() }
                             onCleared()

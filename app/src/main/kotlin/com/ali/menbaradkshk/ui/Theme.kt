@@ -12,82 +12,94 @@ import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ali.menbaradkshk.R
 
-// هوية «منبر» — مشتقّة **فعلياً من أيقونة التطبيق** (لا من theme.dart القديم):
-// حبر ليليّ (خلفية الأيقونة #020E1D) + سُلّم ذهبيّ + جوهر سماويّ.
-// الرموز أدناه مقيسة من الأيقونة نفسها، ومنها تُبنى كل ألوان الواجهة.
+// هوية «محراب الفجر» (اختيار المالك 2026-11-27): المنبر في قلب المسجد، والدرس صوتٌ
+// يتردّد تحت القبّة. نهارٌ من حجرٍ جيريّ فاتح وزمرّد ونحاس، وليلٌ زمرّديّ عميق
+// بنعناعيّ ونحاسيّ — لا أسود خالص في أيّ وضع.
+// ⚠️ أسماء الرموز القديمة (Ink/Gold/Gem/Teal…) باقية لأنّ بقيّة الملفات تستوردها؛
+// تغيّرت قيمها فقط لتنتمي إلى الهوية الجديدة.
 
-// ---- الحبر (الخلفيات والأسطح الداكنة) ----
-val Ink900 = Color(0xFF01050B)
-val Ink800 = Color(0xFF020E1D) // ★ خلفية الأيقونة نفسها
-val Ink700 = Color(0xFF031623)
-val Ink600 = Color(0xFF05232C)
-val Ink500 = Color(0xFF072A33)
+// ---- الليل الزمرّديّ (الخلفيات والأسطح الداكنة) ----
+val Ink900 = Color(0xFF06110E)
+val Ink800 = Color(0xFF0B1A16) // ★ خلفية الليل
+val Ink700 = Color(0xFF0F211C)
+val Ink600 = Color(0xFF12261F)
+val Ink500 = Color(0xFF163129)
 
-// ---- الذهب (سُلّم الأيقونة) ----
-// ⚠️ قاعدة إلزامية: Gold100–Gold800 للوضع الداكن والرسوم الكبيرة فقط.
-// وحده Gold900 يصلح **نصّاً على خلفية فاتحة** (6.19 مقابل 3.69 لـGold800).
-val Gold100 = Color(0xFFFEE469)
-val Gold200 = Color(0xFFFDD459)
-val Gold300 = Color(0xFFF9C549)
-val Gold400 = Color(0xFFF4BB44)
-val Gold500 = Color(0xFFE8A837)
-val Gold600 = Color(0xFFD7962B)
-val Gold700 = Color(0xFFC88825)
-val Gold800 = Color(0xFFB8771B)
-val Gold900 = Color(0xFF885618)
+// ---- النحاس ----
+// ⚠️ Gold100–Gold700 للوضع الداكن والرسوم الكبيرة؛ Gold800/Gold900 وحدهما نصّاً على الحجر الفاتح.
+val Gold100 = Color(0xFFF6D6B4)
+val Gold200 = Color(0xFFEDBB8A)
+val Gold300 = Color(0xFFE3A267)
+val Gold400 = Color(0xFFD18B4E)
+val Gold500 = Color(0xFFC27A3C)
+val Gold600 = Color(0xFFB5652B)
+val Gold700 = Color(0xFF9E5622)
+val Gold800 = Color(0xFF8A4A1C)
+val Gold900 = Color(0xFF7A3F17)
 
-// ---- الجوهر السماوي ----
-// ⚠️ #068F93 يعبر 4.5:1 على Ink800 وInk700 فقط (يهبط إلى 3.86 على Ink500):
-// نصّاً على الخلفية والسطح الأساس فقط، وأيقونات/حدوداً على الأسطح المرتفعة.
-val Gem100 = Color(0xFF068F93)
-val Gem200 = Color(0xFF02858E)
-val Gem300 = Color(0xFF027983)
-val Gem400 = Color(0xFF036E79)
-val Gem500 = Color(0xFF025864)
+// ---- الزمرّد والنعناع ----
+// Gem100 (نعناعيّ) نصّاً على الليل؛ Gem500 (زمرّد) نصّاً على الحجر الفاتح.
+val Gem100 = Color(0xFF7FD1B4)
+val Gem200 = Color(0xFF5FBF9E)
+val Gem300 = Color(0xFF2E8C6E)
+val Gem400 = Color(0xFF157055)
+val Gem500 = Color(0xFF0F5A46)
 
-// أسماء الهوية القديمة تبقى كما هي (يستوردها بقيّة الملفات) — تغيّرت قيمها فقط
-// لتصير مشتقّة من الأيقونة.
 val Teal = Gem500
-val Slate = Ink600
+val Slate = Color(0xFF0B3B2F)
 val Gold = Gold900
-val BlueBrand = Color(0xFF14405E)
-val GreenBrand = Color(0xFF186B65)
-val OrangeBrand = Color(0xFF7A4514)
+val BlueBrand = Color(0xFF1F4E5A)
+val GreenBrand = Color(0xFF1B7A5E)
+val OrangeBrand = Color(0xFF8A4A1C)
 val SecondaryGold = Gold400
-val PositiveOnDark = Color(0xFF67AF96)
+val PositiveOnDark = Color(0xFF7FD1B4)
 val GoldOnDark = Gold200
 
-// أسطح داكنة/فاتحة: الداكنة حبر الأيقونة نفسه، والفاتحة رماديّ أزرق محايد.
-val DarkAppBar = Ink700
-val DarkScaffold = Ink800
-val DarkSurface = Ink700
-val LightScaffold = Color(0xFFF4F7FA)
-val LightSurface = Color(0xFFFFFFFF)
+// الحجر والحبر: ورقٌ فاتح للقراءة نهاراً، وزمرّد عميق للمشغّل ليلاً.
+internal val ArchivePaper = Color(0xFFF6F1E7)   // حجر جيريّ
+internal val ArchiveIvory = Color(0xFFFFFDF8)
+internal val ArchiveLibraryInk = Color(0xFF1E2B26) // نصّ النهار
+internal val ArchivePlayerInk = Color(0xFF0B1A16)
+internal val ArchiveBronze = Color(0xFF8A4A1C)
+internal val ArchiveAmber = Color(0xFFE3A267)
+internal val DawnMint = Color(0xFFDCEFE6)
+internal val DawnSand = Color(0xFFF6E3CF)
+internal val NightEmerald = Color(0xFF123A2F)
+
+val DarkAppBar = ArchivePlayerInk
+val DarkScaffold = ArchivePlayerInk
+val DarkSurface = Color(0xFF12261F)
+val LightScaffold = ArchivePaper
+val LightSurface = ArchiveIvory
 
 private val LightColors = lightColorScheme(
     primary = Gem500,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFD6EBEC),
-    onPrimaryContainer = Color(0xFF034853),
-    secondary = Gold900,
+    primaryContainer = DawnMint,
+    onPrimaryContainer = Color(0xFF0F3B2F),
+    secondary = Gold800,
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFFBEFCF),
-    onSecondaryContainer = Color(0xFF4A3208),
-    tertiary = Color(0xFF085956),
+    secondaryContainer = DawnSand,
+    onSecondaryContainer = Color(0xFF4A2A10),
+    tertiary = Color(0xFF2E7D6B),
     onTertiary = Color.White,
     background = LightScaffold,
-    onBackground = Ink800,
+    onBackground = ArchiveLibraryInk,
     surface = LightSurface,
-    onSurface = Ink800,
-    surfaceVariant = Color(0xFFE3EAF2),
-    onSurfaceVariant = Color(0xFF46586A),
-    surfaceContainer = Color(0xFFE9EFF5),
-    surfaceContainerHigh = Color(0xFFDFE7F0),
-    outline = Color(0xFF6E7F90),
-    outlineVariant = Color(0xFFC3CFDB),
+    onSurface = ArchiveLibraryInk,
+    surfaceVariant = Color(0xFFEFE6D6),
+    onSurfaceVariant = Color(0xFF55625B),
+    surfaceContainerLowest = Color.White,
+    surfaceContainerLow = Color(0xFFFAF5EC),
+    surfaceContainer = Color(0xFFF2EADB),
+    surfaceContainerHigh = Color(0xFFEBE1CF),
+    surfaceContainerHighest = Color(0xFFE4D8C3),
+    outline = Color(0xFF857B6C),
+    outlineVariant = Color(0xFFE2D7C3),
     error = Color(0xFFA62A1E),
     onError = Color.White,
     errorContainer = Color(0xFFFBDCD7),
@@ -95,70 +107,94 @@ private val LightColors = lightColorScheme(
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Gold400,
-    onPrimary = Ink800,
-    primaryContainer = Color(0xFF4A3208),
-    onPrimaryContainer = Color(0xFFFBEFCF),
-    secondary = PositiveOnDark,
-    onSecondary = Ink800,
-    secondaryContainer = Color(0xFF123B33),
-    onSecondaryContainer = Color(0xFFC7E7DA),
-    tertiary = Gem100,
-    onTertiary = Ink800,
-    background = Ink800,
-    onBackground = Color(0xFFE6EDF5),
-    surface = Ink700,
-    onSurface = Color(0xFFE6EDF5),
-    surfaceVariant = Color(0xFF0E2231),
-    onSurfaceVariant = Color(0xFFA6B8C9),
-    surfaceContainer = Ink600,
-    surfaceContainerHigh = Ink500,
-    outline = Color(0xFF6B7D8F),
-    outlineVariant = Color(0xFF1A2B3A),
+    primary = Gem100,
+    onPrimary = Color(0xFF06231A),
+    primaryContainer = Color(0xFF1C4A3C),
+    onPrimaryContainer = Color(0xFFBFE9D8),
+    secondary = Gold300,
+    onSecondary = Color(0xFF2A1606),
+    secondaryContainer = Color(0xFF4A2F18),
+    onSecondaryContainer = Gold100,
+    tertiary = Color(0xFF9DD9C4),
+    onTertiary = Color(0xFF06231A),
+    background = DarkScaffold,
+    onBackground = Color(0xFFEAF3EE),
+    surface = DarkSurface,
+    onSurface = Color(0xFFEAF3EE),
+    surfaceVariant = Ink500,
+    onSurfaceVariant = Color(0xFF9DB5AA),
+    surfaceContainerLowest = Ink900,
+    surfaceContainerLow = Color(0xFF0F231D),
+    surfaceContainer = Color(0xFF132A23),
+    surfaceContainerHigh = Color(0xFF1A372E),
+    surfaceContainerHighest = Color(0xFF214238),
+    outline = Color(0xFF6E8A7F),
+    outlineVariant = Color(0xFF21423A),
     error = Color(0xFFFF9E90),
-    onError = Ink800,
+    onError = ArchivePlayerInk,
     errorContainer = Color(0xFF5B221A),
     onErrorContainer = Color(0xFFFFD9D2),
 )
 
-/// ألوان شريط التطبيق العلوي (AppBar) — داكن في الوضعين بنصّ أبيض، كي تبقى
-/// أيقونات شريط الحالة فاتحة دائماً كما يفترض MainActivity.
-val AppBarBackgroundLight = Gem500
+/// الشريط العلوي يتبع الوضع: حجرٌ فاتح نهاراً (فالنهار فاتحٌ حقّاً) وزمرّد عميق ليلاً.
+val AppBarBackgroundLight = ArchivePaper
 val AppBarBackgroundDark = DarkAppBar
-val AppBarForeground = Color.White
+val AppBarForegroundLight = Color(0xFF0F3B2F)
+val AppBarForegroundDark = Color(0xFFEAF3EE)
+/** لون نصّ الشريط العلوي وأيقوناته للوضع المعطى. */
+fun appBarForeground(dark: Boolean): Color = if (dark) AppBarForegroundDark else AppBarForegroundLight
 
-private val Amiri = FontFamily(
+// ---- الخطّ: «ريم كوفي» للعناوين (كوفيّ هندسيّ من روح نقوش المساجد)، و«نوتو نسخ»
+// للنصّ (نسخٌ واضح للقراءة الطويلة). كلاهما متغيّر الوزن؛ على API < 26 يُعرض الوزن
+// الافتراضيّ للملفّ ثمّ يُغلَّظ صناعياً إن لزم. «أميري» يبقى للمصحف والنصوص المشكولة.
+@OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
+private fun variable(res: Int, weight: FontWeight) = Font(
+    res, weight,
+    variationSettings = androidx.compose.ui.text.font.FontVariation.Settings(
+        androidx.compose.ui.text.font.FontVariation.weight(weight.weight),
+    ),
+)
+internal val ReemKufi = FontFamily(
+    variable(R.font.reem_kufi, FontWeight.Normal),
+    variable(R.font.reem_kufi, FontWeight.Medium),
+    variable(R.font.reem_kufi, FontWeight.SemiBold),
+    variable(R.font.reem_kufi, FontWeight.Bold),
+)
+internal val NotoNaskh = FontFamily(
+    variable(R.font.noto_naskh_arabic, FontWeight.Normal),
+    variable(R.font.noto_naskh_arabic, FontWeight.Medium),
+    variable(R.font.noto_naskh_arabic, FontWeight.SemiBold),
+    variable(R.font.noto_naskh_arabic, FontWeight.Bold),
+)
+internal val Amiri = FontFamily(
     Font(R.font.amiri, FontWeight.Normal),
     Font(R.font.amiri_bold, FontWeight.Bold),
 )
+private fun head(size: Int, line: Int, weight: FontWeight = FontWeight.Bold) = androidx.compose.ui.text.TextStyle(
+    fontFamily = ReemKufi, fontWeight = weight, fontSize = size.sp, lineHeight = line.sp,
+)
+private fun body(size: Int, line: Int, weight: FontWeight = FontWeight.Normal) = androidx.compose.ui.text.TextStyle(
+    fontFamily = NotoNaskh, fontWeight = weight, fontSize = size.sp, lineHeight = line.sp,
+)
 private val MinbarTypography = Typography(
-    displaySmall = androidx.compose.ui.text.TextStyle(
-        fontFamily = Amiri,
-        fontWeight = FontWeight.Bold,
-        fontSize = 36.sp,
-    ),
-    headlineMedium = androidx.compose.ui.text.TextStyle(
-        fontFamily = Amiri,
-        fontWeight = FontWeight.Bold,
-        fontSize = 28.sp,
-    ),
-    titleLarge = androidx.compose.ui.text.TextStyle(
-        fontFamily = Amiri,
-        fontWeight = FontWeight.Bold,
-        fontSize = 22.sp,
-    ),
-    titleMedium = androidx.compose.ui.text.TextStyle(
-        fontFamily = Amiri,
-        fontWeight = FontWeight.Bold,
-        fontSize = 18.sp,
-    ),
-    bodyLarge = androidx.compose.ui.text.TextStyle(fontFamily = Amiri, fontSize = 18.sp),
-    bodyMedium = androidx.compose.ui.text.TextStyle(fontFamily = Amiri, fontSize = 16.sp),
-    labelLarge = androidx.compose.ui.text.TextStyle(
-        fontFamily = Amiri,
-        fontWeight = FontWeight.Bold,
-        fontSize = 15.sp,
-    ),
+    displayLarge = head(48, 64), displayMedium = head(40, 54), displaySmall = head(34, 46),
+    headlineLarge = head(30, 42), headlineMedium = head(26, 38), headlineSmall = head(23, 34),
+    titleLarge = head(21, 30), titleMedium = body(17, 28, FontWeight.SemiBold), titleSmall = body(15, 24, FontWeight.SemiBold),
+    bodyLarge = body(17, 30), bodyMedium = body(15, 26), bodySmall = body(13, 22),
+    labelLarge = body(15, 22, FontWeight.SemiBold), labelMedium = body(13, 20, FontWeight.Medium), labelSmall = body(12, 18, FontWeight.Medium),
+)
+
+/// أشكال «المحراب»: زوايا ليّنة (22dp للبطاقات الكبيرة)، والأقواس الكاملة في الرأس والمشغّل.
+private val MinbarShapes = androidx.compose.material3.Shapes(
+    extraSmall = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+    small = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+    medium = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+    large = androidx.compose.foundation.shape.RoundedCornerShape(22.dp),
+    extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
+)
+/** رأس مقوّس كالمحراب: قوسٌ كامل في الأعلى وزوايا 22dp في الأسفل. */
+val MihrabShape = androidx.compose.foundation.shape.RoundedCornerShape(
+    topStartPercent = 50, topEndPercent = 50, bottomStartPercent = 0, bottomEndPercent = 0,
 )
 
 /// هل الوضع الحالي داكن؟ يُستخدم لاختيار درجات الإبراز على الأسطح الداكنة.
@@ -179,6 +215,7 @@ fun MinbarTheme(themeMode: String, fontScale: Float, content: @Composable () -> 
         MaterialTheme(
             colorScheme = if (dark) DarkColors else LightColors,
             typography = MinbarTypography,
+            shapes = MinbarShapes,
             content = content,
         )
     }

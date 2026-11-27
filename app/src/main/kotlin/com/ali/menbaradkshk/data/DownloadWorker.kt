@@ -32,7 +32,7 @@ class LessonDownloadWorker(
         val result = DownloadQueueProcessor(applicationContext)
             .run(roundDeadlineElapsedMs = deadline)
         return when (result) {
-            DownloadRunResult.FINISHED -> Result.success()
+            DownloadRunResult.FINISHED, DownloadRunResult.WAITING_FOR_PLAY -> Result.success()
             DownloadRunResult.NEEDS_RETRY -> Result.retry()
             DownloadRunResult.ROUND_EXPIRED -> {
                 DownloadScheduler.enqueue(applicationContext, userInitiated = false)
@@ -53,6 +53,7 @@ object DownloadScheduler {
     /// نفسه لأسقطته سياسة KEEP ما دام عمل التحميل العادي جارياً.
     const val WIFI_WORK_NAME = "lesson_downloads_wifi"
     const val JOB_ID = 4210
+    private const val PLAY_RECONCILIATION_WORK = "lesson_downloads_play_reconciliation"
 
     /// ⛔ **لا تُعِد `ExistingWorkPolicy.KEEP`.** كان طلب تحميل جديد يُسقَط
     /// بصمت متى كان للاسم الفريد عملٌ قائم — وهو قائم في حالتين شائعتين:
@@ -90,6 +91,7 @@ object DownloadScheduler {
         val manager = WorkManager.getInstance(context)
         manager.cancelUniqueWork(WORK_NAME)
         manager.cancelUniqueWork(WIFI_WORK_NAME)
+        manager.cancelUniqueWork(PLAY_RECONCILIATION_WORK)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             runCatching { context.getSystemService(JobScheduler::class.java)?.cancel(JOB_ID) }
         }
@@ -141,7 +143,13 @@ object DownloadScheduler {
         scheduler.schedule(info) == JobScheduler.RESULT_SUCCESS
     }.getOrDefault(false)
 
-    private fun enqueueBackgroundWork(context: Context, wifiOnly: Boolean) {
+    // An independent connected chain cannot sit behind an earlier Wi-Fi-only request.
+    // APPEND survives the exit race and the processor still enforces each item's network rules.
+    internal fun enqueuePlayReconciliation(context: Context) {
+        enqueueBackgroundWork(context, wifiOnly = false, workName = PLAY_RECONCILIATION_WORK)
+    }
+
+    private fun enqueueBackgroundWork(context: Context, wifiOnly: Boolean, workName: String = WORK_NAME) {
         val request = OneTimeWorkRequestBuilder<LessonDownloadWorker>()
             .setConstraints(
                 Constraints.Builder()
@@ -153,6 +161,6 @@ object DownloadScheduler {
             .setBackoffCriteria(BackoffPolicy.LINEAR, 10, TimeUnit.SECONDS)
             .build()
         WorkManager.getInstance(context)
-            .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+            .enqueueUniqueWork(workName, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
     }
 }

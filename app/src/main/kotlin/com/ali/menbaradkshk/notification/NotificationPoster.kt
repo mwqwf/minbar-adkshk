@@ -145,8 +145,6 @@ object NotificationPoster {
      * - `subcategory` / `category` ⇒ القسم الفرعي/الرئيسي
      * - `book` ⇒ لا وجهة (الكتب أُزيلت عمداً من التطبيق)
      * - `manual` ⇒ لا وجهة (فتح التطبيق فقط)
-     * - `submission` / `transcript` ⇒ «مساهماتي»، إلا أن تحمل `lessonId`
-     *   (فرع الاعتماد يرسله) فتُفتح صفحة الدرس المنشور.
      */
     fun destinationFor(data: Map<String, String>): String? {
         fun value(vararg keys: String): String? = keys.asSequence()
@@ -158,19 +156,13 @@ object NotificationPoster {
         val lessonId = value("lessonId", "lesson_id")
         val refId = value("id", "refId")
 
-        // الخادم يرسل `route` صريحاً لإشعارات المساهمات، وهو الحَكَم:
-        // حمولة **رفض** النص المشروح تحمل lessonId (لتعريف الدرس) لكن
-        // وجهتها «مساهماتي» لا صفحة الدرس — فالاستنتاج من lessonId وحده
-        // يعيد الخطأ الذي أُصلح.
+        if (isRetiredContributionNotice(data["type"], value("route"))) return null
         when (value("route")) {
-            "my-submissions" -> return "minbar://my-submissions"
             "lesson" -> lessonId?.let { return LESSON_LINK_PREFIX + it }
             "downloads" -> return "minbar://downloads"
         }
 
         return when (data["type"]?.trim().orEmpty()) {
-            "submission", "transcript" ->
-                lessonId?.let { LESSON_LINK_PREFIX + it } ?: "minbar://my-submissions"
             "lesson" -> (lessonId ?: refId)?.let { LESSON_LINK_PREFIX + it }
             "subcategory" -> value("subcategoryId", "subId", "id")
                 ?.let { "minbar://subcategory/$it" }
@@ -184,3 +176,8 @@ object NotificationPoster {
         }
     }
 }
+
+/** Suppress old contribution decisions without mutating their history or support inbox. */
+internal fun isRetiredContributionNotice(type: String?, route: String?): Boolean =
+    type?.trim() in setOf("submission", "transcript") || route?.trim() in
+        setOf("my-submissions", "minbar://my-submissions")

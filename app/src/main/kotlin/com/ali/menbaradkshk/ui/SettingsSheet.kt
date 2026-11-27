@@ -2,6 +2,9 @@
 
 package com.ali.menbaradkshk.ui
 
+import android.app.Activity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -18,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BrightnessMedium
@@ -29,12 +33,12 @@ import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.FolderShared
-import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.HistoryToggleOff
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LibraryAdd
+import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.NotificationsActive
@@ -68,16 +72,23 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import com.ali.menbaradkshk.data.LibraryPackDelivery
+import com.ali.menbaradkshk.data.LibraryPackMode
+import com.ali.menbaradkshk.data.LibraryPackPolicy
+import com.google.android.play.core.assetpacks.AssetPackManagerFactory
+import com.google.android.play.core.assetpacks.model.AssetPackStatus
 import com.ali.menbaradkshk.util.lessonsCountLabel
 
 /// «الإعدادات» — درج جانبي حقيقي (بنمط تويتر/تلجرام) يُسحب من الجانب أو
@@ -100,6 +111,15 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     // القراءة تتجدّد مع كل عودة إلى المقدّمة (ON_RESUME) — نفس نمط
     // `ClipboardImageSuggestion`.
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    var libraryConfirmationOpen by rememberSaveable { mutableStateOf(false) }
+    val libraryConfirmation = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult(),
+    ) { result ->
+        libraryConfirmationOpen = false
+        if (result.resultCode != Activity.RESULT_OK) {
+            vm.showMessage("لم يؤكَّد تنزيل المكتبة من متجر Play.")
+        }
+    }
     var notifRevision by remember { mutableIntStateOf(0) }
     DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -114,6 +134,10 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     val themeMode = remember(revision) { vm.store.themeMode() }
     val fontScale = remember(revision) { vm.store.fontScale() }
     val autoDownload = remember(revision) { vm.store.autoDownloadEnabled() }
+    val libraryPackMode = remember(revision) { vm.store.libraryPackMode() }
+    val libraryPackAvailable = remember(context) { LibraryPackDelivery.available(context) }
+    val libraryPackStatuses by LibraryPackDelivery.statuses.collectAsState()
+    val startingManualLibraryPack by LibraryPackDelivery.startingManual.collectAsState()
     val wifiOnly = remember(revision) { vm.store.autoDownloadWifiOnly() }
     val continueReminder = remember(revision) { vm.store.continueReminderEnabled() }
     val wardEnabled = remember(revision) { vm.store.wardEnabled() }
@@ -145,13 +169,6 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
     var goalSheet by remember { mutableStateOf(false) }
     var deleteDialog by remember { mutableStateOf(false) }
     var sectionSheet by remember { mutableStateOf(false) }
-
-    // «راسِل المطوّر»: ميزة قائمة بذاتها تُفتح فوق الإعدادات بلا مسار تنقّل
-    // خاصّ بها. والنقطة تظهر متى كان للمستخدم ردٌّ لم يقرأه.
-    // محفوظ: التدوير كان يُغلق «راسِل المطوّر» ويُضيع ما كُتب وسُجّل فيه.
-    var supportOpen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
-    val settingsOpen by vm.showSettings.collectAsState()
-    val supportUnread = rememberSupportUnread(active = settingsOpen)
 
     // نسخة احتياطية محلية عبر منتقي ملفات النظام (بلا أي رفع للسحابة).
     // ⚠️ التنفيذ كلّه في AppViewModel على خيط الإدخال/الإخراج: الكتابة
@@ -211,7 +228,7 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
             ) {
                 SettingsTile(
                     icon = Icons.Filled.BrightnessMedium,
-                    title = "المظهر وحجم النص",
+                    title = "المظهر وحجم النص والحركة",
                     subtitle = "$themeLabel — ${(fontScale * 100).toInt()}%",
                     onClick = { appearanceDialog = true },
                 )
@@ -247,55 +264,27 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                     onClick = { group = "data" },
                 )
                 SettingsTile(
-                    icon = Icons.AutoMirrored.Filled.FactCheck,
-                    title = "مساهماتي",
-                    subtitle = "تابع قرار المشرفين وسبب النتيجة",
+                    icon = Icons.Filled.AdminPanelSettings,
+                    title = "تسجيل الدخول كمشرف",
+                    subtitle = "للمشرفين المعتمدين فقط",
                     onClick = {
                         vm.closeSettings()
-                        vm.open(Route.MySubmissions)
+                        vm.open(Route.Admin)
                     },
-                )
-                SettingsTile(
-                    icon = Icons.Filled.Forum,
-                    title = if (supportUnread) "راسِل المطوّر 🔴" else "راسِل المطوّر",
-                    subtitle = if (supportUnread) {
-                        "وصلك ردّ من المطوّر"
-                    } else {
-                        "اقتراح، أو شيء لا يعمل، أو فكرة — بصوتك أو بالكتابة"
-                    },
-                    onClick = { supportOpen = true },
                 )
                 SettingsTile(
                     icon = Icons.Filled.Info,
                     title = "حول التطبيق",
-                    subtitle = "التعريف، الوقف الخيري، نسخة الويب، المصدر المفتوح، الخصوصية",
+                    subtitle = "عن المنبر والخصوصية والروابط",
                     onClick = {
                         vm.closeSettings()
                         vm.open(Route.About)
                     },
                 )
                 Spacer(Modifier.height(12.dp))
-                Text(
-                    "منبر ادكصهك — دروس صوتية",
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                DeveloperPrayer(Modifier.fillMaxWidth())
             }
         }
-    }
-
-    // «راسِل المطوّر» فوق الإعدادات. و«عندي درس» منها يقود إلى مسار «شارك
-    // درساً» القائم لا إلى رفعٍ ثانٍ يوازيه.
-    if (supportOpen) {
-        SupportDialog(
-            onClose = { supportOpen = false },
-            onOpenContribute = {
-                supportOpen = false
-                vm.closeSettings()
-                vm.open(Route.Contribute)
-            },
-        )
     }
 
     // ---- ورقة «التنزيلات» ----
@@ -307,6 +296,84 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                 ),
             ) {
                 item(key = "title") { GroupTitle("التنزيلات") }
+                if (libraryPackAvailable) {
+                    item(key = "play-library") {
+                        val status = libraryPackStatuses.values
+                        val manualInProgress = LibraryPackPolicy.canCancelManual(
+                            libraryPackMode, startingManualLibraryPack, status,
+                        )
+                        val caption = when {
+                            manualInProgress && status.any { it == AssetPackStatus.WAITING_FOR_WIFI } ->
+                                "التنزيل اليدوي بانتظار الواي فاي. التلقائي متوقف."
+                            manualInProgress && status.any { it == AssetPackStatus.REQUIRES_USER_CONFIRMATION } ->
+                                "يتطلّب التنزيل اليدوي تأكيداً من متجر Play."
+                            manualInProgress -> "جارٍ طلب التنزيل اليدوي من متجر Play."
+                            libraryPackMode == LibraryPackMode.DISABLED -> "التنزيل التلقائي متوقف؛ يمكنك تنزيلها يدوياً."
+                            libraryPackMode == LibraryPackMode.PAUSED -> "موقوف مؤقتاً. ما اكتمل تنزيله يبقى لديك."
+                            status.isNotEmpty() && status.all { it == AssetPackStatus.COMPLETED } -> "المكتبة متاحة دون إنترنت."
+                            status.any { it == AssetPackStatus.WAITING_FOR_WIFI } -> "بانتظار اتصال الواي فاي."
+                            status.any { it == AssetPackStatus.REQUIRES_USER_CONFIRMATION } -> "يتطلّب متجر Play تأكيداً لإكمال التنزيل."
+                            status.any(LibraryPackPolicy::pending) -> "جارٍ تنزيل المكتبة من متجر Play."
+                            status.any { it == AssetPackStatus.FAILED } -> "تعذّر التنزيل. يمكنك إعادة المحاولة."
+                            else -> "تُنزل عند فتح التطبيق، ويمكنك إيقافها هنا."
+                        }
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                            Text("مكتبة المنبر دون إنترنت", style = MaterialTheme.typography.titleMedium)
+                            Text(caption, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (status.contains(AssetPackStatus.REQUIRES_USER_CONFIRMATION)) {
+                                TextButton(
+                                    enabled = !libraryConfirmationOpen,
+                                    onClick = {
+                                        if (!libraryConfirmationOpen &&
+                                            lifecycleOwner.lifecycle.currentState.isAtLeast(
+                                                androidx.lifecycle.Lifecycle.State.RESUMED,
+                                            ) &&
+                                            LibraryPackDelivery.available(context) &&
+                                            LibraryPackDelivery.statuses.value.values.contains(
+                                                AssetPackStatus.REQUIRES_USER_CONFIRMATION,
+                                            )
+                                        ) {
+                                            libraryConfirmationOpen = true
+                                            val launched = runCatching {
+                                                AssetPackManagerFactory.getInstance(context.applicationContext)
+                                                    .showConfirmationDialog(libraryConfirmation)
+                                            }.getOrDefault(false)
+                                            if (!launched) {
+                                                libraryConfirmationOpen = false
+                                                vm.showMessage("لم يفتح متجر Play نافذة التأكيد. حاول مجددًا عند توفر التنزيل.")
+                                            }
+                                        }
+                                    },
+                                ) { Text("راجع التأكيد في متجر Play") }
+                            }
+                            when (libraryPackMode) {
+                                LibraryPackMode.AUTOMATIC -> TextButton(
+                                    onClick = { LibraryPackDelivery.changeMode(context, LibraryPackMode.PAUSED) },
+                                ) { Text("إيقاف مؤقت") }
+                                LibraryPackMode.PAUSED -> TextButton(
+                                    onClick = { LibraryPackDelivery.changeMode(context, LibraryPackMode.AUTOMATIC) },
+                                ) { Text("استئناف التنزيل التلقائي") }
+                                LibraryPackMode.DISABLED -> TextButton(
+                                    onClick = { LibraryPackDelivery.changeMode(context, LibraryPackMode.AUTOMATIC) },
+                                ) { Text("تفعيل التنزيل التلقائي") }
+                            }
+                            if (libraryPackMode != LibraryPackMode.DISABLED) {
+                                TextButton(onClick = { LibraryPackDelivery.changeMode(context, LibraryPackMode.DISABLED) }) {
+                                    Text("إيقاف التنزيل التلقائي نهائياً")
+                                }
+                            }
+                            if (manualInProgress) {
+                                TextButton(onClick = { LibraryPackDelivery.cancelManualRequest(context) }) {
+                                    Text("إلغاء التنزيل اليدوي")
+                                }
+                            } else if (libraryPackMode == LibraryPackMode.DISABLED ||
+                                (libraryPackMode == LibraryPackMode.AUTOMATIC && status.any { it == AssetPackStatus.FAILED || it == AssetPackStatus.CANCELED })) {
+                                TextButton(onClick = { LibraryPackDelivery.requestOnce(context) }) { Text("تنزيل المكتبة الآن") }
+                            }
+                        }
+                    }
+                }
                 item(key = "autodl") {
                     // توحيدٌ عرضيّ لمفتاحَي «التفعيل» و«واي فاي فقط» في حالةٍ
                     // واحدة من ثلاث — مفاتيح التخزين نفسها لم تتغيّر.
@@ -606,9 +673,10 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
         var value by remember { mutableFloatStateOf(fontScale.coerceIn(0.8f, 1.4f)) }
         AlertDialog(
             onDismissRequest = { appearanceDialog = false },
-            title = { Text("المظهر وحجم النص") },
+            title = { Text("المظهر وحجم النص والحركة") },
             text = {
-                Column {
+                val listeningCoverMotion = remember(revision) { vm.store.listeningCoverMotionEnabled() }
+                Column(Modifier.verticalScroll(rememberScrollState())) {
                     listOf("light" to "فاتح", "dark" to "داكن", "system" to "اتّباع النظام").forEach { (v, label) ->
                         Row(
                             Modifier.fillMaxWidth().clickable { vm.store.setThemeMode(v) }
@@ -639,6 +707,26 @@ fun SettingsDrawerContent(vm: AppViewModel, requestNotifications: () -> Unit) {
                         valueRange = 0.8f..1.4f,
                         steps = 5,
                     )
+                    Row(
+                        modifier = Modifier.fillMaxWidth()
+                            .toggleable(
+                                value = listeningCoverMotion,
+                                role = Role.Switch,
+                                onValueChange = vm.store::setListeningCoverMotionEnabled,
+                            )
+                            .padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("حركة صدى الدرس", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "تتردّد أقواس الصدى أثناء الاستماع إذا سمحت إعدادات الجهاز بالحركة.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Switch(checked = listeningCoverMotion, onCheckedChange = null)
+                    }
                 }
             },
             confirmButton = {

@@ -24,7 +24,6 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Favorite
@@ -276,8 +275,6 @@ private fun HistoryTab(vm: AppViewModel, playback: PlaybackUiState) {
     // تنتهي بخطأ تشغيل.
     val items = rememberSavedOnly(vm, allHistory)
     val stamps = remember(revision, hiddenTick) { vm.content.historyStamps() }
-    val completed = remember(revision) { vm.store.completedIds().toSet() }
-    val positions = remember(revision) { vm.store.positions() }
     if (items.isEmpty()) {
         Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
             Text(
@@ -312,8 +309,7 @@ private fun HistoryTab(vm: AppViewModel, playback: PlaybackUiState) {
                 )
             }
             // ⛔ لا `revision` في المفتاح: تبدّله كان يهدم تركيبة الصفّ ومعها
-            // حالة السحب للإخفاء، فينكفئ أيّ سحب جارٍ. القيم الملتقَطة
-            // (`positions`/`completed`) تكفي لتحديث الصفّ.
+            // حالة السحب للإخفاء، فينكفئ أيّ سحب جارٍ. صفّ الدرس يقرأ حالة الاستماع.
             items(lessons, key = { it.id }) { lesson ->
                 val dismissState = rememberSwipeToDismissBoxState(
                     confirmValueChange = { value ->
@@ -342,36 +338,10 @@ private fun HistoryTab(vm: AppViewModel, playback: PlaybackUiState) {
                 ) {
                     Column(Modifier.background(MaterialTheme.colorScheme.background)) {
                         AudioItem(vm, lesson, items, playback)
-                        val savedMs = positions[lesson.id] ?: 0L
-                        when {
-                            lesson.id in completed -> HistoryBadge(
-                                icon = Icons.Filled.DoneAll,
-                                text = "أتممته ✓",
-                                tint = GreenBrand,
-                            )
-
-                            savedMs > 3_000L -> HistoryBadge(
-                                icon = Icons.Filled.History,
-                                text = "توقّفت عند ${formatDuration(savedMs)}",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
                     }
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun HistoryBadge(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, tint: Color) {
-    Row(
-        modifier = Modifier.padding(start = 22.dp, end = 22.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
-        Spacer(Modifier.size(4.dp))
-        Text(text, style = MaterialTheme.typography.labelSmall, color = tint)
     }
 }
 
@@ -599,6 +569,9 @@ fun DownloadsScreen(vm: AppViewModel) {
             .sortedBy { it.second }
     }
     var deleteTarget by remember { mutableStateOf<com.ali.menbaradkshk.data.Lesson?>(null) }
+    val retryPackRemoval = remember(revision) { vm.store.hasUnconfirmedPackRemoval() }
+    val packStatuses by com.ali.menbaradkshk.data.LibraryPackDelivery.statuses.collectAsState()
+    val packTransferActive = packStatuses.values.any(com.ali.menbaradkshk.data.LibraryPackPolicy::pending)
     var deleteAllDialog by remember { mutableStateOf(false) }
     var sectionSheet by remember { mutableStateOf(false) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -653,14 +626,14 @@ fun DownloadsScreen(vm: AppViewModel) {
                             enabled = bulk == null,
                             onClick = { sectionSheet = true },
                         )
-                        if (items.isNotEmpty()) {
+                        if (items.isNotEmpty() || retryPackRemoval || packTransferActive) {
                             // الحذف أحمر وآخرٌ ومفصولٌ بخطّ عمّا قبله.
                             androidx.compose.material3.VerticalDivider(
                                 modifier = Modifier.height(24.dp).padding(horizontal = 2.dp),
                             )
                             TextButton(onClick = { deleteAllDialog = true }) {
                                 Icon(Icons.Filled.Delete, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
-                                Text(" حذف الكل", color = MaterialTheme.colorScheme.error)
+                                Text(if (items.isEmpty() && retryPackRemoval) " إعادة محاولة الحذف" else " حذف الكل", color = MaterialTheme.colorScheme.error)
                             }
                         }
                     }
@@ -885,12 +858,11 @@ fun DownloadsScreen(vm: AppViewModel) {
         AlertDialog(
             onDismissRequest = { deleteAllDialog = false },
             title = { Text("حذف كل التنزيلات") },
-            // بلا «محفوظاً» — نفس علّة بطاقة الملخّص أعلاه.
-            text = { Text("سيُحذف من جهازك ${lessonsCountLabel(items.size)} (${formatBytes(totalBytes)}). الدروس نفسها تبقى متاحة بالبثّ.") },
+            text = { Text("ستُمسح التنزيلات المكتملة ويُطلب إيقاف تنزيل حزم الصوت وإزالتها. تنزيلات الدروس الجارية لا تتوقف، وتبقى الدروس متاحة بالبثّ.") },
             confirmButton = {
                 TextButton(onClick = {
                     deleteAllDialog = false
-                    scope.launch { vm.downloads.deleteAll(spareQueued = true) }
+                    vm.clearCompletedDownloads()
                 }) { Text("حذف الكل") }
             },
             dismissButton = {

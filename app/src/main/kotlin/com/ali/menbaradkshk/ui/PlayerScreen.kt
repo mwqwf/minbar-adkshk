@@ -3,9 +3,18 @@
 package com.ali.menbaradkshk.ui
 
 import android.content.Intent
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,11 +23,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -77,24 +89,40 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.ali.menbaradkshk.data.Lesson
+import com.ali.menbaradkshk.data.LocalStore
 import com.ali.menbaradkshk.media.PlaybackUiState
 import com.ali.menbaradkshk.util.formatDuration
 import com.ali.menbaradkshk.util.lessonShareLink
@@ -103,7 +131,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/// «الآن يُشغَّل» — النقل الأمين لـ player_screen.dart.
+/// «الآن يُشغَّل» بلوحة خزانة الأثر، مع بقاء عناصر النصوص والقراءة على نسقها الأصلي.
 @Composable
 fun PlayerScreen(
     vm: AppViewModel,
@@ -111,6 +139,7 @@ fun PlayerScreen(
     startAtMs: Long?,
     playback: PlaybackUiState,
 ) {
+    val archive = archivePlayerPalette(MaterialTheme.colorScheme.background)
     val context = LocalContext.current
     val revision by vm.store.revision.collectAsState()
     val content by vm.content.state.collectAsState()
@@ -121,18 +150,18 @@ fun PlayerScreen(
     val cat = content.categoryById[current.categoryId]
     val similar = remember(current.id, content.lessons) { vm.content.similarTo(current) }
     val favorite = remember(revision, current.id) { vm.store.isFavorite(current.id) }
-    val accent = colorForCategory(current.categoryId)
     val active = playback.mediaId == current.id
     // ⚠️ لا تشترك هنا في vm.downloads.progress: `DownloadButton` يجمع تقدّمه
     // بنفسه، والاشتراك هنا كان يعيد تركيب الشاشة كلها مع كل حزمة بايتات.
     // قراءات التفضيلات تُلفّ بـ revision لأن الشاشة تُعاد مرّتين في الثانية.
-    val dark = isDarkTheme(remember(revision) { vm.store.themeMode() })
 
     var momentsSheet by remember { mutableStateOf(false) }
     var playlistSheet by remember { mutableStateOf(false) }
     var feedbackMenu by remember { mutableStateOf(false) }
     var feedbackFor by remember { mutableStateOf<String?>(null) }
     var sleepSheet by remember { mutableStateOf(false) }
+    val transcriptAnchor = remember { BringIntoViewRequester() }
+    val scrollScope = rememberCoroutineScope()
 
     /// هل ملفّ هذا الدرس على الجهاز الآن؟ يُعاد حسابه مع كل مراجعة للمخزن
     /// كي يظهر بند «أرسل الملف الصوتي» فور اكتمال التنزيل ويختفي فور حذفه.
@@ -186,93 +215,102 @@ fun PlayerScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("الآن يُشغَّل") },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = if (dark) AppBarBackgroundDark else AppBarBackgroundLight,
-                    titleContentColor = AppBarForeground,
-                    navigationIconContentColor = AppBarForeground,
-                    actionIconContentColor = AppBarForeground,
-                ),
-                navigationIcon = {
-                    // كسهم النظام: مكدّس فارغ ⇒ الرئيسية لا لا-شيء. الشاشة
-                    // بملء الشاشة بلا شريط سفليّ، فزرٌّ لا يفعل شيئاً يحبس
-                    // المستخدم فيها (تُفتح من إشعار أو رابط عميق بلا مكدّس).
-                    IconButton(onClick = { if (!vm.back()) vm.openRoot(Route.Home) }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "رجوع")
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { momentsSheet = true }) {
-                        Icon(Icons.Filled.BookmarkAdd, contentDescription = "اللحظات")
-                    }
-                    IconButton(onClick = { playlistSheet = true }) {
-                        Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = "إضافة إلى قائمة")
-                    }
-                    IconButton(onClick = { vm.toggleFavorite(current.id) }) {
-                        Icon(
-                            if (favorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                            contentDescription = if (favorite) "إزالة من المفضّلة" else "إضافة للمفضّلة",
-                            tint = if (favorite) Color(0xFFFF8A80) else AppBarForeground,
-                        )
-                    }
-                    Box {
-                        IconButton(onClick = { feedbackMenu = true }) {
-                            Icon(Icons.Filled.MoreVert, contentDescription = "تفاعل")
+            Box {
+                TopAppBar(
+                    title = { Text("الآن يُشغَّل") },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = archive.surface,
+                        titleContentColor = archive.text,
+                        navigationIconContentColor = archive.text,
+                        actionIconContentColor = archive.text,
+                    ),
+                    navigationIcon = {
+                        // كسهم النظام: مكدّس فارغ ⇒ الرئيسية لا لا-شيء. الشاشة
+                        // بملء الشاشة بلا شريط سفليّ، فزرٌّ لا يفعل شيئاً يحبس
+                        // المستخدم فيها (تُفتح من إشعار أو رابط عميق بلا مكدّس).
+                        IconButton(onClick = { if (!vm.back()) vm.openRoot(Route.Home) }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "رجوع")
                         }
-                        DropdownMenu(expanded = feedbackMenu, onDismissRequest = { feedbackMenu = false }) {
-                            // 📤 إرسال الملفّ نفسه — للمنزَّل فقط، ويختفي
-                            // تماماً لغيره (بندٌ معطّل يُسأل عنه بلا فائدة).
-                            // ولماذا أصلاً؟ لأنّ الرابط لا ينفع من لا إنترنت
-                            // عنده، والملفّ ينتقل بالبلوتوث بلا شبكة.
-                            if (downloadedNow) {
+                    },
+                    actions = {
+                        IconButton(onClick = { momentsSheet = true }) {
+                            Icon(Icons.Filled.BookmarkAdd, contentDescription = "اللحظات")
+                        }
+                        IconButton(onClick = { playlistSheet = true }) {
+                            Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = "إضافة إلى قائمة")
+                        }
+                        IconButton(onClick = { vm.toggleFavorite(current.id) }) {
+                            Icon(
+                                if (favorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                                contentDescription = if (favorite) "إزالة من المفضّلة" else "إضافة للمفضّلة",
+                                tint = if (favorite) archive.favorite else archive.text,
+                            )
+                        }
+                        Box {
+                            IconButton(onClick = { feedbackMenu = true }) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "تفاعل")
+                            }
+                            DropdownMenu(expanded = feedbackMenu, onDismissRequest = { feedbackMenu = false }) {
+                                // 📤 إرسال الملفّ نفسه — للمنزَّل فقط، ويختفي
+                                // تماماً لغيره (بندٌ معطّل يُسأل عنه بلا فائدة).
+                                // ولماذا أصلاً؟ لأنّ الرابط لا ينفع من لا إنترنت
+                                // عنده، والملفّ ينتقل بالبلوتوث بلا شبكة.
+                                if (downloadedNow) {
+                                    DropdownMenuItem(
+                                        text = { Text("أرسل الملف الصوتي") },
+                                        leadingIcon = { Icon(Icons.Filled.AudioFile, null) },
+                                        onClick = {
+                                            feedbackMenu = false
+                                            sendLessonAudioFile(context, vm, current)
+                                        },
+                                    )
+                                }
                                 DropdownMenuItem(
-                                    text = { Text("أرسل الملف الصوتي") },
-                                    leadingIcon = { Icon(Icons.Filled.AudioFile, null) },
+                                    text = { Text("استفدت من الدرس") },
+                                    leadingIcon = { Icon(Icons.Filled.ThumbUp, null) },
                                     onClick = {
                                         feedbackMenu = false
-                                        sendLessonAudioFile(context, vm, current)
+                                        // في نطاق الـViewModel: الرجوع فور النقر كان يُلغي
+                                        // الإرسال ويعرض «تعذّر» على بلاغٍ لم يُمنح فرصته.
+                                        vm.viewModelScope.launch {
+                                            runCatching { vm.content.sendFeedback(current.id, "benefited", "") }
+                                                .onSuccess { vm.showMessage("شكراً لك — وصلنا تفاعلك.") }
+                                                .onFailure { vm.showMessage("تعذّر إرسال البلاغ. تحقق من الاتصال وحاول مجدداً.") }
+                                        }
                                     },
                                 )
+                                DropdownMenuItem(
+                                    text = { Text("مشكلة في الصوت") },
+                                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.VolumeOff, null) },
+                                    onClick = { feedbackMenu = false; feedbackFor = "audio_issue" },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("انتهاك حقوق نشر") },
+                                    leadingIcon = { Icon(Icons.Filled.Copyright, null) },
+                                    onClick = { feedbackMenu = false; feedbackFor = "copyright" },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("محتوى غير مناسب") },
+                                    leadingIcon = { Icon(Icons.Filled.GppMaybe, null) },
+                                    onClick = { feedbackMenu = false; feedbackFor = "abuse" },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("إبلاغ عن هذا الدرس") },
+                                    leadingIcon = { Icon(Icons.Filled.Report, null) },
+                                    onClick = { feedbackMenu = false; feedbackFor = "other" },
+                                )
                             }
-                            DropdownMenuItem(
-                                text = { Text("استفدت من الدرس") },
-                                leadingIcon = { Icon(Icons.Filled.ThumbUp, null) },
-                                onClick = {
-                                    feedbackMenu = false
-                                    // في نطاق الـViewModel: الرجوع فور النقر كان يُلغي
-                                    // الإرسال ويعرض «تعذّر» على بلاغٍ لم يُمنح فرصته.
-                                    vm.viewModelScope.launch {
-                                        runCatching { vm.content.sendFeedback(current.id, "benefited", "") }
-                                            .onSuccess { vm.showMessage("شكراً لك — وصلنا تفاعلك.") }
-                                            .onFailure { vm.showMessage("تعذّر إرسال البلاغ. تحقق من الاتصال وحاول مجدداً.") }
-                                    }
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("مشكلة في الصوت") },
-                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.VolumeOff, null) },
-                                onClick = { feedbackMenu = false; feedbackFor = "audio_issue" },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("انتهاك حقوق نشر") },
-                                leadingIcon = { Icon(Icons.Filled.Copyright, null) },
-                                onClick = { feedbackMenu = false; feedbackFor = "copyright" },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("محتوى غير مناسب") },
-                                leadingIcon = { Icon(Icons.Filled.GppMaybe, null) },
-                                onClick = { feedbackMenu = false; feedbackFor = "abuse" },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("إبلاغ عن هذا الدرس") },
-                                leadingIcon = { Icon(Icons.Filled.Report, null) },
-                                onClick = { feedbackMenu = false; feedbackFor = "other" },
-                            )
                         }
-                    }
-                },
-            )
+                    },
+                )
+                archive.statusStrip?.let { strip ->
+                    Spacer(
+                        Modifier.fillMaxWidth()
+                            .windowInsetsTopHeight(TopAppBarDefaults.windowInsets)
+                            .background(strip),
+                    )
+                }
+            }
         },
     ) { padding ->
         Column(
@@ -282,285 +320,304 @@ fun PlayerScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
         ) {
-            playback.error?.let { error ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.errorContainer)
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+            MaterialTheme(colorScheme = archive.colors) {
+                androidx.compose.material3.Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                    color = archive.surface,
+                    contentColor = archive.text,
+                    border = archive.statusStrip?.let { BorderStroke(1.dp, archive.colors.outlineVariant) },
                 ) {
-                    Text(error, Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer)
-                    TextButton(onClick = {
-                        // الدرس المعروض هو المُشغَّل ⇒ retry() يُعيد التهيئة من القائمة
-                        // نفسها (المشغّل في STATE_IDLE بعد الخطأ)؛ وإلّا نبني قائمة جديدة.
-                        if (active) {
-                            vm.playback.retry()
-                        } else {
-                            vm.playback.clearError()
-                            vm.playback.play(current, listOf(current) + similar, restart = true)
+                    Column(Modifier.padding(horizontal = 14.dp, vertical = 16.dp)) {
+                        playback.error?.let { error ->
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .background(MaterialTheme.colorScheme.errorContainer)
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(error, Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer)
+                                TextButton(onClick = {
+                                    // الدرس المعروض هو المُشغَّل ⇒ retry() يُعيد التهيئة من القائمة
+                                    // نفسها (المشغّل في STATE_IDLE بعد الخطأ)؛ وإلّا نبني قائمة جديدة.
+                                    if (active) {
+                                        vm.playback.retry()
+                                    } else {
+                                        vm.playback.clearError()
+                                        vm.playback.play(current, listOf(current) + similar, restart = true)
+                                    }
+                                }) { Text("إعادة المحاولة") }
+                            }
+                            Spacer(Modifier.height(8.dp))
                         }
-                    }) { Text("إعادة المحاولة") }
-                }
-                Spacer(Modifier.height(8.dp))
-            }
-            // 📚 شريط «التالي» — أعلى الشاشة كي يُرى بلا بحث. لا يظهر إلّا
-            // أثناء العدّ التنازليّ، ويزول من نفسه بعده.
-            AutoplayNextBar(
-                onStop = vm.playback::stopAutoplayCountdown,
-                onPlayNow = vm.playback::startNextNow,
-            )
-            if (playback.loading && active) {
-                LinearProgressIndicator(Modifier.fillMaxWidth().padding(bottom = 12.dp), color = Teal)
-            }
+                        // 📚 شريط «التالي» — أعلى الشاشة كي يُرى بلا بحث. لا يظهر إلّا
+                        // أثناء العدّ التنازليّ، ويزول من نفسه بعده.
+                        AutoplayNextBar(
+                            onStop = vm.playback::stopAutoplayCountdown,
+                            onPlayNow = vm.playback::startNextNow,
+                        )
+                        if (playback.loading && active) {
+                            LinearProgressIndicator(Modifier.fillMaxWidth().padding(bottom = 12.dp), color = archive.accent)
+                        }
 
-            // الغلاف: دائرة بتدرّج لون القسم وأيقونته.
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Box(
-                    modifier = Modifier
-                        .size(180.dp)
-                        .background(Brush.linearGradient(listOf(accent, Slate)), CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        iconForCategory(current.categoryId),
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(84.dp),
-                    )
+                        ArchiveCover(archive, vm.store, current.id, active && playback.playing && !playback.loading)
+                        Spacer(Modifier.height(14.dp))
+                        Text(
+                            current.displayTitle,
+                            // ضغطة مطوّلة تنسخ عنوان الدرس — يستعمله الناس في المشاركة
+                            // والبحث عن الدرس نفسه في مكان آخر.
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .copyable(current.displayTitle),
+                            textAlign = TextAlign.Start,
+                            style = MaterialTheme.typography.headlineSmall,
+                        )
+                        if (current.speaker.isNotBlank()) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                current.speaker,
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = TextAlign.Start,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        // 🎧 عدد مرّات الاستماع — هنا حيث يقرأه من فتح الدرس فعلاً، بخطٍّ
+                        // أصغر من اسم الشيخ: خبرٌ يُطمئن لا عنوانٌ ينافس.
+                        com.ali.menbaradkshk.util.listenCountLabel(current.views)?.let { listens ->
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                listens,
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = TextAlign.Start,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        // 📚 موضع الدرس في سلسلته — «شرح الأخضري» ستّون درساً مرقّمة، ومن
+                        // فتح واحداً منها لا يعرف أين هو منها. الترتيب هو ترتيب القسم
+                        // الفرعيّ نفسه (الأقدم أوّلاً) وهو ترتيب رفع الدروس أصلاً.
+                        val seriesPlace = remember(current.id, content.lessons) {
+                            if (current.subcategoryId.isBlank()) {
+                                null
+                            } else {
+                                val items = content.lessons
+                                    .filter { it.subcategoryId == current.subcategoryId && it.audioUrl.isNotBlank() }
+                                    .sortedBy(Lesson::createdAtMs)
+                                val index = items.indexOfFirst { it.id == current.id }
+                                // درسٌ وحيد في قسمه ليس «سلسلة»، فالسطر يُخفى.
+                                if (index < 0 || items.size < 2) null else (index + 1) to items.size
+                            }
+                        }
+                        seriesPlace?.let { (place, total) ->
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "أنت في الدرس $place من $total",
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = TextAlign.Start,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = archive.accent,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                        if (downloadedNow) {
+                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.background(archive.offline, CircleShape).padding(horizontal = 12.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Icon(Icons.Filled.DownloadDone, null, Modifier.size(16.dp), tint = archive.offlineText)
+                                Text("متاح بلا إنترنت", style = MaterialTheme.typography.labelMedium, color = archive.offlineText)
+                            }
+                        }
+                        TextButton(onClick = { scrollScope.launch { transcriptAnchor.bringIntoView() } }) {
+                            Text("النص المشروح")
+                        }
+
+                        // شريط التقدّم.
+                        // ⚠️ قراءتا المخزن تفكّان JSON كاملاً، وهذه الشاشة تُعاد مرّتين في
+                        // الثانية مع نبض الموضع — فكانتا تُنفَّذان في كل نبضة بلا داعٍ.
+                        // المفتاح: الدرس + `revision` (لا يتغيّر المحفوظ إلّا بكتابة).
+                        val savedDuration = remember(current.id, revision) { vm.store.duration(current.id) }
+                        val savedPosition = remember(current.id, revision) { vm.store.position(current.id) }
+                        val duration = if (active && playback.durationMs > 0L) playback.durationMs
+                        else current.durationMs.takeIf { it > 0L } ?: savedDuration
+                        val position = if (active) playback.positionMs else savedPosition
+                        // شريط سحب كلاسيكي كما في الأصل: خط رفيع مستمر ومقبض دائري ذهبي
+                        // (بدل مقبض M3 العمودي الجديد وفجوة المسار).
+                        val sliderColors = SliderDefaults.colors(
+                            thumbColor = archive.accent,
+                            activeTrackColor = archive.accent,
+                            inactiveTrackColor = archive.track,
+                        )
+                        // ⚠️ لا تُصدر seekTo من onValueChange: كل بكسل سحب كان يُجهض طلب
+                        // الشبكة الجاري ويفتح طلب Range جديداً، والمقبض كان يتخلّف عن
+                        // الإصبع لأن الموضع لا ينبض إلا كل نصف ثانية. القفزة عند الإفلات.
+                        var dragging by remember { mutableStateOf<Float?>(null) }
+                        Slider(
+                            modifier = Modifier.semantics { contentDescription = "موضع التشغيل" },
+                            value = dragging ?: position.toFloat().coerceIn(0f, duration.toFloat().coerceAtLeast(1f)),
+                            onValueChange = { dragging = it },
+                            onValueChangeFinished = {
+                                dragging?.let { vm.playback.seekTo(it.toLong()) }
+                                dragging = null
+                            },
+                            valueRange = 0f..duration.toFloat().coerceAtLeast(1f),
+                            colors = sliderColors,
+                            thumb = {
+                                Box(
+                                    Modifier
+                                        .size(16.dp)
+                                        .background(archive.accent, CircleShape),
+                                )
+                            },
+                            track = { sliderState ->
+                                SliderDefaults.Track(
+                                    sliderState = sliderState,
+                                    modifier = Modifier.height(3.dp),
+                                    colors = sliderColors,
+                                    thumbTrackGapSize = 0.dp,
+                                    trackInsideCornerSize = 0.dp,
+                                    drawStopIndicator = null,
+                                )
+                            },
+                        )
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            // المنقضي عند الصفر: formatDuration تُعيد فراغاً عمداً للمدّة
+                            // المجهولة، لكن «مضى صفر» معلوم — فيُعرض 0:00 لا خانة فارغة.
+                            // (يمين الصفّ يبقى بلا حماية: مدّة مجهولة = فراغ مقصود.)
+                            Text(formatDuration(position).ifBlank { "0:00" }, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(formatDuration(duration), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Spacer(Modifier.height(6.dp))
+
+                        // السابق/التشغيل/التالي في الصف الأول؛ تبقى الأفعال الأخرى في صف
+                        // مستقل حتى لا تضيق مساحات اللمس في العربية أو عند تكبير الخط.
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterHorizontally),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            val playing = active && playback.playing
+                            val loading = active && playback.loading
+                            ArchiveTransportButton(
+                                archive = archive,
+                                icon = Icons.Filled.SkipPrevious,
+                                label = "السابق",
+                                enabled = playback.hasPrevious,
+                                onClick = vm.playback::previous,
+                            )
+                            val playLabel = when {
+                                loading -> "جارٍ تحميل الصوت"
+                                playing -> "إيقاف مؤقت"
+                                else -> "تشغيل"
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(72.dp)
+                                    .background(archive.playFill, CircleShape)
+                                    .clickable(enabled = !loading, role = Role.Button, onClickLabel = playLabel) {
+                                        if (active) vm.playback.toggle()
+                                        else vm.playback.play(current, listOf(current) + similar)
+                                    }
+                                    .semantics { contentDescription = playLabel },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (loading) {
+                                    CircularProgressIndicator(Modifier.size(30.dp), strokeWidth = 2.dp, color = archive.playGlyph)
+                                } else {
+                                    Icon(
+                                        if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                        contentDescription = null,
+                                        tint = archive.playGlyph,
+                                        modifier = Modifier.size(36.dp),
+                                    )
+                                }
+                            }
+                            ArchiveTransportButton(
+                                archive = archive,
+                                icon = Icons.Filled.SkipNext,
+                                label = "التالي",
+                                enabled = playback.hasNext,
+                                onClick = vm.playback::next,
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            // المكوّن المشترك يستخدم ألوانًا داكنة ثابتة؛ تحافظ
+                            // الخلفية الفاتحة على تباين الأيقونة ونسبة التحميل.
+                            Box(Modifier.background(archive.downloadBackground, CircleShape)) {
+                                DownloadButton(vm, current, size = 44.dp)
+                            }
+                            Replay30Button(
+                                onClick = {
+                                    val target = (position - 30_000L).coerceAtLeast(0L)
+                                    // درسٌ غير مُشغَّل الآن: لا موضع في المشغّل ليُرجَع
+                                    // منه، فنبدأ تشغيله من الموضع المطلوب مباشرةً.
+                                    if (active) {
+                                        vm.playback.seekTo(target)
+                                    } else {
+                                        vm.playback.play(current, listOf(current) + similar, target, restart = true)
+                                    }
+                                },
+                                size = 48.dp,
+                                tint = archive.accent,
+                                background = archive.button,
+                            )
+                            ArchiveTransportButton(archive, Icons.Filled.Bedtime, "مؤقّت النوم", onClick = { sleepSheet = true })
+                            ArchiveTransportButton(archive, Icons.Filled.Share, "مشاركة", onClick = { share(current) })
+                        }
+
+                        // القفز بحسب الإعداد، مستقل عن زرّ إعادة الثلاثين ثانية.
+                        val skipSec = remember(revision) { vm.store.skipSeconds() }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                            // ⚠️ أيقونتان بلا أرقام: Replay10/Forward10 كانتا تعرضان «10»
+                            // والقفز فعلياً skipSec (١٥ ثانية) — الرقم المكتوب هو الحقيقة.
+                            TextButton(onClick = vm.playback::skipBackward, modifier = Modifier.semantics { contentDescription = "رجوع ${skipSec} ثانية" }) {
+                                Icon(Icons.Filled.Replay, contentDescription = null, tint = archive.muted)
+                                Text("${skipSec}ث")
+                            }
+                            TextButton(onClick = vm.playback::skipForward, modifier = Modifier.semantics { contentDescription = "تقديم ${skipSec} ثانية" }) {
+                                Icon(Icons.Filled.FastForward, contentDescription = null, tint = archive.muted)
+                                Text("${skipSec}ث")
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+
+                        // السرعات الست كما في الأصل.
+                        Row(
+                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            listOf(0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f).forEach { speed ->
+                                val selected = kotlin.math.abs(playback.speed - speed) < 0.01f
+                                Box(Modifier.padding(horizontal = 4.dp)) {
+                                    FilterChip(
+                                        selected = selected,
+                                        onClick = { vm.playback.setSpeed(speed) },
+                                        label = { Text("${if (speed == speed.toLong().toFloat()) speed.toInt() else speed}×") },
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+
+                    }
                 }
-            }
-            Spacer(Modifier.height(18.dp))
-            Text(
-                current.displayTitle,
-                // ضغطة مطوّلة تنسخ عنوان الدرس — يستعمله الناس في المشاركة
-                // والبحث عن الدرس نفسه في مكان آخر.
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .copyable(current.displayTitle),
-                textAlign = TextAlign.Center,
-                style = MaterialTheme.typography.titleLarge,
-            )
-            if (current.speaker.isNotBlank()) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    current.speaker,
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            // 🎧 عدد مرّات الاستماع — هنا حيث يقرأه من فتح الدرس فعلاً، بخطٍّ
-            // أصغر من اسم الشيخ: خبرٌ يُطمئن لا عنوانٌ ينافس.
-            com.ali.menbaradkshk.util.listenCountLabel(current.views)?.let { listens ->
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    listens,
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            // 📚 موضع الدرس في سلسلته — «شرح الأخضري» ستّون درساً مرقّمة، ومن
-            // فتح واحداً منها لا يعرف أين هو منها. الترتيب هو ترتيب القسم
-            // الفرعيّ نفسه (الأقدم أوّلاً) وهو ترتيب رفع الدروس أصلاً.
-            val seriesPlace = remember(current.id, content.lessons) {
-                if (current.subcategoryId.isBlank()) {
-                    null
-                } else {
-                    val items = content.lessons
-                        .filter { it.subcategoryId == current.subcategoryId && it.audioUrl.isNotBlank() }
-                        .sortedBy(Lesson::createdAtMs)
-                    val index = items.indexOfFirst { it.id == current.id }
-                    // درسٌ وحيد في قسمه ليس «سلسلة»، فالسطر يُخفى.
-                    if (index < 0 || items.size < 2) null else (index + 1) to items.size
-                }
-            }
-            seriesPlace?.let { (place, total) ->
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "أنت في الدرس $place من $total",
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Teal,
-                    fontWeight = FontWeight.SemiBold,
-                )
             }
             Spacer(Modifier.height(12.dp))
-
-            // 📖 «النص المشروح» في أعلى الشاشة عمداً — تحت العنوان مباشرة
-            // ليراه كل من يفتح الصوتية، لا في ذيل الصفحة حيث لا يصله أحد.
+            // واجهة القراءة لها نسق التطبيق الأصلي، ولا تتلوّن بنسق المشغّل.
+            Spacer(Modifier.fillMaxWidth().height(1.dp).bringIntoViewRequester(transcriptAnchor))
             TranscriptSection(vm = vm, lesson = current)
-            Spacer(Modifier.height(14.dp))
-
-            // شريط التقدّم.
-            // ⚠️ قراءتا المخزن تفكّان JSON كاملاً، وهذه الشاشة تُعاد مرّتين في
-            // الثانية مع نبض الموضع — فكانتا تُنفَّذان في كل نبضة بلا داعٍ.
-            // المفتاح: الدرس + `revision` (لا يتغيّر المحفوظ إلّا بكتابة).
-            val savedDuration = remember(current.id, revision) { vm.store.duration(current.id) }
-            val savedPosition = remember(current.id, revision) { vm.store.position(current.id) }
-            val duration = if (active && playback.durationMs > 0L) playback.durationMs
-            else current.durationMs.takeIf { it > 0L } ?: savedDuration
-            val position = if (active) playback.positionMs else savedPosition
-            // شريط سحب كلاسيكي كما في الأصل: خط رفيع مستمر ومقبض دائري أخضر
-            // (بدل مقبض M3 العمودي الجديد وفجوة المسار).
-            val sliderColors = SliderDefaults.colors(
-                thumbColor = GreenBrand,
-                activeTrackColor = GreenBrand,
-                inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant,
-            )
-            // ⚠️ لا تُصدر seekTo من onValueChange: كل بكسل سحب كان يُجهض طلب
-            // الشبكة الجاري ويفتح طلب Range جديداً، والمقبض كان يتخلّف عن
-            // الإصبع لأن الموضع لا ينبض إلا كل نصف ثانية. القفزة عند الإفلات.
-            var dragging by remember { mutableStateOf<Float?>(null) }
-            Slider(
-                value = dragging ?: position.toFloat().coerceIn(0f, duration.toFloat().coerceAtLeast(1f)),
-                onValueChange = { dragging = it },
-                onValueChangeFinished = {
-                    dragging?.let { vm.playback.seekTo(it.toLong()) }
-                    dragging = null
-                },
-                valueRange = 0f..duration.toFloat().coerceAtLeast(1f),
-                colors = sliderColors,
-                thumb = {
-                    Box(
-                        Modifier
-                            .size(16.dp)
-                            .background(GreenBrand, CircleShape),
-                    )
-                },
-                track = { sliderState ->
-                    SliderDefaults.Track(
-                        sliderState = sliderState,
-                        modifier = Modifier.height(3.dp),
-                        colors = sliderColors,
-                        thumbTrackGapSize = 0.dp,
-                        trackInsideCornerSize = 0.dp,
-                        drawStopIndicator = null,
-                    )
-                },
-            )
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                // المنقضي عند الصفر: formatDuration تُعيد فراغاً عمداً للمدّة
-                // المجهولة، لكن «مضى صفر» معلوم — فيُعرض 0:00 لا خانة فارغة.
-                // (يمين الصفّ يبقى بلا حماية: مدّة مجهولة = فراغ مقصود.)
-                Text(formatDuration(position).ifBlank { "0:00" }, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(formatDuration(duration), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Spacer(Modifier.height(6.dp))
-
-            // صفّ القفز + مؤقّت النوم.
-            val skipSec = remember(revision) { vm.store.skipSeconds() }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                // ⚠️ أيقونتان بلا أرقام: Replay10/Forward10 كانتا تعرضان «10»
-                // والقفز فعلياً skipSec (١٥ ثانية) — الرقم المكتوب هو الحقيقة.
-                TextButton(onClick = vm.playback::skipBackward) {
-                    Icon(Icons.Filled.Replay, contentDescription = null, tint = BlueBrand)
-                    Text("${skipSec}ث")
-                }
-                TextButton(onClick = vm.playback::skipForward) {
-                    Icon(Icons.Filled.FastForward, contentDescription = null, tint = BlueBrand)
-                    Text("${skipSec}ث")
-                }
-                TextButton(onClick = { sleepSheet = true }) {
-                    Icon(Icons.Filled.Bedtime, contentDescription = null, tint = Teal)
-                    Text(" نوم")
-                }
-            }
             Spacer(Modifier.height(8.dp))
-
-            // السرعات الست كما في الأصل.
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.Center,
-            ) {
-                listOf(0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f).forEach { speed ->
-                    val selected = kotlin.math.abs(playback.speed - speed) < 0.01f
-                    Box(Modifier.padding(horizontal = 4.dp)) {
-                        FilterChip(
-                            selected = selected,
-                            onClick = { vm.playback.setSpeed(speed) },
-                            label = { Text("${if (speed == speed.toLong().toFloat()) speed.toInt() else speed}×") },
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-
-            // صفّ التحكم: تحميل، السابق، تشغيل كبير، التالي، مشاركة.
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                DownloadButton(vm, current, size = 44.dp)
-                // طرفا القائمة: الزرّان كانا بكامل التباين ولا يفعلان شيئاً —
-                // نوحّدهما مع المشغّل المصغّر الذي يعتمد hasPrevious/hasNext.
-                IconButton(onClick = vm.playback::previous, enabled = playback.hasPrevious, modifier = Modifier.size(48.dp)) {
-                    Icon(Icons.Filled.SkipPrevious, contentDescription = "السابق", tint = BlueBrand, modifier = Modifier.size(36.dp))
-                }
-                // ⭐ «أعِد ٣٠ ثانية» بجوار زرّ التشغيل وبحجم قريب منه.
-                //
-                // **لماذا زرٌّ مستقلّ والترجيع موجود؟** لأنّ أكثر ما يفعله
-                // مستمع الدرس العلميّ هو «ما فهمتُ هذه الجملة، أعِدها»، وهذا
-                // الفعل اليوم إمّا زرٌّ صغير في صفٍّ من ثلاثة، وإمّا سحبٌ على
-                // الشريط يحتاج دقّةً لا يملكها من يستمع وهو يعمل.
-                //
-                // وثلاثون ثانية **ثابتة لا تتبع إعداد القفز**: الإعداد يضبط
-                // الترجيع الدقيق، وهذا الزرّ معناه واحد مكتوبٌ عليه لا يتغيّر.
-                Replay30Button(
-                    onClick = {
-                        val target = (position - 30_000L).coerceAtLeast(0L)
-                        // درسٌ غير مُشغَّل الآن: لا موضع في المشغّل ليُرجَع
-                        // منه، فنبدأ تشغيله من الموضع المطلوب مباشرةً.
-                        if (active) {
-                            vm.playback.seekTo(target)
-                        } else {
-                            vm.playback.play(current, listOf(current) + similar, target, restart = true)
-                        }
-                    },
-                    size = 62.dp,
-                    tint = BlueBrand,
-                    background = BlueBrand.copy(alpha = 0.12f),
-                )
-                val playing = active && playback.playing
-                val loading = active && playback.loading
-                Box(
-                    modifier = Modifier
-                        .size(72.dp)
-                        .background(if (playing) GreenBrand else OrangeBrand, CircleShape)
-                        .clickable(enabled = !loading) {
-                            if (active) vm.playback.toggle()
-                            else vm.playback.play(current, listOf(current) + similar)
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (loading) {
-                        CircularProgressIndicator(Modifier.size(32.dp), strokeWidth = 2.dp, color = Color.White)
-                    } else {
-                        Icon(
-                            if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                            contentDescription = if (playing) "إيقاف" else "تشغيل",
-                            tint = Color.White,
-                            modifier = Modifier.size(42.dp),
-                        )
-                    }
-                }
-                // ⚠️ صغّرنا «السابق/التالي» قليلاً (56→48) لإفساح مكان زرّ
-                // «أعِد ٣٠ ثانية» في الصفّ نفسه على الشاشات الضيّقة — وهما
-                // ما زالا فوق حدّ اللمس (٤٨) بأمان.
-                IconButton(onClick = vm.playback::next, enabled = playback.hasNext, modifier = Modifier.size(48.dp)) {
-                    Icon(Icons.Filled.SkipNext, contentDescription = "التالي", tint = BlueBrand, modifier = Modifier.size(36.dp))
-                }
-                IconButton(onClick = { share(current) }) {
-                    Icon(Icons.Filled.Share, contentDescription = "مشاركة", tint = Teal)
-                }
-            }
 
             // تشغيل تلقائي للتالي.
             Row(
@@ -961,6 +1018,157 @@ fun PlayerScreen(
             },
         )
     }
+}
+
+@Composable
+private fun ArchiveTransportButton(
+    archive: ArchivePlayerPalette,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    IconButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .background(archive.button, CircleShape),
+    ) {
+        Icon(icon, contentDescription = label, tint = if (enabled) archive.text else archive.muted.copy(alpha = 0.40f))
+    }
+}
+
+/** البوصلة زخرفة هادئة لا تمثّل تقدّم التشغيل أو موجة التسجيل. */
+@Composable
+private fun ArchiveCover(archive: ArchivePlayerPalette, store: LocalStore, lessonId: String, playing: Boolean) {
+    val revision by store.revision.collectAsState()
+    val appMotionEnabled = remember(store, revision) { store.listeningCoverMotionEnabled() }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val lifecycleState by lifecycle.currentStateFlow.collectAsState()
+    val motionAllowed = rememberArchiveMotionAllowed()
+    // «صدى القبّة»: أقواس محرابٍ تخرج من المنبر وتتّسع وتخفت كصدى الصوت تحت القبّة.
+    // الطور [0,1) يُحفظ لكلّ درس، فيُستأنف الصدى من حيث سكن لا من الصفر.
+    val phase = remember(lessonId) { mutableFloatStateOf(0f) }
+    // حضور الصدى يرتفع حين يبدأ الصوت ويهدأ حين يقف — انتقالٌ ليّن لا قطع.
+    val running = ArchiveOrbitPolicy.shouldRotate(
+        playing = playing, foreground = lifecycleState.isAtLeast(Lifecycle.State.RESUMED),
+        motionAllowed = motionAllowed, appMotionEnabled = appMotionEnabled,
+    )
+    val presence by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (playing) 1f else 0f,
+        animationSpec = if (motionAllowed && appMotionEnabled) androidx.compose.animation.core.tween(700) else androidx.compose.animation.core.snap(),
+        label = "echoPresence",
+    )
+    LaunchedEffect(lessonId, running) {
+        if (!running) return@LaunchedEffect
+        var previous = withFrameNanos { it }
+        while (true) {
+            withFrameNanos { now ->
+                phase.floatValue = ArchiveOrbitPolicy.advanceEcho(phase.floatValue, now - previous)
+                previous = now
+            }
+        }
+    }
+    val stage = androidx.compose.foundation.shape.RoundedCornerShape(
+        topStartPercent = 50, topEndPercent = 50, bottomStartPercent = 12, bottomEndPercent = 12,
+    )
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier.size(width = 210.dp, height = 196.dp)
+                .clip(stage)
+                .background(Brush.verticalGradient(listOf(archive.panel, archive.surface)))
+                .border(1.dp, archive.track.copy(alpha = 0.55f), stage)
+                .semantics { contentDescription = if (playing) "صدى الدرس يتردّد" else "المنبر" },
+            contentAlignment = Alignment.Center,
+        ) {
+            Canvas(Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
+                val base = h * .80f
+                val cx = w / 2f
+                // قوس محرابٍ مدبّب نصف عرضه r وارتفاعه ~1.35r فوق خطّ القاعدة.
+                fun arch(r: Float): Path = Path().apply {
+                    val top = base - r * 1.35f
+                    moveTo(cx - r, base)
+                    lineTo(cx - r, base - r * .55f)
+                    cubicTo(cx - r, top + r * .35f, cx - r * .45f, top + r * .08f, cx, top)
+                    cubicTo(cx + r * .45f, top + r * .08f, cx + r, top + r * .35f, cx + r, base - r * .55f)
+                    lineTo(cx + r, base)
+                }
+                val minR = w * .12f
+                val maxR = w * .44f
+                val waves = 4
+                repeat(waves) { i ->
+                    // الساكن: أقواسٌ ثابتة متدرّجة. المتحرّك: كلّ قوسٍ يتّسع من المنبر ويخفت.
+                    val restT = (i + 1f) / (waves + 1f)
+                    val liveT = (phase.floatValue + i / waves.toFloat()) % 1f
+                    val t = restT + (liveT - restT) * presence
+                    val r = minR + (maxR - minR) * t
+                    val fade = (1f - t)
+                    val alpha = (.16f + .5f * fade) * (.55f + .45f * presence) + .1f * (1f - presence)
+                    drawPath(
+                        arch(r), archive.accent.copy(alpha = alpha.coerceIn(.08f, .8f)),
+                        style = Stroke(width = (1.2f + 1.3f * fade).dp.toPx(), cap = StrokeCap.Round),
+                    )
+                }
+                // المنبر: ثلاث درجات نحاسية وقائمٌ صغير.
+                val step = w * .035f
+                val copper = archive.colors.tertiary
+                drawRoundRect(copper, Offset(cx - step * 3.2f, base - step * 1.3f), androidx.compose.ui.geometry.Size(step * 6.4f, step * 1.3f), androidx.compose.ui.geometry.CornerRadius(2f))
+                drawRoundRect(copper, Offset(cx - step * 2.1f, base - step * 2.5f), androidx.compose.ui.geometry.Size(step * 4.2f, step * 1.3f), androidx.compose.ui.geometry.CornerRadius(2f))
+                drawRoundRect(copper, Offset(cx - step * 1.0f, base - step * 3.7f), androidx.compose.ui.geometry.Size(step * 2.0f, step * 1.3f), androidx.compose.ui.geometry.CornerRadius(2f))
+                drawLine(copper, Offset(cx, base - step * 3.7f), Offset(cx, base - step * 5.4f), strokeWidth = 1.6.dp.toPx(), cap = StrokeCap.Round)
+                drawCircle(archive.accent, radius = 2.6.dp.toPx(), center = Offset(cx, base - step * 5.9f))
+                // خطّ القاعدة (أرضيّة المسجد).
+                drawLine(archive.track.copy(alpha = .7f), Offset(w * .12f, base), Offset(w * .88f, base), strokeWidth = 1.dp.toPx())
+            }
+        }
+    }
+}
+
+/** Follow Android's live animator setting, including accessibility's Remove animations switch. */
+@Composable
+private fun rememberArchiveMotionAllowed(): Boolean {
+    val resolver = LocalContext.current.applicationContext.contentResolver
+    fun read() = runCatching {
+        Settings.Global.getFloat(resolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f)
+    }.getOrDefault(0f)
+    var allowed by remember(resolver) { mutableStateOf(ArchiveOrbitPolicy.motionAllowed(read())) }
+    DisposableEffect(resolver) {
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                allowed = ArchiveOrbitPolicy.motionAllowed(read())
+            }
+        }
+        val registered = runCatching {
+            resolver.registerContentObserver(
+                Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE), false, observer,
+            )
+        }.isSuccess
+        allowed = registered && ArchiveOrbitPolicy.motionAllowed(read())
+        onDispose { if (registered) runCatching { resolver.unregisterContentObserver(observer) } }
+    }
+    return allowed
+}
+
+internal object ArchiveOrbitPolicy {
+    fun motionAllowed(animatorScale: Float): Boolean = animatorScale.isFinite() && animatorScale > 0f
+
+    fun shouldRotate(
+        playing: Boolean,
+        foreground: Boolean,
+        motionAllowed: Boolean,
+        appMotionEnabled: Boolean,
+    ): Boolean = playing && foreground && motionAllowed && appMotionEnabled
+
+    fun advance(currentDegrees: Float, elapsedNanos: Long): Float =
+        (currentDegrees + elapsedNanos.coerceIn(0L, 100_000_000L) * (360f / 34_000_000_000f)) % 360f
+
+    /** طور «صدى القبّة» في [0,1): دورة هادئة كلّ 3.6 ثانية؛ القفزات الطويلة (رجوعٌ من الخلفية) تُقصّ. */
+    fun advanceEcho(phase: Float, elapsedNanos: Long): Float =
+        (phase + elapsedNanos.coerceIn(0L, 100_000_000L) / ECHO_PERIOD_NANOS) % 1f
+
+    private const val ECHO_PERIOD_NANOS = 3_600_000_000f
 }
 
 /**

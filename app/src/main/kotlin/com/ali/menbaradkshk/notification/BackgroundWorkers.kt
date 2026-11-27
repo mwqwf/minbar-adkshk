@@ -190,13 +190,8 @@ class AutoDownloadWorker(
         // محرك الأولوية بدل الأهداف الثلاثة: طبقة السياق ثم النية ثم الباقي.
         // على شبكة محدودة سمح بها صراحةً: ميزانية 20م.ب كحدّ أقصى للدورة.
         val budget = if (metered) 20L * 1024 * 1024 else Long.MAX_VALUE
-        // 🎁 ما زالت حزم المتجر في الطريق؟ إذن لا نسحب من R2 ما سيصل منها
-        // مجّاناً بعد قليل — وإلّا دفع المستخدم شبكته ومساحته مرّتين.
-        val deferred = if (com.ali.menbaradkshk.data.AssetPackSeeder.storeDeliveryPending(applicationContext)) {
-            content.bundledShas(applicationContext)
-        } else {
-            emptySet()
-        }
+        val deferred = com.ali.menbaradkshk.data.LibraryPackDelivery
+            .deferredAutomaticShas(applicationContext, content)
         val planned = com.ali.menbaradkshk.data.PriorityEngine
             .plan(applicationContext, budgetBytes = budget, maxItems = MAX_PER_RUN, deferredShas = deferred)
         // ⚠️ ما هو في الطابور الآن دخله بنيّةٍ سُجّلت وقتها (يدويّة غالباً) —
@@ -214,7 +209,15 @@ class AutoDownloadWorker(
         ids.forEach { downloads.clearCancel(it) }
         // يمرّ عبر طابور التحميل الخلفي نفسه ليستفيد من الاستئناف عند
         // انقطاع الشبكة وإعادة المحاولة التلقائية وإشعار التقدّم.
-        store.addToDownloadQueue(ids, "اختيارات لك", wifiOnly = store.autoDownloadWifiOnly())
+        val ordinary = ids.filterNot { it in manual }
+        if (ordinary.isNotEmpty()) {
+            store.addToDownloadQueue(ordinary, "اختيارات لك", wifiOnly = store.autoDownloadWifiOnly())
+        }
+        val refresh = ids.filter { it in manual }
+        if (refresh.isNotEmpty()) {
+            // Keeping a previous manual file does not authorize an automatic mobile-data refresh.
+            store.addToDownloadQueue(refresh, "تحديث مكتبتك", wifiOnly = true)
+        }
         com.ali.menbaradkshk.data.DownloadScheduler.enqueue(applicationContext, userInitiated = false)
         return Result.success()
     }
@@ -260,7 +263,12 @@ class SmartDownloadWorker(
         // ⚠️ ما هو في الطابور الآن دخله بنيّةٍ سُجّلت وقتها (يدويّة غالباً) —
         // وسمه «تلقائياً» هنا كان يقلب تنزيلاً يدويّاً منتظراً إلى مرشَّح إخلاء.
         val queuedNow = store.downloadQueue().toSet()
-        val stale = downloads.staleDownloadIds(lessons).filter { it !in queuedNow }
+        val deferred = com.ali.menbaradkshk.data.LibraryPackDelivery
+            .deferredAutomaticShas(applicationContext, content)
+        val byId = content.state.value.lessonById
+        val stale = downloads.staleDownloadIds(lessons).filter {
+            it !in queuedNow && byId[it]?.sha256 !in deferred
+        }
         if (stale.isNotEmpty()) {
             val (manual, auto) = stale.partition {
                 store.downloadMeta(it)?.optString("src") == "manual"
@@ -270,21 +278,16 @@ class SmartDownloadWorker(
                 auto.forEach { downloads.clearCancel(it) }
                 store.addToDownloadQueue(auto, "تحديث مكتبتك", wifiOnly = true)
             }
-            // اليدويّ يُصلَح بأولوية المستخدم نفسه: الصغير (≤10م.ب) على أي
-            // شبكة كي لا يبقى ملفه معطوباً، والكبير ينتظر الواي فاي.
-            val byId = content.state.value.lessonById
-            val (big, small) = manual.partition {
-                (byId[it]?.sizeBytes ?: 0L) > 10L * 1024 * 1024
+            // ترقية نسخة يدوية قديمة إجراء تلقائي، لا طلب تنزيل جديد من المستخدم.
+            if (manual.isNotEmpty()) {
+                manual.forEach { downloads.clearCancel(it) }
+                store.addToDownloadQueue(manual, "تحديث مكتبتك", wifiOnly = true)
             }
-            small.forEach { downloads.clearCancel(it) }
-            big.forEach { downloads.clearCancel(it) }
-            if (small.isNotEmpty()) store.addToDownloadQueue(small, "تحديث مكتبتك", wifiOnly = false)
-            if (big.isNotEmpty()) store.addToDownloadQueue(big, "تحديث مكتبتك", wifiOnly = true)
         }
 
         // محرك الأولوية: يختار للجميع (متابعات، مفضّلة، سياق، أرشيف…).
         val planned = com.ali.menbaradkshk.data.PriorityEngine
-            .plan(applicationContext, budgetBytes = Long.MAX_VALUE, maxItems = MAX_PER_RUN)
+            .plan(applicationContext, budgetBytes = Long.MAX_VALUE, maxItems = MAX_PER_RUN, deferredShas = deferred)
         val staleSet = stale.toSet()
         val ids = planned.map { it.id }.filter { it !in staleSet && it !in queuedNow }
         if (ids.isEmpty() && stale.isEmpty()) return Result.success()
@@ -384,7 +387,7 @@ class UpdateCheckWorker(
  * الخادم عند كل تغيير محتوى أو إشعار — لا يمرّ بالـWorker. احتياطه عند
  * الحجب: `GET /v1/pulse` على قاعدتَي `MinbarApi`. وفي كل نبضة لا نداء آخر **إلا إن تغيّر شيء**:
  * - `notifMs` أحدث من آخر ما رأيناه ⇒ خلاصة الإشعارات (العامة، والخاصة لمن
- *   ساهم أو راسل من قبل) وإشعارٌ محلّي لكل جديد بقواعد التصفية أدناه.
+ *   راسل الدعم من قبل) وإشعارٌ محلّي لكل جديد بقواعد التصفية أدناه.
  * - `contentMs` أحدث من علامتنا ⇒ مزامنة الكتالوج الخفيفة (غير القسرية).
  *
  * والإيقاع من حداثة آخر تغيير على الخادم (السلّم في [PulseLadder]):
@@ -412,7 +415,7 @@ class PulseWorker(
             // ⚠️ النبض لا يتحرّك بقرارات المساهمات ولا بردود المطوّر (لا تُكتب في
             // جدول الإشعارات العامة)، فكان من ينتظر ردّاً لا يُنبَّه في الخلفية أبداً.
             // فمن له شأنٌ خاصّ يُسأل عنه في كل نبضة.
-            if (pulse.notifMs > store.lastSeenNotifMs() || hasPrivateFeed(store)) {
+            if (pulse.notifMs > store.lastSeenNotifMs() || hasSupportHistory()) {
                 pollNotifications(store, now)
             }
             if (pulse.contentMs > store.lastPulseContentMs()) {
@@ -461,6 +464,7 @@ class PulseWorker(
                 if (topic.startsWith("sec_") && topic.removePrefix("sec_") !in followed) return
                 // إبطال الكاش نظافةُ بيانات لا عرضُ إشعار — قبل حارس المفتاح.
                 NotificationPoster.invalidateTranscriptCache(applicationContext, data)
+                if (isRetiredContributionNotice(data["type"], data["route"])) return
                 if (!enabled) return
             }
             if (posted >= MAX_POSTED_PER_RUN) return
@@ -481,7 +485,7 @@ class PulseWorker(
                 )
             } else {
                 val destination = NotificationPoster.destinationFor(data)
-                    ?: if (private) "minbar://my-submissions" else "minbar://notifications"
+                    ?: "minbar://notifications"
                 NotificationPoster.show(
                     applicationContext,
                     // معرّف ثابت لكل عنصر خادميّ: التكرار (لو وقع) يحلّ محلّ نفسه.
@@ -506,7 +510,7 @@ class PulseWorker(
                 (items.length() - 1 downTo 0).mapNotNull { items.optJSONObject(it) }
                     .forEach { handle(it, private = false) }
             }
-            if (hasPrivateFeed(store)) {
+            if (hasSupportHistory()) {
                 runCatching {
                     val items = com.ali.menbaradkshk.data.MinbarApi
                         .getUser(applicationContext, "/v1/me/notifications?since=$since")
@@ -519,10 +523,8 @@ class PulseWorker(
         if (newest > store.lastSeenNotifMs()) store.setLastSeenNotifMs(newest)
     }
 
-    /// نظير `AppViewModel.hasContributedBefore`: ساهم بدرسٍ أو نصّ، أو راسل المطوّر.
-    private fun hasPrivateFeed(store: LocalStore): Boolean =
-        store.knownSubmissionStatuses().isNotEmpty() || store.submitterName().isNotBlank() ||
-            com.ali.menbaradkshk.data.SupportStore.get(applicationContext).consented()
+    private fun hasSupportHistory(): Boolean =
+        com.ali.menbaradkshk.data.SupportStore.get(applicationContext).consented()
 
     companion object {
         private const val DAY_MS = 24L * 60 * 60 * 1_000

@@ -90,8 +90,8 @@ object PriorityEngine {
                 .filter { allowDownloaded || it.id !in downloadedIds }
                 // 🎁 ما يُنتظر من المتجر لا يُسحب من R2: وصولُه بعد قليلٍ مجّاناً
                 // خيرٌ من دفع شبكة المستخدم في نسخةٍ ثانية من الصوت نفسه.
-                // و«stale» استثناء: صوتُه بُدِّل بعد البناء فالحزمة لا تحمله.
-                .filter { allowDownloaded || it.sha256 !in deferredShas }
+                // الصوت الجديد بعد بناء الحزمة خارج قائمة البصمات فلا يتأثّر.
+                .filter { it.sha256 !in deferredShas }
                 .sortedBy(::bytesRemaining)
                 .forEach { lesson ->
                     if (result.size >= maxItems) return

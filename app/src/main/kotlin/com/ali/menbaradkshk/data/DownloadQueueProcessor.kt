@@ -28,7 +28,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 /// نتيجة معالجة طابور التحميل. `ROUND_EXPIRED`: انقضى سقف الجولة الزمني
 /// (مسار WorkManager على أندرويد ≤13) وبقي في الطابور شيء — يُعاد الجدولة
 /// فوراً لجولة جديدة، لا `retry` (ذاك يخضع لمهلة تراجعية متراكمة).
-enum class DownloadRunResult { FINISHED, NEEDS_RETRY, ROUND_EXPIRED }
+enum class DownloadRunResult { FINISHED, NEEDS_RETRY, ROUND_EXPIRED, WAITING_FOR_PLAY }
 
 /// منطق تحميل طابور الدروس، مشترك بين مسارَي التشغيل:
 /// وظيفة «نقل بيانات بمبادرة المستخدم» (أندرويد 14+) وعمل الخلفية العادي.
@@ -115,13 +115,17 @@ class DownloadQueueProcessor(private val context: Context) {
         // عناصر مقيَّدة بالواي فاي صادفناها على شبكة محدودة: تبقى في الطابور
         // ونتجاوزها في هذه الجولة، ثم نجدول لها عملاً بقيد شبكة غير محدودة.
         val deferred = mutableSetOf<String>()
+        val playHeld = mutableSetOf<String>()
+        val pendingPlay = LibraryPackDelivery.queuedPlayCheck(context, content)
         while (true) {
             if (downloads.paused.value) {
                 publishPaused()
                 return DownloadRunResult.FINISHED
             }
             queue = store.downloadQueue()
-            val id = queue.firstOrNull { it !in deferred } ?: break
+            val id = queue.firstOrNull {
+                it !in deferred && (it !in playHeld || !store.isAutoDownloadQueued(it))
+            } ?: break
             // سقف الجولة: العامل الخلفي على ≤13 مهلته ~10 دقائق، فنسلّم
             // قبلها ونطلب جولة جديدة نظيفة بدل أن يقتلنا النظام في المنتصف.
             if (android.os.SystemClock.elapsedRealtime() > roundDeadlineElapsedMs) {
@@ -135,6 +139,30 @@ class DownloadQueueProcessor(private val context: Context) {
                 store.decrementDownloadQueueTotal()
                 continue
             }
+            val initialAuto = store.isAutoDownloadQueued(id)
+            val waitingForPlay = initialAuto && pendingPlay(lesson)
+            // Play's bounded status query can suspend. Recheck ownership and pause,
+            // then apply the existing local-file, cancel and network guards.
+            if (downloads.paused.value) {
+                publishPaused()
+                return DownloadRunResult.FINISHED
+            }
+            if (initialAuto && (id !in store.downloadQueue() ||
+                    content.state.value.lessonById[id]?.sha256 != lesson.sha256)) continue
+            if (initialAuto && android.os.SystemClock.elapsedRealtime() > roundDeadlineElapsedMs) {
+                return DownloadRunResult.ROUND_EXPIRED
+            }
+            val stillAuto = store.isAutoDownloadQueued(id)
+            if (!stillAuto) playHeld.remove(id)
+            // لا تعِد تنزيل أرشيف Play من R2 عبر عناصر آليّة بقيت في الطابور.
+            // الطلب اليدوي يمحو وسم التلقائي قبل إدراجه، ولذلك يظل يعمل.
+            if (stillAuto &&
+                LibraryPackDelivery.suppressQueuedArchive(context, store, content, lesson.sha256)) {
+                store.removeFromDownloadQueue(id)
+                store.decrementDownloadQueueTotal()
+                store.clearAutoQueued(listOf(id))
+                continue
+            }
             // منزَّلٌ **وصوتُه الحاليّ**: الدرس الذي استُبدل صوته (stale) يبقى
             // ليُجدَّد — كان يُسقط هنا بلا تنزيل فتموت آليّة «تحديث مكتبتك».
             if (downloads.isDownloaded(id) && downloads.staleDownloadIds(listOf(lesson)).isEmpty()) {
@@ -146,6 +174,10 @@ class DownloadQueueProcessor(private val context: Context) {
             if (downloads.isCancelRequested(id)) {
                 downloads.clearCancel(id)
                 store.removeFromDownloadQueue(id)
+                continue
+            }
+            if (stillAuto && waitingForPlay) {
+                playHeld += id
                 continue
             }
             // القيد لكل عنصر لا حالة عامّة: ضغطة تحميل يدويّة لم تعد تُنزّل
@@ -254,6 +286,14 @@ class DownloadQueueProcessor(private val context: Context) {
         }
 
         downloads.queueState.value = null
+        if (playHeld.any { it in queue && store.isAutoDownloadQueued(it) }) {
+            // Do not label this as Wi-Fi, claim completion, or spin immediate
+            // retries on a pack waiting for Play/user action. The existing
+            // periodic guardian can recover after the pack state changes.
+            if (deferred.isNotEmpty()) DownloadScheduler.enqueueUnmetered(context)
+            runCatching { NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID) }
+            return DownloadRunResult.WAITING_FOR_PLAY
+        }
         if (deferred.isNotEmpty()) {
             // لا نمسح الطابور: المؤجَّل ينتظر شبكة غير محدودة بعمل مستقلّ.
             DownloadScheduler.enqueueUnmetered(context)

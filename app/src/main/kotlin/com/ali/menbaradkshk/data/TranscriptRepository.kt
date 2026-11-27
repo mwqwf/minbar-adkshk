@@ -114,49 +114,9 @@ fun transcriptSearchServerTerm(query: String, anchor: String): String {
     return anchor
 }
 
-/** مرفق «النص المشروح» الاختياري داخل مساهمة درس صوتي («شارك درساً»). */
-data class TranscriptExtras(
-    val text: String = "",
-    val bookTitle: String = "",
-    val sourceRef: String = "",
-    val images: List<Uri> = emptyList(),
-) {
-    val isEmpty: Boolean get() = text.trim().length < 10 && images.isEmpty()
-}
-
-/** مسودة اقتراح نص مشروح من المستمع. */
-data class TranscriptDraft(
-    val lessonId: String,
-    val text: String,
-    val bookTitle: String,
-    val sourceRef: String,
-    val note: String,
-    val submitterName: String,
-    val images: List<Uri>,
-)
-
-/** عنصر «مساهماتي» لاقتراح نص (نظير LessonSubmission للدروس الصوتية). */
-data class TranscriptSubmissionItem(
-    val id: String,
-    val lessonId: String,
-    val lessonTitle: String,
-    val status: String,
-    val rejectReason: String,
-    val hasImages: Boolean,
-    val createdAtMs: Long,
-    val decidedAtMs: Long,
-) {
-    val isPending: Boolean get() = status == "pending"
-}
-
-/**
- * 📖 «النص المشروح»: جلب النص المعتمد للدرس عند فتح المشغّل فقط (وثيقة
- * واحدة، فلا يُثقل مزامنة الدروس)، وإرسال اقتراحات المستمعين (نص و/أو
- * صور صفحات الكتاب) إلى transcript_submissions بنفس دورة «شارك درساً».
- */
+/** قراءة النص المشروح المعتمد وحفظ صوره للعرض. */
 class TranscriptRepository private constructor(context: Context) {
     private val appContext = context.applicationContext
-    private val store = LocalStore.get(context)
 
     // كاش جلسة بسيط: يمنع إعادة الجلب عند كل إعادة تركيب/عودة لنفس الدرس.
     // وهو الطبقة الأولى فوق كاش القرص أدناه لا بديلاً عنه.
@@ -449,99 +409,6 @@ class TranscriptRepository private constructor(context: Context) {
         }
     }
 
-    /**
-     * إرسال اقتراح: يرفع الصور (إن وُجدت) إلى مجلد المساهمة ثم يستدعي
-     * createTranscriptSubmission. يعيد معرّف المساهمة.
-     */
-    suspend fun submit(draft: TranscriptDraft, onProgress: (Int) -> Unit = {}): String =
-        withContext(Dispatchers.IO) {
-            require(draft.lessonId.isNotBlank()) { "الدرس غير محدد." }
-            require(
-                draft.text.trim().length >= 10 || draft.images.isNotEmpty(),
-            ) { "أدخل نص المقطع أو أرفق صورة صفحة واحدة على الأقل." }
-            val validatedImages = draft.images.take(MAX_IMAGES).mapIndexed { index, uri ->
-                val size = appContext.contentResolver.openAssetFileDescriptor(uri, "r")
-                    ?.use { it.length } ?: -1L
-                require(size >= 0) { "تعذّرت قراءة الصورة ${index + 1} — أعد اختيارها." }
-                require(size in 1..MAX_IMAGE_BYTES) { "حجم الصورة ${index + 1} يتجاوز 10 ميجابايت." }
-                val contentType = appContext.contentResolver.getType(uri) ?: "image/jpeg"
-                require(contentType.startsWith("image/")) { "الملف المرفق ليس صورة." }
-                uri to contentType
-            }
-            if (draft.submitterName.isNotBlank()) store.setSubmitterName(draft.submitterName)
-            val id = "tsub_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}"
-            val keys = mutableListOf<String>()
-            validatedImages.forEachIndexed { index, (uri, contentType) ->
-                keys += MinbarApi.uploadUser(appContext, "transcripts", "${index}_page.jpg", uri, contentType) { share ->
-                    onProgress(((index * 100L + share) / validatedImages.size).toInt())
-                }.optString("key")
-            }
-            // بلا Firebase: المفتاح نفسه يحمل معرّف التثبيت (القرار يصل بالاستطلاع).
-            val fcmToken = if (store.notificationsEnabled()) "install:" + AppConfigRepository.get(appContext).installId() else ""
-            val payload = JSONObject()
-                .put("id", id)
-                .put("lessonId", draft.lessonId)
-                .put("text", draft.text.trim())
-                .put("bookTitle", draft.bookTitle.trim())
-                .put("sourceRef", draft.sourceRef.trim())
-                .put("note", draft.note.trim())
-                .put("submitterName", draft.submitterName.trim())
-                .put("imageKeys", JSONArray(keys))
-                .put("fcmToken", fcmToken)
-            val result = runCatching { MinbarApi.postUser(appContext, "/v1/transcript-submissions", payload) }
-                .getOrElse { first ->
-                    if (!isTransientFailure(first)) throw first
-                    kotlinx.coroutines.delay(1_500)
-                    MinbarApi.postUser(appContext, "/v1/transcript-submissions", payload)
-                }
-            val returned = result.optString("id")
-            check(returned.isNotBlank()) { "استجابة الخادم غير مكتملة." }
-            returned
-        }
-
-    private suspend fun fetchMine(): List<TranscriptSubmissionItem> {
-        val items = MinbarApi.getUser(appContext, "/v1/me/transcript-submissions").optJSONArray("items") ?: JSONArray()
-        return (0 until items.length()).mapNotNull { items.optJSONObject(it) }.map { o ->
-            TranscriptSubmissionItem(
-                id = o.optString("id"),
-                lessonId = o.optString("lessonId"),
-                lessonTitle = o.optString("lessonTitle"),
-                status = o.optString("status").ifBlank { "pending" },
-                rejectReason = o.optString("rejectReason"),
-                hasImages = o.optBoolean("hasImages", false),
-                createdAtMs = o.optLong("createdAtMs"),
-                decidedAtMs = o.optLong("decidedAtMs"),
-            )
-        }.sortedByDescending(TranscriptSubmissionItem::createdAtMs)
-    }
-
-    private val mineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val mineShared: Flow<List<TranscriptSubmissionItem>> by lazy {
-        kotlinx.coroutines.flow.flow {
-            var last = emptyList<TranscriptSubmissionItem>()
-            while (true) {
-                // ⚠️ انقطاعٌ عابر لا يُفرغ القائمة: كان كلّ فشل استطلاعٍ يُصدر قائمةً فارغة
-                // فتختفي العناصر من الشاشة حتى الاستطلاع التالي؛ الآن تبقى آخر نسخة ناجحة.
-                last = runCatching { fetchMine() }.getOrDefault(last)
-                emit(last)
-                kotlinx.coroutines.delay(30_000L)
-            }
-        }
-            .catch { emit(emptyList()) }
-            .shareIn(mineScope, SharingStarted.WhileSubscribed(5_000), replay = 1)
-    }
-
-    fun mine(): Flow<List<TranscriptSubmissionItem>> = mineShared
-
-    suspend fun deletePending(item: TranscriptSubmissionItem) {
-        if (!item.isPending) return
-        // ⚠️ على IO: تُنادى من نطاق الواجهة (الخيط الرئيسي)، و`MinbarApi` حاجبٌ
-        // فكان يرمي `NetworkOnMainThreadException` في كل مرّة فيفشل الفعل دائماً.
-        withContext(Dispatchers.IO) {
-            MinbarApi.deleteUser(appContext, "/v1/me/transcript-submissions/${item.id}")
-        }
-    }
-
     /** بحث في النصوص المشروحة على الخادم: معرّفات الدروس التي يرد فيها [keyword]. */
     suspend fun searchIndex(keyword: String): List<String> {
         if (keyword.length < MIN_SEARCH_KEYWORD) return emptyList()
@@ -564,7 +431,6 @@ class TranscriptRepository private constructor(context: Context) {
     }
 
     companion object {
-        const val MAX_IMAGES = 4
         const val MAX_IMAGE_BYTES = 10L * 1_024L * 1_024L
         const val MAX_TEXT_CHARS = 20_000
 

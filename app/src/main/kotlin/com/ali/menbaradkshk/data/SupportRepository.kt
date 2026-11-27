@@ -13,11 +13,16 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.ali.menbaradkshk.BuildConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -55,6 +60,7 @@ data class SupportMessage(
     // مفاتيح صور ردّ المطوّر في R2 (اللوحة تُرسل ردوداً بالصورة وحدها).
     val imagePaths: List<String> = emptyList(),
     val failed: Boolean = false,
+    val attachmentUnavailable: Boolean = false,
 )
 
 /**
@@ -97,20 +103,26 @@ class SupportRepository private constructor(context: Context) {
         }
     }.flowOn(Dispatchers.IO)
 
+    fun newMessageOutbox(): Flow<List<SupportMessage>> = store.outboxRevision.map {
+        outboxOperation.withLock { runCatching { store.migrateLegacyRecordings() } }
+        store.pending().filter { it.isNew && canDeliverSupportOutboxKind(it.kind) }
+            .sortedByDescending { it.createdAtMs }
+            .map { localMessage(it) }
+    }.flowOn(Dispatchers.IO)
+
+    private fun localMessage(item: SupportStore.Pending) = SupportMessage(
+        id = item.id,
+        fromOwner = false,
+        text = item.text,
+        audioPath = item.audioFile,
+        createdAtMs = item.createdAtMs,
+        pending = canDispatchSupportDraft(item.failed, item.attachmentUnavailable),
+        failed = item.failed || item.attachmentUnavailable,
+        attachmentUnavailable = item.attachmentUnavailable,
+    )
+
     fun messages(threadId: String): Flow<List<SupportMessage>> {
-        fun queued(): List<SupportMessage> = store.pending()
-            .filter { it.threadId == threadId }
-            .map {
-                SupportMessage(
-                    id = it.id,
-                    fromOwner = false,
-                    text = it.text,
-                    audioPath = it.audioFile,
-                    createdAtMs = it.createdAtMs,
-                    pending = !it.failed,
-                    failed = it.failed,
-                )
-            }
+        fun queued(): List<SupportMessage> = store.pending().filter { it.threadId == threadId }.map { localMessage(it) }
         val sent: Flow<List<SupportMessage>> = flow {
             if (threadId.isBlank()) {
                 emit(emptyList())
@@ -153,23 +165,31 @@ class SupportRepository private constructor(context: Context) {
         return Uri.parse(MinbarApi.mediaUrl(path))
     }
 
-    fun enqueue(
+    suspend fun enqueue(
         kind: String,
         threadId: String = newThreadId(),
         isNew: Boolean = true,
         text: String = "",
         audioFile: File? = null,
         includeDeviceInfo: Boolean = false,
-    ) {
-        store.addPending(
-            kind = kind,
-            threadId = threadId,
-            isNew = isNew,
-            text = text.trim().take(MAX_TEXT),
-            audioFile = audioFile?.absolutePath.orEmpty(),
-            deviceInfo = if (includeDeviceInfo) deviceInfo() else "",
-        )
-        schedule(appContext)
+    ): Unit = withContext(Dispatchers.IO) {
+        outboxOperation.withLock {
+            check(store.consented()) // an erased installation must give consent again
+            val body = text.trim().take(MAX_TEXT)
+            require(body.isNotBlank() || audioFile != null)
+            require(canDeliverSupportOutboxKind(kind))
+            store.addPending(
+                kind = kind,
+                threadId = threadId,
+                isNew = isNew,
+                text = body,
+                audioFile = audioFile,
+                deviceInfo = if (includeDeviceInfo) deviceInfo() else "",
+            )
+            // This only schedules a queued draft; a scheduling exception never justifies
+            // re-enqueueing another message with a fresh local identity.
+            runCatching { schedule(appContext) }
+        }
     }
 
     fun newThreadId(): String = "st_${System.currentTimeMillis()}_" +
@@ -179,19 +199,36 @@ class SupportRepository private constructor(context: Context) {
         "نسخة التطبيق ${BuildConfig.VERSION_NAME} · أندرويد ${Build.VERSION.RELEASE} · " +
             "${Build.MANUFACTURER} ${Build.MODEL}"
 
-    suspend fun deleteThread(threadId: String) {
-        // ⚠️ على IO: تُنادى من نطاق الواجهة (الخيط الرئيسي)، و`MinbarApi` حاجبٌ
-        // فكان يرمي `NetworkOnMainThreadException` في كل مرّة فيفشل الفعل دائماً.
-        kotlinx.coroutines.withContext(Dispatchers.IO) {
+    suspend fun deleteThread(threadId: String) = withContext(Dispatchers.IO) {
+        outboxOperation.withLock {
             MinbarApi.deleteUser(appContext, "/v1/me/support/threads/$threadId")
+            store.discardThread(threadId)
+        }
+    }
+
+    suspend fun deleteAccountSupportData() = withContext(Dispatchers.IO) {
+        outboxOperation.withLock {
+            // Join any in-flight outbox attempt before erasing the old installation.
+            // An already-dequeued worker cannot recreate its thread after this point.
+            withContext(NonCancellable) {
+                WorkManager.getInstance(appContext).cancelUniqueWork(WORK_NAME)
+                SubmissionRepository.get(appContext).deleteCloudIdentityData()
+                store.clearAll()
+                AppConfigRepository.get(appContext).resetInstallId()
+            }
         }
     }
 
     fun markSeen(thread: SupportThread) = store.markSeen(thread.id, thread.lastMessageAtMs)
 
-    fun retryFailed(messageId: String) {
-        store.retryFailed(messageId)
-        schedule(appContext)
+    suspend fun retryFailed(messageId: String) = withContext(Dispatchers.IO) {
+        outboxOperation.withLock {
+            if (store.retryFailed(messageId)) schedule(appContext)
+        }
+    }
+
+    suspend fun discardFailed(messageId: String) = withContext(Dispatchers.IO) {
+        outboxOperation.withLock { store.discardFailed(messageId) }
     }
 
     fun blockingThread(threads: List<SupportThread>): SupportThread? {
@@ -208,32 +245,39 @@ class SupportRepository private constructor(context: Context) {
         thread.userUnread && thread.lastMessageAtMs > store.lastSeenMs(thread.id)
 
     internal suspend fun deliver(item: SupportStore.Pending) {
-        val audioKey = item.audioFile.takeIf { it.isNotBlank() }?.let { local ->
-            val file = File(local)
-            require(file.exists() && file.length() > 0L) { "المرفق مفقود." }
-            MinbarApi.uploadUser(appContext, "support", "${item.id}.m4a", Uri.fromFile(file), "audio/mp4")
-                .optString("key")
-        }
-        // بلا Firebase: المفتاح نفسه يحمل معرّف التثبيت (ردّ المطوّر يصل بالاستطلاع).
-        val fcmToken = "install:" + AppConfigRepository.get(appContext).installId()
-        val payload = JSONObject().put("threadId", item.threadId)
-        item.text.takeIf(String::isNotBlank)?.let { payload.put("text", it) }
-        audioKey?.let { payload.put("audioKey", it) }
-        if (fcmToken.isNotBlank()) payload.put("fcmToken", fcmToken)
-        if (item.isNew) {
-            payload.put("kind", item.kind).put("displayName", store.displayName())
-            item.deviceInfo.takeIf(String::isNotBlank)?.let { payload.put("deviceInfo", it) }
-            MinbarApi.postUser(appContext, "/v1/support/threads", payload)
-        } else {
-            MinbarApi.postUser(appContext, "/v1/support/threads/${item.threadId}/messages", payload)
-        }
-        runCatching { item.audioFile.takeIf { it.isNotBlank() }?.let { File(it).delete() } }
+        require(canDeliverSupportOutboxKind(item.kind))
+        val deviceId = MinbarApi.deviceId(appContext)
+        verifySupportMessageDelivery(
+            audio = store.checkedRecording(item),
+            deviceId = deviceId,
+            filename = "${item.id}.m4a",
+            newThreadId = item.threadId.takeIf { item.isNew },
+            upload = { file, filename ->
+                MinbarApi.uploadUser(appContext, "support", filename, Uri.fromFile(file), "audio/mp4").let {
+                    SupportUploadReceipt(it.opt("ok"), it.opt("key"), it.opt("sha256"), it.opt("sizeBytes"))
+                }
+            },
+            post = { audioKey ->
+                val payload = JSONObject().put("threadId", item.threadId).put("fcmToken", "install:$deviceId")
+                item.text.takeIf(String::isNotBlank)?.let { payload.put("text", it) }
+                audioKey?.let { payload.put("audioKey", it) }
+                val response = if (item.isNew) {
+                    payload.put("kind", item.kind).put("displayName", store.displayName())
+                    item.deviceInfo.takeIf(String::isNotBlank)?.let { payload.put("deviceInfo", it) }
+                    MinbarApi.postUser(appContext, "/v1/support/threads", payload)
+                } else {
+                    MinbarApi.postUser(appContext, "/v1/support/threads/${item.threadId}/messages", payload)
+                }
+                SupportPostReceipt(response.opt("ok"), response.opt("id"))
+            },
+        )
     }
 
     companion object {
         const val MAX_TEXT = 1_000
         const val NEW_THREAD_COOLDOWN_MS = 24L * 60 * 60 * 1000
         private const val WORK_NAME = "support_outbox"
+        internal val outboxOperation = Mutex()
         private const val THREADS_POLL_MS = 30_000L
         private const val MESSAGES_POLL_MS = 15_000L
 
@@ -261,19 +305,39 @@ class SupportSendWorker(
     context: Context,
     params: WorkerParameters,
 ) : CoroutineWorker(context, params) {
-    override suspend fun doWork(): Result {
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        SupportRepository.outboxOperation.withLock { sendQueued() }
+    }
+
+    private suspend fun sendQueued(): Result {
         val store = SupportStore.get(applicationContext)
         val repository = SupportRepository.get(applicationContext)
+        runCatching { store.migrateLegacyRecordings() }
         for (item in store.pending()) {
             val fresh = store.pending().firstOrNull { it.id == item.id } ?: continue
-            if (fresh.failed) continue
-            val outcome = runCatching { repository.deliver(fresh) }
+            // Historical lesson-related outbox items remain intact, but cannot upload or retry.
+            if (!canDispatchSupportDraft(fresh.failed, fresh.attachmentUnavailable) ||
+                !canDeliverSupportOutboxKind(fresh.kind)
+            ) continue
+            val failure = runCatching { repository.deliver(fresh) }.exceptionOrNull()
             when {
-                outcome.isSuccess -> store.removePending(fresh.id)
-                isTransientFailure(outcome.exceptionOrNull()!!) -> return Result.retry()
-                else -> store.markFailed(fresh.id)
+                failure == null -> store.removePending(fresh.id)
+                failure is kotlinx.coroutines.CancellationException -> throw failure
+                isTransientFailure(failure) -> return Result.retry()
+                else -> {
+                    val api = failure as? MinbarApi.ApiException
+                    store.markFailed(
+                        fresh.id,
+                        attachmentUnavailable = isLegacySupportAttachmentCutoff(
+                            fresh.audioFile, api?.code, api?.serverCode,
+                        ),
+                    )
+                }
             }
         }
         return Result.success()
     }
 }
+
+internal fun canDeliverSupportOutboxKind(kind: String): Boolean =
+    !kind.trim().equals(SupportKind.LESSON_HELP, ignoreCase = true)

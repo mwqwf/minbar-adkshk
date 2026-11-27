@@ -23,7 +23,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.ali.menbaradkshk.data.AssetPackSeeder
+import com.ali.menbaradkshk.data.LibraryPackDelivery
 import com.ali.menbaradkshk.data.ContentState
 
 /**
@@ -58,24 +58,18 @@ private fun AutoDownloadQuestion(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // 🎁 هل يتكفّل المتجر بالمكتبة؟ لا يجوز أن نَعِد بما هو واقعٌ أصلاً:
-        // من وصلته الحزم فسأَلناه «هل نحفظ لك الدروس؟» ظنّ أنّ مكتبته لم تصل.
-        // فالسؤال يبقى واحداً، ويتغيّر نصُّه لا عدده.
         val context = LocalContext.current
-        val storeBringsLibrary = remember {
-            AssetPackSeeder.bundledBytes(context) > 0L ||
-                AssetPackSeeder.storeDeliveryPending(context)
-        }
+        val playLibraryAvailable = remember(context) { LibraryPackDelivery.available(context) }
         Spacer(Modifier.height(24.dp))
         QuestionTitle(
-            if (storeBringsLibrary) {
-                "مكتبتك تصلك من متجر Play بلا إنترنت. وما يُنشر بعدها — هل نحفظه لك تلقائياً على الواي فاي؟"
+            if (playLibraryAvailable) {
+                "تنزيل المكتبة من متجر Play يُدار من الإعدادات. هل نحفظ لك أيضاً الدروس الجديدة تلقائياً على الواي فاي؟"
             } else {
                 "هل نحفظ لك الدروس تلقائياً حين تتصل بواي فاي، لتسمعها بلا إنترنت؟"
             },
         )
         Text(
-            "لن نستعمل بيانات هاتفك، ويمكنك تغيير هذا من الإعدادات متى شئت.",
+            "هذا الخيار للدروس عبر الواي فاي فقط، ويمكنك تغييره من الإعدادات.",
             modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp),
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -120,6 +120,20 @@
             android:taskAffinity=""
             android:theme="@android:style/Theme.NoDisplay" />
 
+        <!-- Explicitly labelled moderator share for a single audio file; never a public contribution. -->
+        <activity
+            android:name=".ui.adminbridge.share.ModeratorAudioShareActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:label="@string/admin_audio_share_target">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="audio/*" />
+            </intent-filter>
+        </activity>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -130,37 +144,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- «المشاركة إلى منبر»: استقبال صوتيات من أي تطبيق خارجي
-                 لفتح نموذج «شارك درساً» معبّأً بها مباشرة. -->
-            <intent-filter>
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="audio/*" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.SEND_MULTIPLE" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="audio/*" />
-            </intent-filter>
-
-            <!-- «ساهم بالنص»: مشاركة صورة صفحة كتاب أو نصّ من تطبيق خارجي
-                 تفتح نموذج المساهمة بالنص المشروح مع اختيار الدرس. -->
-            <intent-filter>
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="image/*" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.SEND_MULTIPLE" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="image/*" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="text/plain" />
-            </intent-filter>
-
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -168,16 +151,6 @@
                 <data
                     android:host="minbar-adkassahk.vercel.app"
                     android:pathPrefix="/lesson"
-                    android:scheme="https" />
-            </intent-filter>
-
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:host="minbar-adkassahk.vercel.app"
-                    android:pathPrefix="/my-submissions"
                     android:scheme="https" />
             </intent-filter>
 
@@ -231,6 +204,11 @@
         </receiver>
 
         <!-- وظيفة تنزيل الدروس (أندرويد 14+): نقل بيانات بمبادرة المستخدم. -->
+        <!-- عامل دمج Opus الخاص بالمشرف: غير مُصدَّر، في عملية مستقلة تنهي نفسها. -->
+        <service
+            android:name=".ui.adminbridge.upload.OrderedOpusMergeService"
+            android:exported="false"
+            android:process=":opusmerge" />
         <service
             android:name=".data.LessonDownloadJobService"
             android:exported="false"

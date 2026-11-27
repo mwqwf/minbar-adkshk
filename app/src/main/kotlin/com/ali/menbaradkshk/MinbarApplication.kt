@@ -53,6 +53,9 @@ class MinbarApplication : Application(), Configuration.Provider, SingletonImageL
 
     override fun onCreate() {
         super.onCreate()
+        // عملية عامل دمج Opus الخاصة بالمشرف (:opusmerge) لا تحتاج شيئاً من تهيئة التطبيق:
+        // لا مزامنة ولا WorkManager ولا تحميلات ولا كاش وسائط.
+        if (isOpusMergeProcess()) return
         instanceOrNull = this
         createNotificationChannels()
         // 🔥 التسخين في الخلفية لا على الخيط الرئيسي (Play Vitals 2026-10-25):
@@ -75,6 +78,12 @@ class MinbarApplication : Application(), Configuration.Provider, SingletonImageL
             }
         }, "minbar-warmup").start()
     }
+
+    private fun isOpusMergeProcess(): Boolean = runCatching {
+        val name = if (android.os.Build.VERSION.SDK_INT >= 28) getProcessName()
+            else java.io.File("/proc/self/cmdline").readText().substringBefore('\u0000')
+        name.endsWith(com.ali.menbaradkshk.ui.adminbridge.upload.OrderedOpusMergeWire.PROCESS)
+    }.getOrDefault(false)
 
     /**
      * 🍃 امتثال متطلب Play (ذاكرة الصور النقطية بالخلفية): عند اختفاء الواجهة

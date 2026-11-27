@@ -86,7 +86,7 @@ private data class RootTab(
 /// الشريط السفلي خمسة تبويبات: «المفضّلة» اندمجت في «قوائمي» (صارت تبويباً
 /// داخلها)، وحلّت مكانها «الأذكار» — فبقي العدد كما هو ولم يُفقد شيء.
 private val rootTabs = listOf(
-    RootTab(Route.Home, "الرئيسية", Icons.Outlined.Home, Icons.Filled.Home),
+    RootTab(Route.Home, "الرئيسية", MihrabIcons.Outlined, MihrabIcons.Filled),
     RootTab(Route.Library, "المكتبة", Icons.AutoMirrored.Outlined.LibraryBooks, Icons.AutoMirrored.Filled.LibraryBooks),
     RootTab(Route.Adhkar, "الأذكار", Icons.Outlined.Star, Icons.Filled.Star),
     RootTab(Route.MyLists, "قوائمي", Icons.Outlined.LibraryMusic, Icons.Filled.LibraryMusic),
@@ -118,11 +118,9 @@ private fun routeStateKey(route: Route): String = when (route) {
     Route.Radio -> "Radio"
     Route.Car -> "Car"
     Route.Stats -> "Stats"
-    Route.Contribute -> "Contribute"
-    Route.ContributeTranscript -> "ContributeTranscript"
-    Route.MySubmissions -> "MySubmissions"
     Route.Notifications -> "Notifications"
     Route.About -> "About"
+    Route.Admin -> "Admin"
 }
 
 @Composable
@@ -132,7 +130,6 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
     val playback by vm.playback.state.collectAsState()
     val message by vm.message.collectAsState()
     val showSettings by vm.showSettings.collectAsState()
-    val transcriptContribution by vm.transcriptContribution.collectAsState()
     val updateStatus by vm.updateStatus.collectAsState()
     val snackbar = remember { SnackbarHostState() }
 
@@ -173,7 +170,8 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
     // أبيض في أوّل شاشة يراها المستخدم الجديد). تُقلب داكنةً ما دامت طبقةٌ
     // ظاهرة على خلفيّة فاتحة، ثم تُعاد كما كانت.
     val overlayShown = blockingUpdate || showOnboarding
-    val overlayOnLightBackground = overlayShown && !isDarkTheme(vm.store.themeMode())
+    // «محراب الفجر»: الشريط العلوي فاتح نهاراً ⇒ أيقونات الحالة داكنة في النهار دائماً.
+    val overlayOnLightBackground = !isDarkTheme(vm.store.themeMode())
     val rootView = androidx.compose.ui.platform.LocalView.current
     LaunchedEffect(overlayOnLightBackground) {
         // سياق العرض قد يكون ContextWrapper — نصعد حتى النشاط.
@@ -261,14 +259,6 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
     }
 
     val isRoot = rootTabs.any { it.route == route }
-    // ⚠️ الحبس مشروطٌ بملكيّة الرفع: كان أيّ رفع جارٍ — ولو بدأ من ورقة درسٍ
-    // آخر — يُعطّل سهم الرجوع في هذه الشاشة، فيحبس المستخدم فيها بلا سبب
-    // ظاهر. لا يُحبس إلّا رفعُ الدرس المختار في الشاشة نفسها.
-    val contributeLessonId by vm.contributeScreenLessonId.collectAsState()
-    val navigationBlocked = route == Route.ContributeTranscript &&
-        transcriptContribution.submitting &&
-        contributeLessonId.isNotBlank() &&
-        transcriptContribution.lessonId == contributeLessonId
     // المشغّل ووضع القيادة شاشتان بملء الشاشة بلا أشرطة (نمط الأصل).
     // المصحف المصوَّر بملء الشاشة أيضاً حين تُخفى أدواته: الصفحة نسبتها
     // ١:١٫٤٣ فكل شريط يقتطع من ارتفاعها يقتطع من عرضها أضعافه.
@@ -340,13 +330,9 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
     }
     // ⚠️ `back()` تُرجع false على مكدّس فارغ ولا تفعل شيئاً — فكان الزرّ
     // يُبتلع ويعلق المستخدم في شاشة غير جذرية. الرجوع إلى الرئيسية مخرج مضمون.
-    BackHandler(enabled = !isRoot && !navigationBlocked) {
+    BackHandler(enabled = !isRoot) {
         if (!vm.back()) vm.openRoot(Route.Home)
     }
-    BackHandler(enabled = navigationBlocked) {
-        vm.showMessage("انتظر اكتمال إرسال المساهمة قبل الرجوع.")
-    }
-
     // 🗂️ الإعدادات — درج جانبي حقيقي (بنمط تويتر/تلجرام): يُفتح بزرّه في
     // الشريط العلوي أو بالسحب من حافة الشاشة في التبويبات الجذرية.
     // حالة الفتح تبقى في AppViewModel (openSettings/closeSettings كما كانت)،
@@ -411,16 +397,15 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = if (isDarkTheme(vm.store.themeMode())) AppBarBackgroundDark else AppBarBackgroundLight,
-                        titleContentColor = AppBarForeground,
-                        navigationIconContentColor = AppBarForeground,
-                        actionIconContentColor = AppBarForeground,
+                        titleContentColor = appBarForeground(isDarkTheme(vm.store.themeMode())),
+                        navigationIconContentColor = appBarForeground(isDarkTheme(vm.store.themeMode())),
+                        actionIconContentColor = appBarForeground(isDarkTheme(vm.store.themeMode())),
                     ),
                     navigationIcon = {
                         if (!isRoot) {
                             IconButton(
                                 // كسهم النظام: مكدّس فارغ ⇒ الرئيسية لا لا-شيء.
                                 onClick = { if (!vm.back()) vm.openRoot(Route.Home) },
-                                enabled = !navigationBlocked,
                             ) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, "رجوع")
                             }
@@ -434,7 +419,7 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                                         CircularProgressIndicator(
                                             modifier = Modifier.size(18.dp),
                                             strokeWidth = 2.dp,
-                                            color = AppBarForeground,
+                                            color = appBarForeground(isDarkTheme(vm.store.themeMode())),
                                         )
                                     }
                                 }
@@ -465,11 +450,6 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                                     Icon(Icons.Filled.Menu, "الإعدادات")
                                 }
                             }
-                            Route.Contribute -> {
-                                IconButton(onClick = { vm.open(Route.MySubmissions) }) {
-                                    Icon(Icons.Filled.HistoryEdu, "مساهماتي")
-                                }
-                            }
                             else -> Unit
                         }
                     },
@@ -477,27 +457,6 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
-        floatingActionButton = {
-            // 📤 «شارك درساً» يظهر في تبويب الرئيسية فقط (نمط الأصل) —
-            // ويتوارى مع التمرير للأسفل ويعود مع الصعود (نمط FAB القياسيّ):
-            // كان يبقى فوق بطاقة «وِرد اليوم» فيغطّيها على الشاشات القصيرة.
-            val fabVisible by vm.homeFabVisible.collectAsState()
-            if (route == Route.Home) {
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = fabVisible,
-                    enter = androidx.compose.animation.fadeIn() +
-                        androidx.compose.animation.scaleIn(initialScale = .8f),
-                    exit = androidx.compose.animation.fadeOut() +
-                        androidx.compose.animation.scaleOut(targetScale = .8f),
-                ) {
-                    ExtendedFloatingActionButton(
-                        onClick = { vm.open(Route.Contribute) },
-                        icon = { Icon(Icons.Filled.MicExternalOn, contentDescription = null) },
-                        text = { Text("شارك درساً") },
-                    )
-                }
-            }
-        },
         bottomBar = {
             if (!fullScreen) {
                 Column {
@@ -570,7 +529,11 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
         // لها — كانت صفحة المصحف تظهر في نصف الشاشة بلا سبب ظاهر.
         Column(Modifier.fillMaxSize().padding(padding)) {
         Box(Modifier.weight(1f)) {
-            screenStateHolder.SaveableStateProvider(routeStateKey(route)) {
+            // Administrative screen state is not retained in the listener navigation holder.
+            // Entering again must pass the server gate, not restore privileged UI from a Bundle.
+            if (route == Route.Admin) {
+                MinbarAdminRoute(onBack = { if (!vm.back()) vm.openRoot(Route.Home) })
+            } else screenStateHolder.SaveableStateProvider(routeStateKey(route)) {
                 when (val current = route) {
                 Route.Home -> HomeScreen(vm, content, playback)
                 Route.Library -> LibraryScreen(vm, content)
@@ -602,11 +565,9 @@ fun MinbarApp(vm: AppViewModel, requestNotifications: () -> Unit) {
                 Route.Radio -> RadioScreen(vm)
                 Route.Car -> CarScreen(vm, playback)
                 Route.Stats -> StatsScreen(vm)
-                Route.Contribute -> ContributeScreen(vm)
-                Route.ContributeTranscript -> TranscriptContributeScreen(vm)
-                Route.MySubmissions -> MySubmissionsScreen(vm)
                 Route.Notifications -> NotificationsScreen(vm)
                 Route.About -> AboutScreen(vm)
+                Route.Admin -> Unit // rendered outside the public saveable screen holder
                 }
             }
         }
@@ -908,9 +869,7 @@ private fun titleFor(route: Route, vm: AppViewModel, content: ContentState): Str
     Route.Radio -> "إذاعة منبر"
     Route.Car -> "وضع القيادة"
     Route.Stats -> "حصادك"
-    Route.Contribute -> "شارك درساً"
-    Route.ContributeTranscript -> "ساهم بالنص"
-    Route.MySubmissions -> "مساهماتي"
     Route.Notifications -> "الإشعارات"
     Route.About -> "حول التطبيق"
+    Route.Admin -> "دخول الإدارة"
 }

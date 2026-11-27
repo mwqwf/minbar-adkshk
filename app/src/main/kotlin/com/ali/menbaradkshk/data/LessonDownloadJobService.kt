@@ -65,7 +65,19 @@ class LessonDownloadJobService : JobService() {
             // وإعلان الانتهاء بعدها يخصّ وظيفة لم تعد قائمة.
             if (!isActive) return@launch
             jobFinished(params, result == DownloadRunResult.NEEDS_RETRY)
-            if (result == DownloadRunResult.FINISHED) rescheduleLeftover()
+            when (result) {
+                DownloadRunResult.FINISHED -> rescheduleLeftover()
+                DownloadRunResult.WAITING_FOR_PLAY -> {
+                    // A manual enqueue racing with UIDT exit still deserves one
+                    // ordinary background pass, but do not restart UIDT for holds.
+                    val store = LocalStore.get(applicationContext)
+                    if (!DownloadRepository.get(applicationContext).paused.value &&
+                        store.downloadQueue().any { !store.isAutoDownloadQueued(it) }) {
+                        DownloadScheduler.enqueue(applicationContext, userInitiated = false)
+                    }
+                }
+                else -> Unit
+            }
         }
         return true
     }

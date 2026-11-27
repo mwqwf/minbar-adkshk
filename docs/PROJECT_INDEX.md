@@ -6,7 +6,7 @@
 ## الإصدار
 | الملف | الحزمة | versionCode | versionName |
 |---|---|---|---|
-| `app/build.gradle.kts` | `com.ali.menbaradkshk` | 40 | 2.8.4 |
+| `app/build.gradle.kts` | `com.ali.menbaradkshk` | 41 | 2.9.0 |
 
 ## وحدات Gradle
 `:app` · `:$pack`
@@ -14,14 +14,15 @@
 ## البنية (عدد الملفات المتتبَّعة)
 | المجلد | الملفات |
 |---|---|
-| `.agents/` | 298 |
+| `.agents/` | 26 |
 | `.github/` | 7 |
-| `app/` | 121 |
+| `app/` | 341 |
 | `core_pack/` | 2 |
 | `docs/` | 5 |
 | `gradle/` | 2 |
+| `more_pack/` | 2 |
 | `rest_pack/` | 2 |
-| `tools/` | 18 |
+| `tools/` | 21 |
 
 ## سير العمل (6)
 | الملف | الاسم | المحفّزات | الجدول (cron UTC) | المشغّل |
@@ -33,8 +34,8 @@
 | `pr-check.yml` | pr-check | pull_request | — | ubuntu |
 | `project-index.yml` | project-index | push, workflow_dispatch | — | ubuntu |
 
-## المهارات (26) — `.agents/skills/` (و`.claude/skills/` روابط لها)
-`adaptive` (مركزية) · `agp-9-upgrade` (مركزية) · `android-cli` (مركزية) · `android-performance` (مركزية) · `android-play-aso` (مركزية) · `android-security-hardening` (مركزية) · `arabic-rtl-and-islamic-typography` (مركزية) · `automation-first` (مركزية) · `edge-to-edge` (مركزية) · `google-play-publish` (مركزية) · `impeccable` (مركزية) · `kotlin-tooling-agp9-migration` (مركزية) · `media3-cast-integration` (مركزية) · `minbar-platform` (مركزية) · `mwqwf-workflow` (مركزية) · `navigation-3` (مركزية) · `navigation-event` (مركزية) · `play-policy-insights` (مركزية) · `project-registry` (مركزية) · `receiving-code-review` (مركزية) · `systematic-debugging` (مركزية) · `test-driven-development` (مركزية) · `testing-setup` (مركزية) · `verification-before-completion` (مركزية) · `verify-and-review` (مركزية) · `writing-plans` (مركزية)
+## المهارات (6) — `.agents/skills/` (و`.claude/skills/` روابط لها)
+`android-engineering` (مركزية) · `arabic-text-integrity` (مركزية) · `engineering-discipline` (مركزية) · `google-play` (مركزية) · `minbar-platform` (مركزية) · `mwqwf-workflow` (مركزية)
 
 ## وثائق `docs/`
 [`CLOUD-SESSION.md`](CLOUD-SESSION.md) · [`OWNER_AUDIT_2026-10-02.md`](OWNER_AUDIT_2026-10-02.md) · [`PROJECT_STATE.md`](PROJECT_STATE.md)
